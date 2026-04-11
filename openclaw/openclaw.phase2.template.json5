@@ -1,0 +1,38 @@
+{
+  agents: {
+    defaults: {
+      workspace: "C:/Users/james/OneDrive/Documents/Manganda LTD/AI Models/ai-holding-company",
+      userTimezone: "America/Vancouver",
+      model: {
+        primary: "ollama/llama3.2:latest",
+      },
+      heartbeat: {
+        every: "30m",
+        target: "last",
+        lightContext: true,
+        activeHours: {
+          start: "08:00",
+          end: "09:30",
+          timezone: "America/Vancouver",
+        },
+        prompt: "Read HEARTBEAT.md, run python scripts/tool_router.py run_divisions --division all. If this morning report already exists, return HEARTBEAT_OK and stop.",
+      },
+    },
+  },
+  channels: {
+    telegram: {
+      enabled: true,
+      botToken: "REPLACE_TELEGRAM_BOT_TOKEN",
+      dmPolicy: "pairing",
+      groups: {
+        "*": { requireMention: true },
+      },
+    },
+    slack: {
+      enabled: false,
+      mode: "socket",
+      appToken: "REPLACE_XAPP_TOKEN",
+      botToken: "REPLACE_XOXB_TOKEN",
+    },
+  },
+}

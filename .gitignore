@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+.env
+.env.local
+.env.*
+!.env.example
+
+reports/*.json
+reports/*.md
+!reports/.gitkeep
+
+memory/vector_store.jsonl
+memory/*.jsonl
+
+state/**
+!state/.gitkeep
