@@ -104,6 +104,7 @@ class TelegramBridge:
         }
         reports_dir_rel = str(self.config.get("paths", {}).get("reports_dir", "reports"))
         self.reports_dir = ROOT / reports_dir_rel
+        self.phase3_enabled = bool(self.config.get("phase3", {}).get("enabled", False))
 
     @staticmethod
     def _parse_optional_int(value: str) -> int | None:
@@ -230,7 +231,12 @@ class TelegramBridge:
         if lowered in {"/status", "status"}:
             return {"type": "tool", "name": "daily_brief", "args": ["daily_brief"]}
         if lowered in {"/brief", "brief"} or "generate fresh brief" in lowered:
+            if self.phase3_enabled:
+                return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
             return {"type": "tool", "name": "run_divisions", "args": ["run_divisions", "--division", "all", "--force"]}
+
+        if re.match(r"^/board(?:\s+review)?$", raw, re.I):
+            return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
         site_match = re.match(r"^/(?:site|check_website)\s+([a-zA-Z0-9_-]+)$", raw)
         if site_match:
@@ -323,6 +329,8 @@ class TelegramBridge:
                 "name": "run_divisions",
                 "args": ["run_divisions", "--division", "all", "--force"],
             }
+        if "board review" in lowered:
+            return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
         return {"type": "error", "message": "Unknown command. Use /help."}
 
@@ -336,6 +344,7 @@ class TelegramBridge:
             "- /bot <bot_id> report\n"
             "- /bot <bot_id> logs [lines]\n"
             "- /divisions [all|trading|websites]\n"
+            "- /board review\n"
             "- /note <text>\n"
             "- /memory <query>\n"
             "- /help\n"
@@ -434,6 +443,9 @@ class TelegramBridge:
                 lines.append(f"Report: {md_path}")
             return "\n".join(lines)
 
+        if tool_name == "run_holding":
+            return self._summarize_holding_brief(payload)
+
         if tool_name == "memory_search":
             results = payload.get("results", []) or []
             lines = [f"Memory matches: {len(results)}"]
@@ -504,13 +516,37 @@ class TelegramBridge:
             name = str(div.get("division", "division")).title()
             lines.append(f"{name} Division Report")
             lines.append(f"- status={div.get('status')} engine={div.get('engine')} ok={div.get('ok')}")
-            top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
-            if top_lines:
-                for item in top_lines:
-                    normalized = item.strip()
-                    if normalized.startswith("- ") or normalized.startswith("* "):
-                        normalized = normalized[2:].strip()
-                    lines.append(f"- {normalized}")
+            scorecard = div.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            if scorecard:
+                lines.append(f"- goal: {scorecard.get('goal')}")
+                lines.append(f"- desired: {scorecard.get('desired_outcome')}")
+                items = scorecard.get("items", [])
+                items = items if isinstance(items, list) else []
+                priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
+                ranked_items = sorted(
+                    [item for item in items if isinstance(item, dict)],
+                    key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
+                )
+                for item in ranked_items[:4]:
+                    if not isinstance(item, dict):
+                        continue
+                    lines.append(
+                        f"- [{item.get('status')}] {item.get('metric')}: "
+                        f"actual={item.get('actual')} target={item.get('target')} variance={item.get('variance')}"
+                    )
+                actions = scorecard.get("actions", [])
+                actions = actions if isinstance(actions, list) else []
+                for action in actions[:2]:
+                    lines.append(f"- action: {action}")
+            else:
+                top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
+                if top_lines:
+                    for item in top_lines:
+                        normalized = item.strip()
+                        if normalized.startswith("- ") or normalized.startswith("* "):
+                            normalized = normalized[2:].strip()
+                        lines.append(f"- {normalized}")
             warnings = div.get("warnings", [])
             warnings = warnings if isinstance(warnings, list) else []
             for warning in warnings[:1]:
@@ -523,6 +559,78 @@ class TelegramBridge:
         if alerts:
             lines.append(f"Top alert: {alerts[0]}")
         lines.append("Owner reminder: /divisions all | /status | /bot <id> health")
+        return "\n".join(lines).strip()
+
+    def _summarize_holding_brief(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            return "Holding heartbeat failed: invalid payload."
+        summary = payload.get("base_summary", {})
+        summary = summary if isinstance(summary, dict) else {}
+        company = payload.get("company_scorecard", {})
+        company = company if isinstance(company, dict) else {}
+        divisions = payload.get("divisions", [])
+        divisions = divisions if isinstance(divisions, list) else []
+
+        lines = [
+            f"{payload.get('company_name', 'AI Holding Company')} - CEO Heartbeat",
+            f"Mode={payload.get('mode')} | Generated (UTC): {payload.get('generated_at_utc')}",
+            f"Company status={company.get('status')} | PnL={summary.get('pnl_total')} | Trades={summary.get('trades_total')}",
+            f"Websites up={summary.get('websites_up')}/{summary.get('websites_total')} | Alerts={len(payload.get('base_alerts', []) or [])}",
+            "",
+            "Company KPI Snapshot",
+        ]
+
+        priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        ranked_company = sorted(
+            [item for item in company.get("items", []) if isinstance(item, dict)],
+            key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
+        )
+        for item in ranked_company[:4]:
+            lines.append(
+                f"- [{item.get('status')}] {item.get('metric')}: "
+                f"actual={item.get('actual')} target={item.get('target')} variance={item.get('variance')}"
+            )
+
+        lines.append("")
+        lines.append("Division Snapshot")
+        for div in divisions:
+            if not isinstance(div, dict):
+                continue
+            scorecard = div.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            lines.append(f"- {str(div.get('division')).title()}: status={scorecard.get('status')}")
+            div_items = sorted(
+                [item for item in scorecard.get("items", []) if isinstance(item, dict)],
+                key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
+            )
+            if div_items:
+                top = div_items[0]
+                lines.append(
+                    f"  [{top.get('status')}] {top.get('metric')} -> actual={top.get('actual')} target={top.get('target')}"
+                )
+
+        if payload.get("mode") == "board_review":
+            lines.append("")
+            lines.append("Board Review Approvals")
+            board = payload.get("board_review", {})
+            board = board if isinstance(board, dict) else {}
+            approvals = board.get("approvals", [])
+            approvals = approvals if isinstance(approvals, list) else []
+            if not approvals:
+                lines.append("- None")
+            else:
+                for item in approvals[:5]:
+                    if not isinstance(item, dict):
+                        continue
+                    lines.append(
+                        f"- [{item.get('priority')}] {item.get('topic')}: {item.get('decision')}"
+                    )
+
+        report_path = payload.get("files", {}).get("latest_markdown") if isinstance(payload.get("files"), dict) else None
+        if report_path:
+            lines.append("")
+            lines.append(f"Holding report file: {report_path}")
+        lines.append("Owner reminder: /brief | /board review | /divisions all | /status")
         return "\n".join(lines).strip()
 
     def handle_text(self, text: str) -> str:
@@ -539,12 +647,15 @@ class TelegramBridge:
     def send_morning_brief(self) -> None:
         if self.owner_chat_id is None:
             raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is not set.")
-        result = self._run_tool_router(["run_divisions", "--division", "all", "--force"], timeout_sec=1200)
+        if self.phase3_enabled:
+            result = self._run_tool_router(["run_holding", "--mode", "heartbeat", "--force"], timeout_sec=1500)
+        else:
+            result = self._run_tool_router(["run_divisions", "--division", "all", "--force"], timeout_sec=1200)
         ok = bool(result.get("ok"))
         text = ""
         payload = result.get("payload")
         if ok and isinstance(payload, dict):
-            text = self._summarize_divisions_brief(payload)
+            text = self._summarize_holding_brief(payload) if self.phase3_enabled else self._summarize_divisions_brief(payload)
         else:
             fallback = self._run_tool_router(["daily_brief"])
             text = self._summarize_tool_result("daily_brief", fallback)
@@ -556,7 +667,13 @@ class TelegramBridge:
                 "mode": "send_morning_brief",
                 "ok": ok,
                 "chat_id": self.owner_chat_id,
-                "used": "run_divisions_all_force" if result.get("ok") else "daily_brief_fallback",
+                "used": (
+                    "run_holding_heartbeat_force"
+                    if self.phase3_enabled and result.get("ok")
+                    else "run_divisions_all_force"
+                    if result.get("ok")
+                    else "daily_brief_fallback"
+                ),
             }
         )
 

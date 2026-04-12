@@ -1,0 +1,45 @@
+name: "Holding Company CEO Office"
+manager_agent: "holding_ceo"
+verbose: false
+
+agents:
+  - key: "holding_ceo"
+    role: "Holding Company CEO Agent"
+    goal: "Produce a concise owner-grade board brief from company and division scorecards with explicit approvals."
+    backstory: "You are the top-level executive layer for AI Holding Company, translating operational telemetry into strategic decisions."
+    allow_delegation: false
+
+tasks:
+  - key: "ceo_board_task"
+    agent: "holding_ceo"
+    description: |
+      You are writing the top-level executive brief for the human Owner/CEO.
+
+      Company identity:
+      {soul_text}
+
+      Mode:
+      {holding_mode}
+
+      Company scorecard JSON:
+      {company_scorecard_json}
+
+      Division scorecards JSON:
+      {division_scorecards_json}
+
+      Division outputs JSON:
+      {divisions_json}
+
+      Base summary JSON:
+      {base_summary_json}
+
+      Return compact markdown with:
+      1) CEO Summary (what changed and why it matters)
+      2) Priority Risks (max 5)
+      3) Required Owner Approvals (max 5, explicit)
+      4) Corrective Plays (48h and 7d)
+      Use only commands that exist in this repository.
+      Do not output tool-call JSON.
+    expected_output: |
+      Markdown executive brief with specific approvals and corrective actions.
+

@@ -390,14 +390,53 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
 
         service_cmd = str(remote_cfg.get("service_check_cmd", "")).strip()
         if service_cmd:
+            service_retries = int(remote_cfg.get("service_check_retries", 3))
+            if service_retries < 1:
+                service_retries = 1
+            service_backoff_sec = _parse_float(remote_cfg.get("service_check_backoff_sec"))
+            if service_backoff_sec is None or service_backoff_sec < 0:
+                service_backoff_sec = 1.0
+
             ssh_args = ["ssh", *ssh_base, f"{user}@{host}", service_cmd]
-            service_result = _run_command_args(ssh_args, timeout_sec=20)
-            record["service_check"] = service_result
             status_file = cache_repo / "remote_service_status.txt"
-            status_file.write_text(
-                (service_result.get("stdout") or service_result.get("stderr") or "").strip(),
-                encoding="utf-8",
-            )
+            previous_status = ""
+            try:
+                previous_status = status_file.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                previous_status = ""
+
+            attempts: list[dict[str, Any]] = []
+            service_result: dict[str, Any] | None = None
+            for attempt in range(1, service_retries + 1):
+                result = _run_command_args(ssh_args, timeout_sec=20)
+                attempt_rec = dict(result)
+                attempt_rec["attempt"] = attempt
+                attempts.append(attempt_rec)
+                stdout_text = str(result.get("stdout", "")).strip().lower()
+                if "active" in stdout_text:
+                    service_result = result
+                    break
+                if attempt < service_retries:
+                    time.sleep(service_backoff_sec * attempt)
+
+            if service_result is None:
+                service_result = attempts[-1] if attempts else {"ok": False, "return_code": 1, "stdout": "", "stderr": ""}
+
+            stdout_text = str(service_result.get("stdout", "")).strip().lower()
+            if "active" not in stdout_text and previous_status.lower().startswith("active"):
+                service_result = dict(service_result)
+                service_result["ok"] = True
+                service_result["stdout"] = previous_status
+                service_result["note"] = "Using cached last-known active service state after live check failure."
+                service_result["cached_last_known"] = True
+
+            service_result["attempt_count"] = len(attempts)
+            service_result["attempts"] = attempts
+            record["service_check"] = service_result
+
+            status_text = (service_result.get("stdout") or service_result.get("stderr") or "").strip()
+            if status_text:
+                status_file.write_text(status_text, encoding="utf-8")
 
         record["ok"] = required_failures == 0
         if not record["ok"] and required_failures > 0:

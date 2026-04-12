@@ -104,13 +104,17 @@ def _load_polymarket_state_db_path(repo: Path) -> tuple[Path, list[str]]:
     return Path(candidates[0]), candidates
 
 
-def _scan_polymarket_csv(path: Path) -> dict[str, Any]:
+def _scan_polymarket_csv(path: Path, starting_bankroll: float = 300.0) -> dict[str, Any]:
     rows = 0
     wins = 0
     losses = 0
     open_count = 0
     pnl_total = 0.0
     latest_ts = None
+    equity = starting_bankroll
+    peak_equity = starting_bankroll
+    max_drawdown_usd = 0.0
+    max_drawdown_pct = 0.0
 
     if not path.exists():
         return {
@@ -120,6 +124,10 @@ def _scan_polymarket_csv(path: Path) -> dict[str, Any]:
             "open": 0,
             "pnl_total": 0.0,
             "latest_timestamp": None,
+            "starting_bankroll": round(starting_bankroll, 4),
+            "estimated_bankroll_current": round(starting_bankroll, 4),
+            "max_drawdown_usd_total": 0.0,
+            "max_drawdown_pct_total": 0.0,
         }
 
     try:
@@ -137,6 +145,15 @@ def _scan_polymarket_csv(path: Path) -> dict[str, Any]:
                 pnl = _parse_float(row.get("resolved_pnl"))
                 if pnl is not None:
                     pnl_total += pnl
+                    if status in ("WIN", "LOSS"):
+                        equity += pnl
+                        if equity > peak_equity:
+                            peak_equity = equity
+                        drawdown_usd = max(0.0, peak_equity - equity)
+                        max_drawdown_usd = max(max_drawdown_usd, drawdown_usd)
+                        if peak_equity > 0:
+                            drawdown_pct = (drawdown_usd / peak_equity) * 100.0
+                            max_drawdown_pct = max(max_drawdown_pct, drawdown_pct)
                 ts = row.get("timestamp")
                 if ts:
                     latest_ts = ts
@@ -150,6 +167,10 @@ def _scan_polymarket_csv(path: Path) -> dict[str, Any]:
         "open": open_count,
         "pnl_total": round(pnl_total, 4),
         "latest_timestamp": latest_ts,
+        "starting_bankroll": round(starting_bankroll, 4),
+        "estimated_bankroll_current": round(equity, 4),
+        "max_drawdown_usd_total": round(max_drawdown_usd, 4),
+        "max_drawdown_pct_total": round(max_drawdown_pct, 4),
     }
 
 
@@ -355,7 +376,9 @@ def report_polymarket(repo: Path) -> dict[str, Any]:
         if "→ LOSS" in message or "-> LOSS" in message or "â†’ LOSS" in message:
             losses += 1
 
-    csv_summary = _scan_polymarket_csv(csv_path)
+    env_values = _load_env_file(repo / ".env")
+    starting_bankroll = _parse_float(env_values.get("STARTING_BANKROLL")) or 300.0
+    csv_summary = _scan_polymarket_csv(csv_path, starting_bankroll=starting_bankroll)
     resolved_count = len(resolved_pnls)
     win_rate_24h = round((wins / resolved_count) * 100.0, 2) if resolved_count else None
     net_pnl_24h = round(sum(resolved_pnls), 4)
@@ -393,6 +416,10 @@ def report_polymarket(repo: Path) -> dict[str, Any]:
         "csv_losses": csv_summary["losses"],
         "csv_open": csv_summary["open"],
         "csv_latest_timestamp": csv_summary["latest_timestamp"],
+        "starting_bankroll": csv_summary.get("starting_bankroll"),
+        "estimated_bankroll_current": csv_summary.get("estimated_bankroll_current"),
+        "max_drawdown_usd_total": csv_summary.get("max_drawdown_usd_total"),
+        "max_drawdown_pct_total": csv_summary.get("max_drawdown_pct_total"),
         "recent_resolved_count_24h": resolved_count,
         "recent_wins_24h": wins,
         "recent_losses_24h": losses,

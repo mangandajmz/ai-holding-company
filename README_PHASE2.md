@@ -16,6 +16,7 @@ Edit [config/projects.yaml](C:/Users/james/OneDrive/Documents/Manganda%20LTD/AI%
 - `phase2.crewai.ollama_model` (default: `ollama/llama3.1:8b`)
 - `phase2.crewai.ollama_model` (default: `ollama/llama3.2:latest`)
 - `phase2.crewai.ollama_base_url` (default: `http://127.0.0.1:11434`)
+- `phase2.targets.*` scorecard thresholds (MT5 risk/freshness, Polymarket risk caps, website freshness/latency)
 
 ## 3) Run divisions locally
 
@@ -41,6 +42,12 @@ You should see:
 - Trading Bots Division manager brief
 - Websites Division manager brief
 - Engine per division (`crewai_hierarchical` when CrewAI is available)
+- Deterministic KPI scorecards per division with:
+  - goal
+  - desired outcome
+  - target vs actual
+  - variance with `GREEN/AMBER/RED` status
+  - corrective actions
 
 ## 5) Switch OpenClaw to Phase 2 template
 

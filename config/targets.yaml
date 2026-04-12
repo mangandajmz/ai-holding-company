@@ -1,0 +1,39 @@
+company:
+  monthly_pnl_growth_pct:
+    target_min: 10.0
+    amber_min: 0.0
+  max_drawdown_pct:
+    target_max: 3.0
+    amber_max: 5.0
+  website_uptime_ratio:
+    target_min: 0.999
+    amber_min: 0.99
+  division_green_ratio:
+    target_min: 0.67
+    amber_min: 0.50
+  max_alerts_per_heartbeat:
+    target_max: 0
+    amber_max: 2
+
+trading:
+  mt5:
+    max_cycle_age_minutes: 180
+    min_active_strategies: 1
+    min_best_pf: 1.3
+    monitor_window_utc:
+      start_hour: 7
+      end_hour: 21
+      run_weekends: false
+  polymarket:
+    daily_loss_cap_usd: 60
+    max_warning_lines_24h: 2
+    max_open_positions: 12
+    max_trade_data_age_hours: 72
+    min_resolved_trades_24h: 1
+
+websites:
+  snapshot_uptime_ratio_min: 1.0
+  max_latency_ms: 500
+  max_sitemap_age_days: 14
+  max_research_report_age_days: 8
+

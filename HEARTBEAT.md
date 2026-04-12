@@ -1,4 +1,4 @@
-# AI Holding Company - Phase 1 + 2 HEARTBEAT
+# AI Holding Company - Phase 1 + 2 + 3 HEARTBEAT
 
 ## Mission
 You are the Executive Assistant for AI Holding Company.
@@ -31,6 +31,9 @@ Never call cloud APIs.
 - `run_divisions`
   - Command: `python scripts/tool_router.py run_divisions --division all`
   - Use for the scheduled multi-agent division heartbeat.
+- `run_holding`
+  - Command: `python scripts/tool_router.py run_holding --mode <heartbeat|board_review> --force`
+  - Use for Phase 3 CEO-level heartbeat and board review packs.
 
 ## Brief Format
 Every division heartbeat must include:
@@ -65,6 +68,8 @@ When owner messages include intent:
   - Run `run_trading_script --command-key execute` only if owner explicitly says start/execute.
 - "run divisions":
   - Run `run_divisions --division all --force`.
+- "board review":
+  - Run `run_holding --mode board_review --force`.
 
 ## Safety Policy
 - Keep all data local to this machine.

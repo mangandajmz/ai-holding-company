@@ -84,6 +84,8 @@ trading_bots:
           local_rel_path: ".env"
           required: false
       service_check_cmd: "systemctl is-active polymarket-bot || true"
+      service_check_retries: 3
+      service_check_backoff_sec: 1.2
     kpi_patterns:
       pnl:
         - "(?i)pnl\\s*[=:]\\s*([+-]?\\d+(?:\\.\\d+)?)"
@@ -140,6 +142,27 @@ phase2:
     ollama_base_url: "http://127.0.0.1:11434"
     temperature: 0.1
     agent_max_iter: 1
+  targets:
+    trading:
+      mt5:
+        max_cycle_age_minutes: 180
+        min_active_strategies: 1
+        min_best_pf: 1.3
+        monitor_window_utc:
+          start_hour: 7
+          end_hour: 21
+          run_weekends: false
+      polymarket:
+        daily_loss_cap_usd: 60
+        max_warning_lines_24h: 2
+        max_open_positions: 12
+        max_trade_data_age_hours: 72
+        min_resolved_trades_24h: 1
+    websites:
+      snapshot_uptime_ratio_min: 1.0
+      max_latency_ms: 500
+      max_sitemap_age_days: 14
+      max_research_report_age_days: 8
   reports:
     markdown_latest: "reports/phase2_divisions_latest.md"
     json_latest: "reports/phase2_divisions_latest.json"
@@ -148,3 +171,18 @@ phase2:
       spec_file: "crews/trading_bots_division.yaml"
     websites:
       spec_file: "crews/websites_division.yaml"
+
+phase3:
+  enabled: true
+  soul_file: "SOUL.md"
+  targets_file: "config/targets.yaml"
+  baseline_state_file: "state/phase3_company_baseline.json"
+  reports:
+    markdown_latest: "reports/phase3_holding_latest.md"
+    json_latest: "reports/phase3_holding_latest.json"
+  ceo:
+    spec_file: "crews/holding_ceo.yaml"
+    agent_max_iter: 1
+    ollama_model: "ollama/llama3.2:latest"
+    ollama_base_url: "http://127.0.0.1:11434"
+    temperature: 0.1

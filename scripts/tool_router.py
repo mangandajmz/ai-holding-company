@@ -23,7 +23,7 @@ def _load(config_path: str | None) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="AI Holding Company tool router (Phase 1 + Phase 2).")
+    parser = argparse.ArgumentParser(description="AI Holding Company tool router (Phase 1 + Phase 2 + Phase 3).")
     parser.add_argument(
         "--config",
         default=None,
@@ -55,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Division scope: all, trading, or websites.",
     )
     divisions.add_argument("--force", action="store_true", help="Force a fresh base brief before running divisions.")
+
+    holding = sub.add_parser("run_holding", help="Run Phase 3 holding-company CEO orchestration.")
+    holding.add_argument(
+        "--mode",
+        default="heartbeat",
+        choices=["heartbeat", "board_review"],
+        help="Holding mode: heartbeat (daily) or board_review (deeper review).",
+    )
+    holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
 
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
@@ -128,6 +137,12 @@ def main() -> None:
         from phase2_crews import run_phase2_divisions  # pylint: disable=import-outside-toplevel
 
         _emit(run_phase2_divisions(config=config, division=args.division, force=args.force))
+        return
+
+    if args.command == "run_holding":
+        from phase3_holding import run_phase3_holding  # pylint: disable=import-outside-toplevel
+
+        _emit(run_phase3_holding(config=config, mode=args.mode, force=args.force))
         return
 
     if args.command == "log_direction":

@@ -68,7 +68,8 @@ python scripts/telegram_bridge.py --send-morning-brief
 ## 7) Allowed commands in chat
 
 - `/status`
-- `/brief` (runs both divisions and returns Trading + Websites sections)
+- `/brief` (Phase 3: runs CEO heartbeat; fallback Phase 2: division brief)
+- `/board review` (Phase 3 board review pack with approval items)
 - `/site <website_id>`
 - `/bot <bot_id> health`
 - `/bot <bot_id> report`
