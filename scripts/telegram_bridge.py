@@ -325,7 +325,7 @@ class TelegramBridge:
         if "board review" in lowered:
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
-        return {"type": "error", "message": "Unknown command. Use /help."}
+        return {"type": "freetext", "text": raw}
 
     def _format_help(self) -> str:
         return (
@@ -626,12 +626,73 @@ class TelegramBridge:
         lines.append("Owner reminder: /brief | /board review | /divisions all | /status")
         return "\n".join(lines).strip()
 
+    def _search_memory(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
+        """Search vector memory for query. Returns [] on any failure."""
+        try:
+            memory_cfg = self.config.get("memory", {})
+            if not isinstance(memory_cfg, dict) or not memory_cfg.get("enabled", True):
+                return []
+            memory_dir = ROOT / self.config.get("paths", {}).get("memory_dir", "memory")
+            store_path = memory_dir / "vector_store.jsonl"
+            if not store_path.exists():
+                return []
+            from local_vector_memory import LocalVectorMemory  # pylint: disable=import-outside-toplevel
+
+            store = LocalVectorMemory(
+                data_path=store_path,
+                ollama_base_url=str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")),
+                embedding_model=str(memory_cfg.get("embedding_model", "nomic-embed-text")),
+            )
+            return [r for r in store.search(query=query, top_k=top_k) if r.get("score", 0) > 0.4]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _answer_freetext(self, text: str) -> str:
+        """Answer a natural language question using memory search + live health if a bot is named."""
+        lowered = text.lower()
+
+        mentioned_bot = next((bid for bid in self.bot_ids if bid.lower() in lowered), None)
+        mentioned_site = next((sid for sid in self.website_ids if sid.lower() in lowered), None)
+
+        facts = self._search_memory(text, top_k=3)
+
+        lines: list[str] = []
+        if facts:
+            lines.append("[context]")
+            for f in facts:
+                lines.append(f"- {f['text']}")
+
+        if mentioned_bot:
+            result = self._run_tool_router(
+                ["run_trading_script", "--bot", mentioned_bot, "--command-key", "health"],
+                timeout_sec=60,
+            )
+            summary = self._summarize_tool_result("run_trading_script", result)
+            lines.append(f"\n[live: {mentioned_bot}]\n{summary}")
+        elif mentioned_site:
+            result = self._run_tool_router(
+                ["check_website", "--website", mentioned_site],
+                timeout_sec=30,
+            )
+            summary = self._summarize_tool_result("check_website", result)
+            lines.append(f"\n[live: {mentioned_site}]\n{summary}")
+
+        if not lines:
+            return (
+                "I don't have enough context to answer that yet.\n"
+                "Try /brief for a full report, or /help for all commands."
+            )
+
+        return "\n".join(lines)
+
     def handle_text(self, text: str) -> str:
         action = self._parse_action(text)
         if action.get("type") == "help":
             return self._format_help()
         if action.get("type") == "error":
             return str(action.get("message"))
+        if action.get("type") == "freetext":
+            return self._answer_freetext(action["text"])
         tool_name = str(action.get("name"))
         args = action.get("args", [])
         result = self._run_tool_router(args)
