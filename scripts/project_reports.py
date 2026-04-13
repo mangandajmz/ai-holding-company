@@ -11,9 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from utils import now_utc_iso as _now_utc, parse_float as _parse_float, parse_iso_utc as _parse_iso_utc, parse_polymarket_ts as _parse_polymarket_ts
 
 
 def _tail_lines(path: Path, count: int = 120) -> list[str]:
@@ -32,42 +30,6 @@ def _load_latest_file(directory: Path, pattern: str) -> Path | None:
         return None
     matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return matches[0]
-
-
-def _parse_float(token: str | None) -> float | None:
-    if token is None:
-        return None
-    raw = token.strip().replace(",", "")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
-
-
-def _parse_iso_utc(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _parse_polymarket_ts(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S"):
-        try:
-            parsed = datetime.strptime(value, fmt)
-            return parsed.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
 
 
 def _load_env_file(path: Path) -> dict[str, str]:
@@ -376,6 +338,8 @@ def report_polymarket(repo: Path) -> dict[str, Any]:
         if "→ LOSS" in message or "-> LOSS" in message or "â†’ LOSS" in message:
             losses += 1
 
+    # STARTING_BANKROLL is read from the local .env when available (local runs only).
+    # On remote-sync paths, the .env is NOT synced; fall back to the default.
     env_values = _load_env_file(repo / ".env")
     starting_bankroll = _parse_float(env_values.get("STARTING_BANKROLL")) or 300.0
     csv_summary = _scan_polymarket_csv(csv_path, starting_bankroll=starting_bankroll)

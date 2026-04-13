@@ -80,9 +80,8 @@ trading_bots:
         - remote_path: "/home/ubuntu/polymarket-bot/bot_state.db"
           local_rel_path: "bot_state.db"
           required: false
-        - remote_path: "/home/ubuntu/polymarket-bot/.env"
-          local_rel_path: ".env"
-          required: false
+      # SECURITY: .env is NOT synced remotely; place STARTING_BANKROLL in this config instead.
+      starting_bankroll: 300.0
       service_check_cmd: "systemctl is-active polymarket-bot || true"
       service_check_retries: 3
       service_check_backoff_sec: 1.2

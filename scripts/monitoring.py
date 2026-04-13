@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import re
+import shlex
 import socket
 import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,23 +17,11 @@ from urllib import error, request
 from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
-import yaml
+from utils import fmt_money as _fmt_money, load_yaml as _load_yaml, now_utc_iso as _now_utc_iso, parse_float as _parse_float
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Config must be a mapping: {path}")
-    return data
 
 
 def load_config(config_path: str | Path = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -114,18 +103,6 @@ def _scan_text_log(path: Path, bot_cfg: dict[str, Any], lines: int = 250) -> dic
     }
 
 
-def _parse_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    token = str(value).strip().replace(",", "")
-    if not token:
-        return None
-    try:
-        return float(token)
-    except ValueError:
-        return None
-
-
 def _scan_csv_log(path: Path) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     try:
@@ -205,20 +182,45 @@ def _pick_latest_file(path: Path) -> Path | None:
     return candidates[0]
 
 
+_SAFE_SERVICE_CMD_RE = re.compile(r"^[a-zA-Z0-9 _./@|=-]+$")
+
+
 def _run_command(command: str, cwd: Path, timeout_sec: int = 120, extra_args: str = "") -> dict[str, Any]:
     started = time.perf_counter()
-    full_command = command.strip()
-    if extra_args.strip():
-        full_command = f"{full_command} {extra_args.strip()}"
     try:
-        proc = subprocess.run(
-            full_command,
+        cmd_parts = shlex.split(command.strip())
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "return_code": 1,
+            "elapsed_ms": 0,
+            "stdout": "",
+            "stderr": f"Command parse error: {exc}",
+            "command": command,
+            "cwd": str(cwd),
+        }
+    if extra_args.strip():
+        try:
+            cmd_parts.extend(shlex.split(extra_args.strip()))
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "return_code": 1,
+                "elapsed_ms": 0,
+                "stdout": "",
+                "stderr": f"Extra args parse error: {exc}",
+                "command": command,
+                "cwd": str(cwd),
+            }
+    try:
+        proc = subprocess.run(  # noqa: S603
+            cmd_parts,
             cwd=str(cwd),
             capture_output=True,
             text=True,
             timeout=timeout_sec,
             check=False,
-            shell=True,
+            shell=False,
             encoding="utf-8",
             errors="replace",
         )
@@ -229,7 +231,7 @@ def _run_command(command: str, cwd: Path, timeout_sec: int = 120, extra_args: st
             "elapsed_ms": elapsed_ms,
             "stdout": proc.stdout[-4000:],
             "stderr": proc.stderr[-4000:],
-            "command": full_command,
+            "command": " ".join(cmd_parts),
             "cwd": str(cwd),
         }
     except subprocess.TimeoutExpired as exc:
@@ -240,7 +242,7 @@ def _run_command(command: str, cwd: Path, timeout_sec: int = 120, extra_args: st
             "elapsed_ms": elapsed_ms,
             "stdout": (exc.stdout or "")[-2000:] if isinstance(exc.stdout, str) else "",
             "stderr": (exc.stderr or "")[-2000:] if isinstance(exc.stderr, str) else "",
-            "command": full_command,
+            "command": " ".join(cmd_parts),
             "cwd": str(cwd),
             "error": f"Command timed out after {timeout_sec} seconds.",
         }
@@ -327,6 +329,7 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             output["bots"].append(record)
             continue
 
+        known_hosts_file = str(ROOT / "state" / "remote_known_hosts")
         ssh_base = [
             "-i",
             ssh_key_path,
@@ -335,7 +338,9 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=accept-new",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            f"UserKnownHostsFile={known_hosts_file}",
             "-o",
             "ConnectTimeout=8",
         ]
@@ -347,7 +352,9 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             "-o",
             "BatchMode=yes",
             "-o",
-            "StrictHostKeyChecking=accept-new",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            f"UserKnownHostsFile={known_hosts_file}",
             "-o",
             "ConnectTimeout=8",
         ]
@@ -389,6 +396,12 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
                 required_failures += 1
 
         service_cmd = str(remote_cfg.get("service_check_cmd", "")).strip()
+        if service_cmd and not _SAFE_SERVICE_CMD_RE.match(service_cmd):
+            record["errors"].append(
+                f"service_check_cmd contains unsafe characters; skipped. "
+                f"Only alphanumeric, spaces, and _./@|=- are allowed."
+            )
+            service_cmd = ""
         if service_cmd:
             service_retries = int(remote_cfg.get("service_check_retries", 3))
             if service_retries < 1:
@@ -422,9 +435,10 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             if service_result is None:
                 service_result = attempts[-1] if attempts else {"ok": False, "return_code": 1, "stdout": "", "stderr": ""}
 
+            # Always detach from the attempts list before mutating to prevent circular reference.
+            service_result = dict(service_result)
             stdout_text = str(service_result.get("stdout", "")).strip().lower()
             if "active" not in stdout_text and previous_status.lower().startswith("active"):
-                service_result = dict(service_result)
                 service_result["ok"] = True
                 service_result["stdout"] = previous_status
                 service_result["note"] = "Using cached last-known active service state after live check failure."
@@ -735,7 +749,7 @@ def _brief_should_run(config: dict[str, Any], force: bool) -> tuple[bool, str]:
     state_dir = ROOT / config.get("paths", {}).get("state_dir", "state")
     state_dir.mkdir(parents=True, exist_ok=True)
     state_file = state_dir / "last_brief_date.txt"
-    today = datetime.now().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     if state_file.exists():
         last = state_file.read_text(encoding="utf-8", errors="ignore").strip()
         if last == today:
@@ -747,13 +761,13 @@ def _persist_brief_state(config: dict[str, Any]) -> None:
     state_dir = ROOT / config.get("paths", {}).get("state_dir", "state")
     state_dir.mkdir(parents=True, exist_ok=True)
     state_file = state_dir / "last_brief_date.txt"
-    state_file.write_text(datetime.now().date().isoformat(), encoding="utf-8")
+    state_file.write_text(datetime.now(timezone.utc).date().isoformat(), encoding="utf-8")
 
 
 def _persist_brief_reports(config: dict[str, Any], payload: dict[str, Any], markdown: str) -> dict[str, str]:
     reports_dir = ROOT / config.get("paths", {}).get("reports_dir", "reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     md_path = reports_dir / f"daily_brief_{stamp}.md"
     json_path = reports_dir / f"daily_brief_{stamp}.json"
     latest_md = reports_dir / "daily_brief_latest.md"
@@ -770,6 +784,39 @@ def _persist_brief_reports(config: dict[str, Any], payload: dict[str, Any], mark
     }
 
 
+def _extract_memory_facts(payload: dict[str, Any]) -> list[str]:
+    """Return 3-5 structured fact sentences from a monitoring payload.
+
+    Stores short, searchable strings rather than full markdown blobs so that
+    vector similarity search actually finds relevant context.
+    """
+    date = str(payload.get("generated_at_utc", ""))[:10]
+    summary = payload.get("summary", {})
+    facts: list[str] = []
+
+    facts.append(
+        f"Daily brief {date}: total PnL={_fmt_money(summary.get('pnl_total', 0))}, "
+        f"trades={summary.get('trades_total', 0)}, "
+        f"errors={summary.get('error_lines_total', 0)}, "
+        f"websites {summary.get('websites_up', 0)}/{summary.get('websites_total', 0)} up."
+    )
+
+    for bot in payload.get("bots", []):
+        facts.append(
+            f"Bot {bot.get('name', bot.get('id'))} ({bot.get('id')}) on {date}: "
+            f"status={bot.get('status', 'unknown')}, "
+            f"PnL={_fmt_money(bot.get('pnl_total', 0))}, "
+            f"trades={bot.get('trades_total', 0)}, "
+            f"errors={bot.get('error_lines_total', 0)}."
+        )
+
+    alerts = payload.get("alerts", [])
+    if alerts:
+        facts.append(f"Alerts on {date}: {'; '.join(str(a) for a in alerts[:5])}.")
+
+    return facts
+
+
 def _append_vector_memory(config: dict[str, Any], text: str, metadata: dict[str, Any]) -> None:
     memory_cfg = config.get("memory", {})
     if not isinstance(memory_cfg, dict):
@@ -778,7 +825,6 @@ def _append_vector_memory(config: dict[str, Any], text: str, metadata: dict[str,
         return
     memory_dir = ROOT / config.get("paths", {}).get("memory_dir", "memory")
     memory_dir.mkdir(parents=True, exist_ok=True)
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from local_vector_memory import LocalVectorMemory  # pylint: disable=import-outside-toplevel
 
     store = LocalVectorMemory(
@@ -786,13 +832,12 @@ def _append_vector_memory(config: dict[str, Any], text: str, metadata: dict[str,
         ollama_base_url=str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")),
         embedding_model=str(memory_cfg.get("embedding_model", "nomic-embed-text")),
     )
-    store.add(text=text, metadata=metadata)
-
-
-def _fmt_money(value: float | None) -> str:
-    if value is None:
-        return "n/a"
-    return f"${value:+,.2f}"
+    item = store.add(text=text, metadata=metadata)
+    if not item.embedding:
+        logging.warning(
+            "Vector memory: empty embedding for item %s — is Ollama running with nomic-embed-text?",
+            item.item_id,
+        )
 
 
 def _json_from_stdout(stdout: str) -> dict[str, Any] | None:
@@ -1112,12 +1157,13 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     files = _persist_brief_reports(config=config, payload=payload, markdown=markdown)
     _persist_brief_state(config=config)
     try:
-        _append_vector_memory(
-            config=config,
-            text=markdown,
-            metadata={"type": "daily_brief", "generated_at_utc": payload["generated_at_utc"]},
-        )
-    except Exception:  # noqa: BLE001
-        pass
+        for fact in _extract_memory_facts(payload):
+            _append_vector_memory(
+                config=config,
+                text=fact,
+                metadata={"type": "daily_brief_fact", "generated_at_utc": payload["generated_at_utc"]},
+            )
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Vector memory append failed: %s", exc, exc_info=True)
     payload["files"] = files
     return payload
