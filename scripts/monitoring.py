@@ -435,9 +435,10 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             if service_result is None:
                 service_result = attempts[-1] if attempts else {"ok": False, "return_code": 1, "stdout": "", "stderr": ""}
 
+            # Always detach from the attempts list before mutating to prevent circular reference.
+            service_result = dict(service_result)
             stdout_text = str(service_result.get("stdout", "")).strip().lower()
             if "active" not in stdout_text and previous_status.lower().startswith("active"):
-                service_result = dict(service_result)
                 service_result["ok"] = True
                 service_result["stdout"] = previous_status
                 service_result["note"] = "Using cached last-known active service state after live check failure."
