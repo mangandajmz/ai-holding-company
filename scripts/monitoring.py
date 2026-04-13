@@ -784,6 +784,39 @@ def _persist_brief_reports(config: dict[str, Any], payload: dict[str, Any], mark
     }
 
 
+def _extract_memory_facts(payload: dict[str, Any]) -> list[str]:
+    """Return 3-5 structured fact sentences from a monitoring payload.
+
+    Stores short, searchable strings rather than full markdown blobs so that
+    vector similarity search actually finds relevant context.
+    """
+    date = str(payload.get("generated_at_utc", ""))[:10]
+    summary = payload.get("summary", {})
+    facts: list[str] = []
+
+    facts.append(
+        f"Daily brief {date}: total PnL={_fmt_money(summary.get('pnl_total', 0))}, "
+        f"trades={summary.get('trades_total', 0)}, "
+        f"errors={summary.get('error_lines_total', 0)}, "
+        f"websites {summary.get('websites_up', 0)}/{summary.get('websites_total', 0)} up."
+    )
+
+    for bot in payload.get("bots", []):
+        facts.append(
+            f"Bot {bot.get('name', bot.get('id'))} ({bot.get('id')}) on {date}: "
+            f"status={bot.get('status', 'unknown')}, "
+            f"PnL={_fmt_money(bot.get('pnl_total', 0))}, "
+            f"trades={bot.get('trades_total', 0)}, "
+            f"errors={bot.get('error_lines_total', 0)}."
+        )
+
+    alerts = payload.get("alerts", [])
+    if alerts:
+        facts.append(f"Alerts on {date}: {'; '.join(str(a) for a in alerts[:5])}.")
+
+    return facts
+
+
 def _append_vector_memory(config: dict[str, Any], text: str, metadata: dict[str, Any]) -> None:
     memory_cfg = config.get("memory", {})
     if not isinstance(memory_cfg, dict):
@@ -799,7 +832,12 @@ def _append_vector_memory(config: dict[str, Any], text: str, metadata: dict[str,
         ollama_base_url=str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")),
         embedding_model=str(memory_cfg.get("embedding_model", "nomic-embed-text")),
     )
-    store.add(text=text, metadata=metadata)
+    item = store.add(text=text, metadata=metadata)
+    if not item.embedding:
+        logging.warning(
+            "Vector memory: empty embedding for item %s — is Ollama running with nomic-embed-text?",
+            item.item_id,
+        )
 
 
 def _json_from_stdout(stdout: str) -> dict[str, Any] | None:
@@ -1119,11 +1157,12 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     files = _persist_brief_reports(config=config, payload=payload, markdown=markdown)
     _persist_brief_state(config=config)
     try:
-        _append_vector_memory(
-            config=config,
-            text=markdown,
-            metadata={"type": "daily_brief", "generated_at_utc": payload["generated_at_utc"]},
-        )
+        for fact in _extract_memory_facts(payload):
+            _append_vector_memory(
+                config=config,
+                text=fact,
+                metadata={"type": "daily_brief_fact", "generated_at_utc": payload["generated_at_utc"]},
+            )
     except Exception as exc:  # noqa: BLE001
         logging.warning("Vector memory append failed: %s", exc, exc_info=True)
     payload["files"] = files
