@@ -7,14 +7,11 @@ import json
 import math
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error, request
 
-
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from utils import now_utc_iso as utc_now_iso
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -102,12 +99,12 @@ class LocalVectorMemory:
     def all_items(self) -> list[MemoryItem]:
         items: list[MemoryItem] = []
         with self.data_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
+            for raw_line in handle:
+                stripped = raw_line.strip()
+                if not stripped:
                     continue
                 try:
-                    items.append(MemoryItem.from_dict(json.loads(line)))
+                    items.append(MemoryItem.from_dict(json.loads(stripped)))
                 except (ValueError, json.JSONDecodeError, TypeError):
                     continue
         return items

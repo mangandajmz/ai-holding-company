@@ -3,28 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from monitoring import ROOT
 from phase2_crews import run_phase2_divisions
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"YAML mapping expected: {path}")
-    return loaded
+from utils import fmt_money as _fmt_money, load_yaml as _load_yaml, now_utc_iso as _now_utc_iso, parse_float as _to_float
 
 
 def _phase3_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -33,22 +21,8 @@ def _phase3_cfg(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reports_dir(config: dict[str, Any]) -> Path:
-    rel = str(config.get("paths", {}).get("reports_dir", "reports"))
-    path = ROOT / rel
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _to_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    token = str(value).strip().replace(",", "")
-    if not token:
-        return None
-    try:
-        return float(token)
-    except ValueError:
-        return None
+    from utils import reports_dir  # pylint: disable=import-outside-toplevel
+    return reports_dir(config)
 
 
 def _to_int(value: Any) -> int | None:
@@ -56,13 +30,6 @@ def _to_int(value: Any) -> int | None:
     if parsed is None:
         return None
     return int(parsed)
-
-
-def _fmt_money(value: Any) -> str:
-    parsed = _to_float(value)
-    if parsed is None:
-        return "n/a"
-    return f"${parsed:+,.2f}"
 
 
 def _fmt_pct(value: Any, digits: int = 2) -> str:
@@ -114,8 +81,8 @@ def _load_targets(config: dict[str, Any]) -> dict[str, Any]:
     if targets_path.exists():
         try:
             return _load_yaml(targets_path)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Failed to load targets file %s: %s", targets_path, exc, exc_info=True)
     fallback = config.get("phase2", {}).get("targets", {})
     return fallback if isinstance(fallback, dict) else {}
 
@@ -707,7 +674,7 @@ def _persist_phase3_reports(config: dict[str, Any], payload: dict[str, Any], mar
     phase3 = _phase3_cfg(config)
     reports_cfg = phase3.get("reports", {})
     reports_cfg = reports_cfg if isinstance(reports_cfg, dict) else {}
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     md_path = reports_dir / f"phase3_holding_{stamp}.md"
     json_path = reports_dir / f"phase3_holding_{stamp}.json"
 

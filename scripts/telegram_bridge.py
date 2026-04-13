@@ -16,23 +16,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import yaml
-
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError("Config root must be a mapping.")
-    return data
+from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
 
 
 def _state_read(path: Path) -> dict[str, Any]:
@@ -125,9 +113,9 @@ class TelegramBridge:
             raise RuntimeError("TELEGRAM_BOT_TOKEN format is invalid (expected '<digits>:<secret>').")
         url = f"https://api.telegram.org/bot{self.bot_token}/{method}"
         body = urlencode(payload).encode("utf-8")
-        request = Request(url, data=body, method="POST")
+        req = Request(url, data=body, method="POST")
         try:
-            with urlopen(request, timeout=30) as response:  # noqa: S310
+            with urlopen(req, timeout=30) as response:  # noqa: S310
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             if exc.code in {401, 404}:
@@ -184,6 +172,11 @@ class TelegramBridge:
         return found
 
     def _authorized(self, chat_id: int, user_id: int | None) -> bool:
+        if not self.allowed_chat_ids and not self.allowed_user_ids:
+            raise RuntimeError(
+                "_authorized called with empty allowlists; configure TELEGRAM_OWNER_CHAT_ID "
+                "or bridge.telegram.allowed_chat_ids before accepting messages."
+            )
         if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
             return False
         if self.allowed_user_ids and user_id is not None and user_id not in self.allowed_user_ids:
@@ -542,8 +535,8 @@ class TelegramBridge:
             else:
                 top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
                 if top_lines:
-                    for item in top_lines:
-                        normalized = item.strip()
+                    for line_text in top_lines:
+                        normalized = line_text.strip()
                         if normalized.startswith("- ") or normalized.startswith("* "):
                             normalized = normalized[2:].strip()
                         lines.append(f"- {normalized}")
@@ -760,6 +753,12 @@ def main() -> None:
     args = build_parser().parse_args()
     bridge = TelegramBridge(config_path=Path(args.config))
 
+    if not bridge.security_ready:
+        raise RuntimeError(
+            "Bridge startup blocked: configure TELEGRAM_OWNER_CHAT_ID and/or TELEGRAM_OWNER_USER_ID "
+            "or set bridge.telegram.allowed_chat_ids/allowed_user_ids in config."
+        )
+
     if args.simulate_text:
         print(bridge.handle_text(args.simulate_text))
         return
@@ -768,12 +767,6 @@ def main() -> None:
         ids = bridge.discover_ids()
         print(json.dumps({"ok": True, "count": len(ids), "ids": ids}, indent=2))
         return
-
-    if not bridge.security_ready:
-        raise RuntimeError(
-            "Bridge startup blocked: configure TELEGRAM_OWNER_CHAT_ID and/or TELEGRAM_OWNER_USER_ID "
-            "or set bridge.telegram.allowed_chat_ids/allowed_user_ids in config."
-        )
 
     if args.send_morning_brief:
         bridge.send_morning_brief()
