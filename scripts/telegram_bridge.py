@@ -223,7 +223,7 @@ class TelegramBridge:
             return {"type": "help"}
         if lowered in {"/status", "status"}:
             return {"type": "tool", "name": "daily_brief", "args": ["daily_brief"]}
-        if lowered in {"/brief", "brief"} or "generate fresh brief" in lowered:
+        if lowered in {"/brief", "brief"} or any(p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")):
             if self.phase3_enabled:
                 return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
             return {"type": "tool", "name": "run_divisions", "args": ["run_divisions", "--division", "all", "--force"]}
@@ -496,42 +496,44 @@ class TelegramBridge:
         files = files if isinstance(files, dict) else {}
 
         lines = [
-            f"{payload.get('company_name', 'AI Holding Company')} - Daily Heartbeat",
+            f"{payload.get('company_name', 'AI Holding Company')} - Division Heartbeat",
             f"Generated (UTC): {payload.get('generated_at_utc')}",
             f"PnL={base.get('pnl_total')} | Trades={base.get('trades_total')} | Errors={base.get('error_lines_total')}",
-            f"Websites up={base.get('websites_up')}/{base.get('websites_total')} | Base alerts={len(alerts)}",
+            f"Websites up={base.get('websites_up')}/{base.get('websites_total')} | Alerts={len(alerts)}",
             "",
+            "Division Priorities",
         ]
+        owner_actions: list[str] = []
+        priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
 
         for div in divisions:
             if not isinstance(div, dict):
                 continue
             name = str(div.get("division", "division")).title()
-            lines.append(f"{name} Division Report")
-            lines.append(f"- status={div.get('status')} engine={div.get('engine')} ok={div.get('ok')}")
             scorecard = div.get("scorecard", {})
             scorecard = scorecard if isinstance(scorecard, dict) else {}
+            status = str(scorecard.get("status", div.get("status", "unknown"))).upper()
+            lines.append(f"- {name}: status={status}")
             if scorecard:
-                lines.append(f"- goal: {scorecard.get('goal')}")
-                lines.append(f"- desired: {scorecard.get('desired_outcome')}")
                 items = scorecard.get("items", [])
                 items = items if isinstance(items, list) else []
-                priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
                 ranked_items = sorted(
                     [item for item in items if isinstance(item, dict)],
                     key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
                 )
-                for item in ranked_items[:4]:
-                    if not isinstance(item, dict):
-                        continue
+                if ranked_items:
+                    item = ranked_items[0]
                     lines.append(
-                        f"- [{item.get('status')}] {item.get('metric')}: "
-                        f"actual={item.get('actual')} target={item.get('target')} variance={item.get('variance')}"
+                        f"  [{item.get('status')}] {item.get('metric')} -> "
+                        f"actual={item.get('actual')} target={item.get('target')}"
                     )
                 actions = scorecard.get("actions", [])
                 actions = actions if isinstance(actions, list) else []
-                for action in actions[:2]:
-                    lines.append(f"- action: {action}")
+                if status in {"RED", "AMBER"}:
+                    for action in actions[:2]:
+                        action_text = str(action).strip()
+                        if action_text:
+                            owner_actions.append(f"{name}: {action_text}")
             else:
                 top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
                 if top_lines:
@@ -539,15 +541,21 @@ class TelegramBridge:
                         normalized = line_text.strip()
                         if normalized.startswith("- ") or normalized.startswith("* "):
                             normalized = normalized[2:].strip()
-                        lines.append(f"- {normalized}")
+                        lines.append(f"  - {normalized}")
             warnings = div.get("warnings", [])
             warnings = warnings if isinstance(warnings, list) else []
             for warning in warnings[:1]:
-                lines.append(f"- warning: {warning}")
+                lines.append(f"  - warning: {warning}")
+
+        if owner_actions:
             lines.append("")
+            lines.append("Owner Decisions")
+            for action in owner_actions[:5]:
+                lines.append(f"- {action}")
 
         report_path = files.get("latest_markdown")
         if report_path:
+            lines.append("")
             lines.append(f"Division report file: {report_path}")
         if alerts:
             lines.append(f"Top alert: {alerts[0]}")

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -368,38 +369,153 @@ def _fallback_ceo_brief(
     company_scorecard: dict[str, Any],
     divisions: list[dict[str, Any]],
 ) -> str:
-    lines = ["## CEO Summary"]
+    lines = ["### CEO Summary"]
     lines.append(f"- Company status: {company_scorecard.get('status')}")
     lines.append(f"- Mode: {mode}")
     lines.append("")
-    lines.append("## Priority Risks")
+    lines.append("### Priority Risks")
     risks = company_scorecard.get("risks", [])
     risks = risks if isinstance(risks, list) else []
     if not risks:
-        lines.append("- None")
+        company_items = company_scorecard.get("items", [])
+        company_items = company_items if isinstance(company_items, list) else []
+        for item in company_items:
+            if not isinstance(item, dict):
+                continue
+            item_status = str(item.get("status", "")).upper()
+            if item_status == "GREEN":
+                continue
+            risks.append(f"{item.get('metric')} is {item_status} ({item.get('actual')} vs target {item.get('target')}).")
+            if len(risks) >= 5:
+                break
+    if not risks:
+        lines.append("- No material risks currently flagged.")
     else:
         for risk in risks[:5]:
             lines.append(f"- {risk}")
     lines.append("")
-    lines.append("## Required Owner Approvals")
+    lines.append("### Required Owner Approvals")
     approvals: list[str] = []
+    company_items = company_scorecard.get("items", [])
+    company_items = company_items if isinstance(company_items, list) else []
+    for item in company_items:
+        if not isinstance(item, dict):
+            continue
+        item_status = str(item.get("status", "")).upper()
+        if item_status == "GREEN":
+            continue
+        action = str(item.get("action", "")).strip()
+        if action and action not in approvals:
+            approvals.append(action)
     for division in divisions:
         if not isinstance(division, dict):
             continue
         scorecard = division.get("scorecard", {})
         scorecard = scorecard if isinstance(scorecard, dict) else {}
-        for action in (scorecard.get("actions", []) if isinstance(scorecard.get("actions"), list) else []):
-            approvals.append(str(action))
+        score_items = scorecard.get("items", [])
+        score_items = score_items if isinstance(score_items, list) else []
+        for item in score_items:
+            if not isinstance(item, dict):
+                continue
+            item_status = str(item.get("status", "")).upper()
+            if item_status == "GREEN":
+                continue
+            action = str(item.get("action", "")).strip()
+            if action and action not in approvals:
+                approvals.append(action)
     if not approvals:
-        lines.append("- None")
+        lines.append("- No explicit approvals pending; continue monitoring cadence.")
     else:
         for action in approvals[:5]:
             lines.append(f"- {action}")
     lines.append("")
-    lines.append("## Corrective Plays")
+    lines.append("### Corrective Plays")
     lines.append("- 48h: Execute highest-priority AMBER/RED action items and re-run holding heartbeat.")
     lines.append("- 7d: Validate trend improvement and retune targets if needed.")
     return "\n".join(lines)
+
+
+_ALLOWED_PHASE3_SUBCOMMANDS: dict[str, dict[str, Any]] = {
+    "daily_brief": {"required": set(), "allowed_flags": {"--force", "--config"}},
+    "run_divisions": {"required": set(), "allowed_flags": {"--division", "--force", "--config"}},
+    "run_holding": {"required": {"--mode"}, "allowed_flags": {"--mode", "--force", "--config"}},
+    "read_bot_logs": {"required": {"--bot"}, "allowed_flags": {"--bot", "--lines", "--config"}},
+    "check_website": {"required": {"--website"}, "allowed_flags": {"--website", "--config"}},
+    "run_trading_script": {
+        "required": {"--bot", "--command-key"},
+        "allowed_flags": {"--bot", "--command-key", "--extra-args", "--timeout-sec", "--config"},
+    },
+}
+
+
+def _is_allowlisted_tool_router_command(command: str) -> bool:
+    raw = command.strip().strip("`")
+    try:
+        tokens = shlex.split(raw, posix=False)
+    except ValueError:
+        tokens = raw.split()
+    if len(tokens) < 3:
+        return False
+    if tokens[0].lower() not in {"python", "python3", "py"}:
+        return False
+
+    router_token = tokens[1].strip("\"'").replace("\\", "/").lower()
+    while router_token.startswith("./"):
+        router_token = router_token[2:]
+    if not (router_token == "scripts/tool_router.py" or router_token.endswith("/scripts/tool_router.py")):
+        return False
+
+    subcommand = tokens[2].strip("\"'")
+    spec = _ALLOWED_PHASE3_SUBCOMMANDS.get(subcommand)
+    if spec is None:
+        return False
+
+    required = set(spec.get("required", set()))
+    allowed_flags = set(spec.get("allowed_flags", set()))
+    seen_flags: set[str] = set()
+    for token in tokens[3:]:
+        if not token.startswith("--"):
+            continue
+        flag = token.split("=", 1)[0]
+        if flag not in allowed_flags:
+            return False
+        seen_flags.add(flag)
+    return required.issubset(seen_flags)
+
+
+def _sanitize_ceo_output(text: str) -> tuple[str, bool]:
+    cleaned = text.strip()
+    blocked = False
+
+    def _replace_inline_command(match: re.Match[str]) -> str:
+        nonlocal blocked
+        candidate = match.group(1).strip()
+        if candidate.lower().startswith(("python ", "python3 ", "py ")):
+            if _is_allowlisted_tool_router_command(candidate):
+                return f"`{candidate}`"
+            blocked = True
+            return "`[blocked command removed]`"
+        return match.group(0)
+
+    cleaned = re.sub(r"`([^`\n]+)`", _replace_inline_command, cleaned)
+    safe_lines: list[str] = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        candidate = stripped
+        if candidate.startswith("- "):
+            candidate = candidate[2:].strip()
+        if candidate.startswith("* "):
+            candidate = candidate[2:].strip()
+        if candidate.lower().startswith(("python ", "python3 ", "py ")):
+            if _is_allowlisted_tool_router_command(candidate):
+                safe_lines.append(line)
+            else:
+                blocked = True
+            continue
+        safe_lines.append(line)
+
+    return "\n".join(safe_lines).strip(), blocked
 
 
 def _run_ceo_brief(
@@ -445,18 +561,6 @@ def _run_ceo_brief(
             "brief_markdown": _fallback_ceo_brief(mode=mode, company_scorecard=company_scorecard, divisions=divisions),
             "warning": f"CrewAI runtime unavailable ({exc}); using fallback.",
         }
-
-    def _output_safe(text: str) -> bool:
-        lowered = text.lower()
-        if "polymath" in lowered:
-            return False
-        if re.search(r"/[a-zA-Z][a-zA-Z0-9_-]*", text):
-            return False
-        for line in text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("python ") and "python scripts/tool_router.py " not in stripped:
-                return False
-        return True
 
     agents_map: dict[str, Agent] = {}
     for raw_agent in spec.get("agents", []):
@@ -535,18 +639,26 @@ def _run_ceo_brief(
             "brief_markdown": _fallback_ceo_brief(mode=mode, company_scorecard=company_scorecard, divisions=divisions),
             "warning": "CEO output was tool scaffolding; replaced with fallback.",
         }
-    if not _output_safe(kickoff):
+    cleaned_output, blocked = _sanitize_ceo_output(kickoff)
+    if "polymath" in cleaned_output.lower():
         return {
             "ok": True,
             "engine": "fallback_local_rules",
             "brief_markdown": _fallback_ceo_brief(mode=mode, company_scorecard=company_scorecard, divisions=divisions),
             "warning": "CEO output failed safety validation; replaced with deterministic fallback.",
         }
+    if not cleaned_output.strip():
+        return {
+            "ok": True,
+            "engine": "fallback_local_rules",
+            "brief_markdown": _fallback_ceo_brief(mode=mode, company_scorecard=company_scorecard, divisions=divisions),
+            "warning": "CEO output became empty after command sanitization; replaced with deterministic fallback.",
+        }
     return {
         "ok": True,
         "engine": "crewai_ceo",
-        "brief_markdown": kickoff,
-        "warning": None,
+        "brief_markdown": cleaned_output,
+        "warning": "CEO output contained non-allowlisted commands; blocked command lines were removed." if blocked else None,
     }
 
 
@@ -642,7 +754,13 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
 
     lines.append("")
     lines.append("## CEO Office Brief")
-    lines.append(str(payload.get("ceo_brief_markdown", "")).strip())
+    lines.append(
+        _fallback_ceo_brief(
+            mode=str(payload.get("mode", "heartbeat")),
+            company_scorecard=company,
+            divisions=payload.get("divisions", []) if isinstance(payload.get("divisions"), list) else [],
+        ).strip()
+    )
 
     if payload.get("mode") == "board_review":
         board = payload.get("board_review", {})

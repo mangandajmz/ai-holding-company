@@ -36,11 +36,17 @@ tasks:
       Division alerts:
       {alerts_json}
 
+      Output requirements:
+      - Use evidence directly from the JSON (numbers + bot IDs), not generic advice.
+      - No introductions/disclaimers.
+      - Max 220 words.
+      - No tool-call syntax.
+
       Return compact markdown with sections:
       1) Bot Health Matrix
       2) Reliability Risks
       3) Immediate Monitoring Actions
-      Do not output function-call JSON or tool-call syntax.
+      In "Bot Health Matrix", include one bullet per bot with: status, pnl_total, trades_total, error_lines_total, report_age_hours.
     expected_output: |
       Markdown report with explicit bot-by-bot status, failure signals, and monitoring actions.
 
@@ -60,11 +66,17 @@ tasks:
       - Variance between historical totals and recent 24h signals
       - Whether metrics suggest stale, delayed, or healthy data
 
+      Output requirements:
+      - Use concrete metrics from JSON and the monitor task.
+      - For each risk claim, cite at least one metric/value.
+      - Max 220 words.
+      - No tool-call syntax.
+
       Return compact markdown with:
       1) Performance Findings
       2) Risk Interpretation
       3) Owner Decision Options
-      Do not output function-call JSON or tool-call syntax.
+      In "Owner Decision Options", provide 2-4 choices with expected impact.
     expected_output: |
       Markdown analysis with concrete findings and suggested owner-level decisions.
 
@@ -80,17 +92,18 @@ tasks:
       - No autonomous risk parameter changes
       - No unattended strategy launch
       - Keep recommendations copy-paste ready
+      - Keep to 2-5 commands max
       - Only propose commands available in this stack:
         `python scripts/tool_router.py read_bot_logs ...`
         `python scripts/tool_router.py run_trading_script ...`
         `python scripts/tool_router.py run_divisions ...`
         `python scripts/tool_router.py daily_brief --force`
       - Do not propose SQL queries or undefined scripts.
+      - No tool-call syntax.
 
       Return markdown with:
       1) Proposed Commands
       2) Expected Outcomes
       3) Rollback/Validation Checks
-      Do not output function-call JSON or tool-call syntax.
     expected_output: |
       Markdown runbook of owner-approvable commands and verification steps.

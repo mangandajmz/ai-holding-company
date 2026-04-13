@@ -31,11 +31,17 @@ tasks:
       Division alerts:
       {alerts_json}
 
+      Output requirements:
+      - Use concrete values from JSON (site id, status_code, latency_ms, dns_ok, tcp_443_ok).
+      - Do not write generic reliability boilerplate.
+      - Max 220 words.
+      - No tool-call syntax.
+
       Return markdown with:
       1) Site Status Matrix
       2) Active Incidents
       3) Immediate Remediation Checks
-      Do not output function-call JSON or tool-call syntax.
+      In "Site Status Matrix", include one bullet per site.
     expected_output: |
       Markdown ops report with site-by-site status and immediate checks.
 
@@ -49,10 +55,16 @@ tasks:
       Websites snapshot JSON:
       {websites_json}
 
+      Output requirements:
+      - Ground each finding in specific metrics and named sites.
+      - Avoid generic statements such as "difficult to pinpoint root cause."
+      - Max 220 words.
+      - No tool-call syntax.
+
       Return markdown with:
       1) Reliability Findings
       2) Probable Root Causes
       3) Preventive Actions and Monitoring Improvements
-      Do not output function-call JSON or tool-call syntax.
+      Include 2-4 owner-approvable next steps with validation checks.
     expected_output: |
       Markdown reliability analysis with practical prevention steps.

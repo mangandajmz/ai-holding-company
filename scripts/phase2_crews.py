@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,17 +146,23 @@ _ALLOWED_TOOL_ROUTER_SUBCOMMANDS: dict[str, dict[str, Any]] = {
 
 
 def _is_allowlisted_tool_router_command(command: str) -> bool:
-    tokens = command.strip().split()
+    raw = command.strip().strip("`")
+    try:
+        tokens = shlex.split(raw, posix=False)
+    except ValueError:
+        tokens = raw.split()
     if len(tokens) < 3:
         return False
-    if tokens[0].lower() != "python":
+    if tokens[0].lower() not in {"python", "python3", "py"}:
         return False
 
-    router_token = tokens[1].replace("\\", "/").lower()
+    router_token = tokens[1].strip("\"'").replace("\\", "/").lower()
+    while router_token.startswith("./"):
+        router_token = router_token[2:]
     if not (router_token == "scripts/tool_router.py" or router_token.endswith("/scripts/tool_router.py")):
         return False
 
-    subcommand = tokens[2]
+    subcommand = tokens[2].strip("\"'")
     spec = _ALLOWED_TOOL_ROUTER_SUBCOMMANDS.get(subcommand)
     if spec is None:
         return False
@@ -166,9 +173,10 @@ def _is_allowlisted_tool_router_command(command: str) -> bool:
     for token in tokens[3:]:
         if not token.startswith("--"):
             continue
-        if token not in allowed_flags:
+        flag = token.split("=", 1)[0]
+        if flag not in allowed_flags:
             return False
-        seen_flags.add(token)
+        seen_flags.add(flag)
     return required.issubset(seen_flags)
 
 
@@ -497,6 +505,9 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
             action="If stale, verify remote sync and confirm resolution loop is recording settlements.",
         )
     )
+    if age_status != "GREEN":
+        risks.append("Polymarket resolved-trade recency signal is stale or missing.")
+        actions.append("Verify polymarket remote sync and confirm settlement timestamps are being written.")
 
     resolved_24h = _to_int(poly_report.get("recent_resolved_count_24h"))
     if resolved_24h is None:
@@ -518,11 +529,35 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
             action="If persistently low, review market-selection filters and watchlist coverage.",
         )
     )
+    if resolved_status != "GREEN":
+        risks.append("Polymarket resolved-trade throughput is below expected daily cadence.")
+        actions.append("Review market-selection filters and signal cadence to restore resolved-trade flow.")
 
     statuses = [item["status"] for item in items]
     summary_status = _status_worst(statuses)
+    if not risks and summary_status != "GREEN":
+        for item in items:
+            item_status = str(item.get("status", "")).upper()
+            if item_status == "GREEN":
+                continue
+            risks.append(f"{item.get('metric')} is {item_status} ({item.get('actual')} vs target {item.get('target')}).")
+            if len(risks) >= 5:
+                break
     if not actions:
-        actions.append("No urgent corrective actions required; keep monitoring cadence.")
+        if summary_status == "GREEN":
+            actions.append("No urgent corrective actions required; keep monitoring cadence.")
+        else:
+            for item in items:
+                item_status = str(item.get("status", "")).upper()
+                if item_status == "GREEN":
+                    continue
+                action_text = str(item.get("action", "")).strip()
+                if action_text and action_text not in actions:
+                    actions.append(action_text)
+                if len(actions) >= 5:
+                    break
+            if not actions:
+                actions.append("Review AMBER/RED KPIs and execute mitigations before next heartbeat.")
     return {
         "goal": "Run conservative, safety-first trading operations with validated strategy execution and enforced risk caps.",
         "desired_outcome": (
@@ -713,8 +748,29 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
 
     statuses = [item["status"] for item in items]
     summary_status = _status_worst(statuses)
+    if not risks and summary_status != "GREEN":
+        for item in items:
+            item_status = str(item.get("status", "")).upper()
+            if item_status == "GREEN":
+                continue
+            risks.append(f"{item.get('metric')} is {item_status} ({item.get('actual')} vs target {item.get('target')}).")
+            if len(risks) >= 5:
+                break
     if not actions:
-        actions.append("No urgent website corrective actions required; maintain daily heartbeat checks.")
+        if summary_status == "GREEN":
+            actions.append("No urgent website corrective actions required; maintain daily heartbeat checks.")
+        else:
+            for item in items:
+                item_status = str(item.get("status", "")).upper()
+                if item_status == "GREEN":
+                    continue
+                action_text = str(item.get("action", "")).strip()
+                if action_text and action_text not in actions:
+                    actions.append(action_text)
+                if len(actions) >= 5:
+                    break
+            if not actions:
+                actions.append("Review AMBER/RED website KPIs and execute mitigations before next heartbeat.")
     return {
         "goal": "Keep managed web properties reachable, fast, and operationally fresh for growth workflows.",
         "desired_outcome": (
@@ -841,30 +897,99 @@ def _build_llm(config: dict[str, Any]) -> tuple[Any | None, str | None]:
         return None, f"CrewAI LLM init failed: {exc}"
 
 
-def _fallback_division_report(division: str, brief_payload: dict[str, Any]) -> str:
+def _fallback_division_report(
+    division: str,
+    brief_payload: dict[str, Any],
+    scorecard: dict[str, Any] | None = None,
+) -> str:
+    scorecard = scorecard if isinstance(scorecard, dict) else {}
+    status = str(scorecard.get("status", "AMBER")).upper()
+    items = scorecard.get("items", [])
+    items = [item for item in items if isinstance(item, dict)]
+    ranked_items = sorted(items, key=lambda item: {"RED": 0, "AMBER": 1, "GREEN": 2}.get(str(item.get("status", "")).upper(), 3))
+    risks = scorecard.get("risks", [])
+    risks = [str(item) for item in risks if str(item).strip()]
+    actions = scorecard.get("actions", [])
+    actions = [str(item) for item in actions if str(item).strip()]
+
+    lines = [
+        "#### Division Manager Summary",
+        f"- Division: {division.title()}",
+        f"- Status: {status}",
+        "",
+        "#### Top KPI Evidence",
+    ]
+    if not ranked_items:
+        lines.append("- No KPI scorecard items available.")
+    else:
+        for item in ranked_items[:4]:
+            lines.append(
+                f"- [{item.get('status')}] {item.get('metric')}: "
+                f"actual={item.get('actual')} | target={item.get('target')} | variance={item.get('variance')}"
+            )
+
+    lines.append("")
+    lines.append("#### Key Risks")
+    if not risks:
+        if status == "GREEN":
+            lines.append("- No critical risks currently flagged by scorecard checks.")
+        else:
+            non_green_items = [item for item in ranked_items if str(item.get("status", "")).upper() != "GREEN"]
+            if not non_green_items:
+                lines.append("- Review non-green signals and telemetry drift before next cycle.")
+            else:
+                for item in non_green_items[:3]:
+                    item_status = str(item.get("status", "")).upper()
+                    lines.append(
+                        f"- {item.get('metric')} is {item_status} "
+                        f"(actual={item.get('actual')} vs target={item.get('target')})."
+                    )
+    else:
+        for risk in risks[:4]:
+            lines.append(f"- {risk}")
+
+    lines.append("")
+    lines.append("#### Required Owner Approvals")
+    if not actions:
+        if status == "GREEN":
+            lines.append("- No immediate approvals required; continue monitoring cadence.")
+        else:
+            non_green_items = [item for item in ranked_items if str(item.get("status", "")).upper() != "GREEN"]
+            if not non_green_items:
+                lines.append("- Review scorecard non-green signals and approve mitigations.")
+            else:
+                for item in non_green_items[:3]:
+                    action = str(item.get("action", "")).strip()
+                    if action:
+                        lines.append(f"- {action}")
+    else:
+        for action in actions[:4]:
+            lines.append(f"- {action}")
+
+    lines.append("")
     if division == "trading":
         bots = _compact_trading_bots(brief_payload)
-        lines = ["Division Status: AMBER"]
-        lines.append("Top Items:")
-        for bot in bots:
-            lines.append(
-                f"- {bot.get('id')}: status={bot.get('status')} pnl_total={bot.get('pnl_total')} "
-                f"trades={bot.get('trades_total')} errors={bot.get('error_lines_total')}"
-            )
-        lines.append("Owner Approvals Needed:")
-        lines.append("- Confirm whether to tune Polymarket risk and data-window logic from 24h to rolling session metrics.")
-        return "\n".join(lines)
+        lines.append("#### Bot Snapshot")
+        if not bots:
+            lines.append("- No bot telemetry available.")
+        else:
+            for bot in bots[:4]:
+                lines.append(
+                    f"- {bot.get('id')}: status={bot.get('status')} | pnl_total={bot.get('pnl_total')} | "
+                    f"trades={bot.get('trades_total')} | errors={bot.get('error_lines_total')}"
+                )
+    else:
+        sites = _compact_websites(brief_payload)
+        lines.append("#### Website Snapshot")
+        if not sites:
+            lines.append("- No website telemetry available.")
+        else:
+            for site in sites[:4]:
+                lines.append(
+                    f"- {site.get('id')}: ok={site.get('ok')} | status={site.get('status_code')} | "
+                    f"latency_ms={site.get('latency_ms')} | probe={site.get('probe_mode')}"
+                )
 
-    sites = _compact_websites(brief_payload)
-    lines = ["Division Status: GREEN"]
-    lines.append("Top Items:")
-    for site in sites:
-        lines.append(
-            f"- {site.get('id')}: ok={site.get('ok')} status={site.get('status_code')} "
-            f"latency_ms={site.get('latency_ms')} probe={site.get('probe_mode')}"
-        )
-    lines.append("Owner Approvals Needed:")
-    lines.append("- Approve website latency threshold changes only if business SLA changes.")
     return "\n".join(lines)
 
 
@@ -887,7 +1012,7 @@ def _run_division_crew(
     spec_path = ROOT / spec_file
 
     if llm is None:
-        fallback = _fallback_division_report(division=division, brief_payload=brief_payload)
+        fallback = _fallback_division_report(division=division, brief_payload=brief_payload, scorecard=scorecard)
         return {
             "division": division,
             "ok": True,
@@ -994,13 +1119,18 @@ def _run_division_crew(
     ]
     fallback_warning = None
     if any(marker in joined_outputs for marker in tool_call_markers):
-        final_output = _fallback_division_report(division=division, brief_payload=brief_payload)
+        final_output = _fallback_division_report(division=division, brief_payload=brief_payload, scorecard=scorecard)
         task_outputs = []
         fallback_warning = "CrewAI output was tool-call scaffolding; replaced with local manager summary."
     elif blocked_command_detected:
-        final_output = _fallback_division_report(division=division, brief_payload=brief_payload)
-        task_outputs = []
-        fallback_warning = "CrewAI output contained non-allowlisted command suggestions; replaced with local manager summary."
+        fallback_warning = "CrewAI output included non-allowlisted command suggestions; blocked command lines were removed."
+        if not final_output.strip():
+            final_output = _fallback_division_report(division=division, brief_payload=brief_payload, scorecard=scorecard)
+            task_outputs = []
+            fallback_warning = (
+                "CrewAI output included non-allowlisted command suggestions and became empty after sanitization; "
+                "replaced with local manager summary."
+            )
 
     return {
         "division": division,
@@ -1036,6 +1166,10 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Bot trades total: {summary.get('trades_total')}")
     lines.append(f"- Websites up: {summary.get('websites_up')}/{summary.get('websites_total')}")
     lines.append(f"- Alerts in base brief: {len(payload.get('base_alerts', []))}")
+    brief_payload = {
+        "bots": payload.get("base_bots", []),
+        "websites": payload.get("base_websites", []),
+    }
 
     for division in payload.get("divisions", []):
         if not isinstance(division, dict):
@@ -1081,9 +1215,15 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
         for warning in division.get("warnings", []):
             lines.append(f"- Warning: {warning}")
         lines.append("")
-        lines.append("### AI Division Narrative")
+        lines.append("### Division Manager Narrative")
         lines.append("")
-        lines.append(str(division.get("final_output", "")).strip())
+        lines.append(
+            _fallback_division_report(
+                division=str(division.get("division", "")),
+                brief_payload=brief_payload,
+                scorecard=scorecard,
+            ).strip()
+        )
 
     lines.append("")
     lines.append("## Owner Command Reminder")

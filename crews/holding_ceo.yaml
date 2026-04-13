@@ -33,6 +33,14 @@ tasks:
       Base summary JSON:
       {base_summary_json}
 
+      Output requirements:
+      - Use concrete evidence from scorecards (status, actual, target, variance).
+      - Keep it decisive and owner-actionable; avoid generic business filler.
+      - Max 320 words.
+      - No tool-call syntax.
+      - Do not include slash-style chat commands (e.g., /brief, /status).
+      - Any python command must be from `python scripts/tool_router.py ...`.
+
       Return compact markdown with:
       1) CEO Summary (what changed and why it matters)
       2) Priority Risks (max 5)
@@ -42,4 +50,3 @@ tasks:
       Do not output tool-call JSON.
     expected_output: |
       Markdown executive brief with specific approvals and corrective actions.
-
