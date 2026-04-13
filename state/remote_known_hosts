@@ -1,0 +1,7 @@
+# SSH known_hosts file for AI Holding Company remote sync.
+# Populate this file with the VPS host key before first remote sync.
+# Run the following command to add the host key:
+#
+#   ssh-keyscan -H 167.234.219.208 >> state/remote_known_hosts
+#
+# StrictHostKeyChecking=yes will reject connections until a valid entry exists here.

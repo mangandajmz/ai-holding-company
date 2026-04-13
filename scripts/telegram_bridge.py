@@ -16,23 +16,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import yaml
-
-
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError("Config root must be a mapping.")
-    return data
+from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
 
 
 def _state_read(path: Path) -> dict[str, Any]:
@@ -125,9 +113,9 @@ class TelegramBridge:
             raise RuntimeError("TELEGRAM_BOT_TOKEN format is invalid (expected '<digits>:<secret>').")
         url = f"https://api.telegram.org/bot{self.bot_token}/{method}"
         body = urlencode(payload).encode("utf-8")
-        request = Request(url, data=body, method="POST")
+        req = Request(url, data=body, method="POST")
         try:
-            with urlopen(request, timeout=30) as response:  # noqa: S310
+            with urlopen(req, timeout=30) as response:  # noqa: S310
                 raw = response.read().decode("utf-8")
         except HTTPError as exc:
             if exc.code in {401, 404}:
@@ -184,6 +172,11 @@ class TelegramBridge:
         return found
 
     def _authorized(self, chat_id: int, user_id: int | None) -> bool:
+        if not self.allowed_chat_ids and not self.allowed_user_ids:
+            raise RuntimeError(
+                "_authorized called with empty allowlists; configure TELEGRAM_OWNER_CHAT_ID "
+                "or bridge.telegram.allowed_chat_ids before accepting messages."
+            )
         if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
             return False
         if self.allowed_user_ids and user_id is not None and user_id not in self.allowed_user_ids:
@@ -332,7 +325,7 @@ class TelegramBridge:
         if "board review" in lowered:
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
-        return {"type": "error", "message": "Unknown command. Use /help."}
+        return {"type": "freetext", "text": raw}
 
     def _format_help(self) -> str:
         return (
@@ -542,8 +535,8 @@ class TelegramBridge:
             else:
                 top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
                 if top_lines:
-                    for item in top_lines:
-                        normalized = item.strip()
+                    for line_text in top_lines:
+                        normalized = line_text.strip()
                         if normalized.startswith("- ") or normalized.startswith("* "):
                             normalized = normalized[2:].strip()
                         lines.append(f"- {normalized}")
@@ -633,12 +626,73 @@ class TelegramBridge:
         lines.append("Owner reminder: /brief | /board review | /divisions all | /status")
         return "\n".join(lines).strip()
 
+    def _search_memory(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
+        """Search vector memory for query. Returns [] on any failure."""
+        try:
+            memory_cfg = self.config.get("memory", {})
+            if not isinstance(memory_cfg, dict) or not memory_cfg.get("enabled", True):
+                return []
+            memory_dir = ROOT / self.config.get("paths", {}).get("memory_dir", "memory")
+            store_path = memory_dir / "vector_store.jsonl"
+            if not store_path.exists():
+                return []
+            from local_vector_memory import LocalVectorMemory  # pylint: disable=import-outside-toplevel
+
+            store = LocalVectorMemory(
+                data_path=store_path,
+                ollama_base_url=str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")),
+                embedding_model=str(memory_cfg.get("embedding_model", "nomic-embed-text")),
+            )
+            return [r for r in store.search(query=query, top_k=top_k) if r.get("score", 0) > 0.4]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _answer_freetext(self, text: str) -> str:
+        """Answer a natural language question using memory search + live health if a bot is named."""
+        lowered = text.lower()
+
+        mentioned_bot = next((bid for bid in self.bot_ids if bid.lower() in lowered), None)
+        mentioned_site = next((sid for sid in self.website_ids if sid.lower() in lowered), None)
+
+        facts = self._search_memory(text, top_k=3)
+
+        lines: list[str] = []
+        if facts:
+            lines.append("[context]")
+            for f in facts:
+                lines.append(f"- {f['text']}")
+
+        if mentioned_bot:
+            result = self._run_tool_router(
+                ["run_trading_script", "--bot", mentioned_bot, "--command-key", "health"],
+                timeout_sec=60,
+            )
+            summary = self._summarize_tool_result("run_trading_script", result)
+            lines.append(f"\n[live: {mentioned_bot}]\n{summary}")
+        elif mentioned_site:
+            result = self._run_tool_router(
+                ["check_website", "--website", mentioned_site],
+                timeout_sec=30,
+            )
+            summary = self._summarize_tool_result("check_website", result)
+            lines.append(f"\n[live: {mentioned_site}]\n{summary}")
+
+        if not lines:
+            return (
+                "I don't have enough context to answer that yet.\n"
+                "Try /brief for a full report, or /help for all commands."
+            )
+
+        return "\n".join(lines)
+
     def handle_text(self, text: str) -> str:
         action = self._parse_action(text)
         if action.get("type") == "help":
             return self._format_help()
         if action.get("type") == "error":
             return str(action.get("message"))
+        if action.get("type") == "freetext":
+            return self._answer_freetext(action["text"])
         tool_name = str(action.get("name"))
         args = action.get("args", [])
         result = self._run_tool_router(args)
@@ -760,6 +814,12 @@ def main() -> None:
     args = build_parser().parse_args()
     bridge = TelegramBridge(config_path=Path(args.config))
 
+    if not bridge.security_ready:
+        raise RuntimeError(
+            "Bridge startup blocked: configure TELEGRAM_OWNER_CHAT_ID and/or TELEGRAM_OWNER_USER_ID "
+            "or set bridge.telegram.allowed_chat_ids/allowed_user_ids in config."
+        )
+
     if args.simulate_text:
         print(bridge.handle_text(args.simulate_text))
         return
@@ -768,12 +828,6 @@ def main() -> None:
         ids = bridge.discover_ids()
         print(json.dumps({"ok": True, "count": len(ids), "ids": ids}, indent=2))
         return
-
-    if not bridge.security_ready:
-        raise RuntimeError(
-            "Bridge startup blocked: configure TELEGRAM_OWNER_CHAT_ID and/or TELEGRAM_OWNER_USER_ID "
-            "or set bridge.telegram.allowed_chat_ids/allowed_user_ids in config."
-        )
 
     if args.send_morning_brief:
         bridge.send_morning_brief()

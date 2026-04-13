@@ -9,13 +9,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from monitoring import ROOT, daily_brief
-
-
-def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from utils import (
+    fmt_money as _fmt_money,
+    load_yaml as _load_yaml,
+    now_utc_iso as _now_utc_iso,
+    parse_float as _to_float,
+    parse_iso_utc as _parse_iso_utc,
+    parse_polymarket_ts as _parse_polymarket_ts,
+    reports_dir as _reports_dir_util,
+)
 
 
 class _SafeDict(dict):
@@ -25,14 +28,6 @@ class _SafeDict(dict):
 
 def _render_template(template: str, values: dict[str, str]) -> str:
     return template.format_map(_SafeDict(values))
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"YAML mapping expected: {path}")
-    return loaded
 
 
 def _phase2_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -57,10 +52,7 @@ def _load_shared_targets(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reports_dir(config: dict[str, Any]) -> Path:
-    rel = str(config.get("paths", {}).get("reports_dir", "reports"))
-    path = ROOT / rel
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return _reports_dir_util(config)
 
 
 def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
@@ -82,56 +74,7 @@ def _ensure_brief_payload(config: dict[str, Any], force: bool) -> tuple[dict[str
 
 
 def _coerce_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    token = str(value).strip().replace(",", "")
-    if not token:
-        return None
-    try:
-        return float(token)
-    except ValueError:
-        return None
-
-
-def _parse_iso_utc(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _parse_polymarket_ts(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    for fmt in ("%Y-%m-%d %H:%M:%S UTC", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
-
-
-def _to_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    token = str(value).strip().replace(",", "")
-    if not token:
-        return None
-    try:
-        return float(token)
-    except ValueError:
-        return None
+    return _to_float(value)
 
 
 def _to_int(value: Any) -> int | None:
@@ -146,13 +89,6 @@ def _fmt_num(value: Any, digits: int = 2) -> str:
     if parsed is None:
         return "n/a"
     return f"{parsed:.{digits}f}"
-
-
-def _fmt_money(value: Any) -> str:
-    parsed = _to_float(value)
-    if parsed is None:
-        return "n/a"
-    return f"${parsed:+,.2f}"
 
 
 def _fmt_pct(value: Any, digits: int = 1) -> str:
@@ -1161,7 +1097,7 @@ def _persist_phase2_report(config: dict[str, Any], payload: dict[str, Any], mark
     reports_cfg = phase2.get("reports", {})
     reports_cfg = reports_cfg if isinstance(reports_cfg, dict) else {}
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     md_path = reports_dir / f"phase2_divisions_{stamp}.md"
     json_path = reports_dir / f"phase2_divisions_{stamp}.json"
 
