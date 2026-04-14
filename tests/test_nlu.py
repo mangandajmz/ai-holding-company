@@ -52,7 +52,7 @@ def _mock_ollama(intent: str, division: str, urgency: str):
 
 def test_status_check():
     """Case 1: CEO asks for a status update."""
-    with patch("nlu.intake.ollama.chat", _mock_ollama("status", "all", "normal")):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _mock_ollama("status", "all", "normal")):
         goal = parse_goal("What's our current system status?")
     _assert_goal_schema(goal)
     assert goal["intent"] == "status", f"Expected status, got {goal['intent']}"
@@ -62,7 +62,7 @@ def test_status_check():
 
 def test_trading_goal():
     """Case 2: CEO sends a trading-related directive."""
-    with patch("nlu.intake.ollama.chat", _mock_ollama("monitor", "trading", "high")):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _mock_ollama("monitor", "trading", "high")):
         goal = parse_goal("Check the trading bots and report back urgently.")
     _assert_goal_schema(goal)
     assert goal["intent"] == "monitor"
@@ -73,7 +73,7 @@ def test_trading_goal():
 
 def test_approve():
     """Case 3: CEO approves a pending item."""
-    with patch("nlu.intake.ollama.chat", _mock_ollama("approve", "unknown", "normal")):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _mock_ollama("approve", "unknown", "normal")):
         goal = parse_goal("I approve the recommendation.")
     _assert_goal_schema(goal)
     assert goal["intent"] == "approve"
@@ -82,7 +82,7 @@ def test_approve():
 
 def test_reject():
     """Case 4: CEO rejects a proposal."""
-    with patch("nlu.intake.ollama.chat", _mock_ollama("reject", "websites", "low")):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _mock_ollama("reject", "websites", "low")):
         goal = parse_goal("No, reject that websites proposal.")
     _assert_goal_schema(goal)
     assert goal["intent"] == "reject"
@@ -92,7 +92,7 @@ def test_reject():
 
 def test_ambiguous_falls_back_to_unknown():
     """Case 5: Ambiguous message — Ollama returns unknown or parse fails."""
-    with patch("nlu.intake.ollama.chat", _mock_ollama("unknown", "unknown", "unknown")):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _mock_ollama("unknown", "unknown", "unknown")):
         goal = parse_goal("hmm")
     _assert_goal_schema(goal)
     assert goal["intent"] == "unknown"
@@ -105,7 +105,7 @@ def test_ollama_failure_returns_unknown():
     def _failing_chat(**_kwargs):
         raise ConnectionError("Ollama not reachable")
 
-    with patch("nlu.intake.ollama.chat", _failing_chat):
+    with patch("sanitizer.prompt_sanitizer.ollama.chat", _failing_chat):
         goal = parse_goal("something")
     _assert_goal_schema(goal)
     assert goal["intent"] == "unknown"

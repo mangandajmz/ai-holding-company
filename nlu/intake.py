@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-import ollama
+from sanitizer.prompt_sanitizer import safe_chat  # type: ignore[import]
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ Rules:
 
 def _call_ollama(text: str) -> dict[str, str]:
     """Call local Ollama and return parsed JSON fields."""
-    response = ollama.chat(
+    response = safe_chat(
         model=MODEL,
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},

@@ -21,6 +21,16 @@ from compliance.guardian import check as guardian_check
 
 log = logging.getLogger(__name__)
 
+
+def _violation_summary_since(since_iso: str) -> str:
+    """Return a brief violation summary since since_iso, silently ignoring import errors."""
+    try:
+        from sanitizer.violation_reporter import summarise  # type: ignore[import]
+        return summarise(since_iso)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("ma: violation summary unavailable: %s", exc)
+        return ""
+
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACTS = ROOT / "artifacts"
 ARTIFACTS.mkdir(exist_ok=True)
@@ -240,12 +250,19 @@ def handle_goal(goal: dict[str, Any]) -> str:
     else:
         reply = f"Goal received (intent={intent}). Logged for processing."
 
-    _append_log({
+    parsed_at: str = str(goal.get("parsed_at") or ts)
+    violation_summary = _violation_summary_since(parsed_at)
+
+    log_entry: dict[str, Any] = {
         "goal_id": goal_id,
         "timestamp": ts,
         "routing_decision": routing_decision,
         "guardian_result": guardian_result,
         "outcome": outcome,
-    })
+    }
+    if violation_summary and violation_summary != "No violations recorded.":
+        log_entry["violation_summary"] = violation_summary
+
+    _append_log(log_entry)
 
     return reply

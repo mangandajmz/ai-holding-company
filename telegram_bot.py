@@ -115,6 +115,37 @@ def _import_ma():
 
 
 # ---------------------------------------------------------------------------
+# /violations command — on-demand violation summary (R10 compliant)
+# ---------------------------------------------------------------------------
+
+async def _handle_violations_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """CEO sends /violations → recent violation summary from violation_log.json."""
+    if update.effective_chat is None or update.message is None:
+        return
+    if update.effective_chat.id != CEO_CHAT_ID:
+        return
+
+    try:
+        from sanitizer.violation_reporter import get_violations_since, summarise  # type: ignore[import]
+        from datetime import timedelta
+
+        # Show violations from the last hour
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        entries = get_violations_since(since)
+        summary = summarise(since)
+
+        if not entries:
+            await update.message.reply_text("No violations in the last hour.")
+        else:
+            await update.message.reply_text(f"Violations (last 1h):\n{summary}")
+
+    except Exception as exc:  # noqa: BLE001
+        log.error("violations command failed: %s", exc)
+        _log_error("violations_command", exc)
+        await update.message.reply_text("[ERROR] Could not retrieve violation log.")
+
+
+# ---------------------------------------------------------------------------
 # /scheduler command — on-demand status pull (R10 compliant, not unsolicited)
 # ---------------------------------------------------------------------------
 
@@ -239,6 +270,7 @@ def main() -> None:
         .token(BOT_TOKEN)
         .build()
     )
+    app.add_handler(CommandHandler("violations", _handle_violations_command))
     app.add_handler(CommandHandler("scheduler", _handle_scheduler_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
 
