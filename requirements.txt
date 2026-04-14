@@ -1,2 +1,5 @@
 PyYAML>=6.0
 crewai>=0.114.0
+python-telegram-bot>=20.0
+python-dotenv>=1.0.0
+ollama>=0.4.0
