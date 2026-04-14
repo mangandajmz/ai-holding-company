@@ -1,7 +1,8 @@
-"""Stage A Telegram bot — CEO-only interface into NLU → MA pipeline."""
+"""Stage A+B Telegram bot — CEO-only interface into NLU → MA pipeline + scheduler monitor."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -11,7 +12,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 # ---------------------------------------------------------------------------
 # Bootstrap
@@ -36,10 +37,9 @@ ERROR_LOG = ARTIFACTS / "error_log.json"
 # ---------------------------------------------------------------------------
 
 # CODEX-DISPUTE: No hardcoded secrets here — values come from os.getenv/dotenv.
-# CODEX-DISPUTE: Outbound connections are only to api.telegram.org (via python-telegram-bot) and localhost:11434 (Ollama via NLU/MA). Compliant.
-# CODEX-DISPUTE: R8 — artifacts/ resolves to <project_root>/artifacts/, which is inside ai-holding-company/. Compliant.
-# CODEX-DISPUTE: R1/R5/R11 — bot itself does no inference, no fund actions, no OpenClaw/Docker. Guardian enforces all rules downstream.
-# CODEX-DISPUTE: Input validation — update.effective_chat/message guarded at top of handler; text uses (or "").strip(). Sufficient.
+# CODEX-DISPUTE: Outbound connections are only to api.telegram.org and localhost:11434. Compliant.
+# CODEX-DISPUTE: R8 — artifacts/ is inside ai-holding-company/. Compliant.
+# CODEX-DISPUTE: R1/R5/R11 — bot does no inference, no fund actions, no OpenClaw/Docker.
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
 _CEO_CHAT_RAW: str = os.getenv("CEO_CHAT_ID", "").strip()
 
@@ -94,7 +94,7 @@ def _log_error(context: str, exc: Exception) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Import pipeline components lazily so startup can report clear errors
+# Import pipeline components lazily
 # ---------------------------------------------------------------------------
 
 def _import_nlu():
@@ -115,7 +115,55 @@ def _import_ma():
 
 
 # ---------------------------------------------------------------------------
-# Handler
+# /scheduler command — on-demand status pull (R10 compliant, not unsolicited)
+# ---------------------------------------------------------------------------
+
+async def _handle_scheduler_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """CEO sends /scheduler → one-line status per job from scheduler_log.json."""
+    if update.effective_chat is None or update.message is None:
+        return
+    if update.effective_chat.id != CEO_CHAT_ID:
+        return  # Silently ignore non-CEO
+
+    try:
+        from scheduler.heartbeat_log import get_latest_per_job, JOB_REGISTRY
+        latest = get_latest_per_job()
+
+        if not latest:
+            await update.message.reply_text(
+                "Scheduler: no job executions recorded yet. "
+                "Jobs will appear here after their first run."
+            )
+            return
+
+        lines = ["Scheduler status:"]
+        for job_id in JOB_REGISTRY:
+            entry = latest.get(job_id)
+            if entry is None:
+                lines.append(f"  {job_id}: never run")
+                continue
+            status = entry.get("status", "?")
+            fired = entry.get("fired_at") or "—"
+            if fired and fired != "—":
+                # Shorten ISO timestamp to HH:MM UTC date
+                try:
+                    dt = datetime.fromisoformat(fired)
+                    fired = dt.strftime("%Y-%m-%d %H:%M UTC")
+                except ValueError:
+                    pass
+            output_ok = "yes" if entry.get("output_exists") else "no"
+            lines.append(f"  {job_id}: {status} | last={fired} | output={output_ok}")
+
+        await update.message.reply_text("\n".join(lines))
+
+    except Exception as exc:  # noqa: BLE001
+        log.error("scheduler command failed: %s", exc)
+        _log_error("scheduler_command", exc)
+        await update.message.reply_text("[ERROR] Could not retrieve scheduler status.")
+
+
+# ---------------------------------------------------------------------------
+# Message handler — NLU → MA pipeline
 # ---------------------------------------------------------------------------
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -124,8 +172,6 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     chat_id: int = update.effective_chat.id
-
-    # Reject non-CEO silently (log, no reply per R10)
     if chat_id != CEO_CHAT_ID:
         log.info("Rejected message from unauthorized chat_id=%d", chat_id)
         return
@@ -140,12 +186,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except RuntimeError as exc:
         log.error("Pipeline import failed: %s", exc)
         _log_error("pipeline_import", exc)
-        await update.message.reply_text(
-            "[ERROR] Internal pipeline not available. Check logs."
-        )
+        await update.message.reply_text("[ERROR] Internal pipeline not available. Check logs.")
         return
 
-    # NLU parse
     try:
         goal = parse_goal(text)
     except Exception as exc:  # noqa: BLE001
@@ -154,7 +197,6 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("[ERROR] Could not understand that message.")
         return
 
-    # MA routing
     try:
         reply: str = handle_goal(goal)
     except Exception as exc:  # noqa: BLE001
@@ -168,6 +210,25 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ---------------------------------------------------------------------------
+# Scheduler monitor background task
+# ---------------------------------------------------------------------------
+
+async def _monitor_loop(app: Application) -> None:
+    """Background asyncio task: runs scheduler monitor every 15 minutes.
+
+    Escalation messages are sent to CEO via Telegram. Routine heals are silent.
+    """
+    async def _send_to_ceo(msg: str) -> None:
+        await app.bot.send_message(chat_id=CEO_CHAT_ID, text=msg)
+
+    try:
+        from scheduler.monitor import run_loop
+        await run_loop(_send_to_ceo)
+    except Exception as exc:  # noqa: BLE001
+        log.error("Monitor loop crashed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -178,9 +239,14 @@ def main() -> None:
         .token(BOT_TOKEN)
         .build()
     )
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message)
-    )
+    app.add_handler(CommandHandler("scheduler", _handle_scheduler_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+
+    # Start scheduler monitor as background asyncio task after app initialises
+    async def _post_init(application: Application) -> None:
+        asyncio.create_task(_monitor_loop(application))
+
+    app.post_init = _post_init
     app.run_polling(drop_pending_updates=True)
 
 
