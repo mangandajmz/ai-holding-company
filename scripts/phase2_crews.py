@@ -333,6 +333,24 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
     last_cycle = mt5_report.get("last_cycle_completed", {})
     last_cycle = last_cycle if isinstance(last_cycle, dict) else {}
     mt5_last_ts = _parse_iso_utc(last_cycle.get("timestamp"))
+    # Also scan the raw log for any scheduler activity (including skipped cycles),
+    # since last_cycle_completed only records fully-complete cycles. A skipped
+    # cycle still proves the scheduler is alive — use the more recent of the two.
+    if isinstance(mt5_bot, dict):
+        for _ml in (mt5_bot.get("log_report") or {}).get("logs", []):
+            for _mline in reversed(_ml.get("tail_excerpt") or []):
+                _bracket_end = _mline.find("]")
+                if _bracket_end > 0:
+                    _raw_ts = _mline[1:_bracket_end]
+                elif len(_mline) >= 25:
+                    _raw_ts = _mline[:25]
+                else:
+                    continue
+                _mts = _parse_iso_utc(_raw_ts)
+                if _mts and (mt5_last_ts is None or _mts > mt5_last_ts):
+                    mt5_last_ts = _mts
+                if _mts:
+                    break  # reversed() iterates newest→oldest; first match is the most recent
     cycle_age_min = ((generated_at - mt5_last_ts).total_seconds() / 60.0) if mt5_last_ts else None
     within_hours = True
     if window_start is not None and window_end is not None:
@@ -349,9 +367,29 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
     elif cycle_age_min <= max_cycle_age_min:
         cycle_status = "GREEN"
         cycle_variance = f"{cycle_age_min - max_cycle_age_min:+.0f}m"
-    elif not within_hours and cycle_age_min <= max_cycle_age_min * 12:
-        cycle_status = "AMBER"
-        cycle_variance = f"{cycle_age_min - max_cycle_age_min:+.0f}m (outside scheduled window)"
+    elif not within_hours:
+        # Off-hours: compute minutes elapsed since the scheduling window last closed.
+        # If the bot ran correctly until window_end, cycle_age ≈ off_hours_elapsed.
+        # GREEN if age ≤ off_hours_elapsed + max_cycle_age_min (ran on schedule, no stale).
+        _current_min = generated_at.hour * 60 + generated_at.minute
+        # CODEX-DISPUTE: window_end=0 (midnight close) is theoretically valid YAML
+        # but is never used in practice; guarding with explicit None-check avoids
+        # the falsy-zero trap from `window_end or 21`.
+        _window_end_min = (window_end if window_end is not None else 21) * 60
+        if _current_min >= _window_end_min:
+            _off_hours_elapsed = _current_min - _window_end_min
+        else:
+            # Past midnight: window closed at window_end yesterday.
+            _off_hours_elapsed = (24 * 60 - _window_end_min) + _current_min
+        if cycle_age_min <= _off_hours_elapsed + max_cycle_age_min:
+            cycle_status = "GREEN"
+            cycle_variance = f"off-hours; ran {_fmt_age_minutes(cycle_age_min)} ago (within schedule)"
+        elif cycle_age_min <= max_cycle_age_min * 12:
+            cycle_status = "AMBER"
+            cycle_variance = f"{cycle_age_min - max_cycle_age_min:+.0f}m (outside scheduled window)"
+        else:
+            cycle_status = "RED"
+            cycle_variance = f"{cycle_age_min - max_cycle_age_min:+.0f}m"
     elif cycle_age_min <= max_cycle_age_min * 2:
         cycle_status = "AMBER"
         cycle_variance = f"{cycle_age_min - max_cycle_age_min:+.0f}m"
@@ -372,6 +410,26 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
         risks.append("MT5 scheduler appears stale for the expected operating cadence.")
         actions.append("Restart MT5 scheduler and verify trading/research cycles resume.")
 
+    # Extract polymarket bot's local log freshness.
+    # Used as a VPS-service fallback and as a proxy for data-age when CSV has no trades.
+    _poly_log_latest_ts: datetime | None = None
+    if isinstance(poly_bot, dict):
+        for _log_item in (poly_bot.get("log_report") or {}).get("logs", []):
+            if _log_item.get("kind") != "text":
+                continue
+            for _line in reversed(_log_item.get("tail_excerpt") or []):
+                _ts_str = _line.split(" - ")[0].strip() if " - " in _line else _line[:25]
+                _ts = _parse_polymarket_ts(_ts_str)
+                if _ts is not None:
+                    _poly_log_latest_ts = _ts
+                    break
+            if _poly_log_latest_ts:
+                break
+    _poly_log_age_h: float | None = (
+        (generated_at - _poly_log_latest_ts).total_seconds() / 3600.0
+        if _poly_log_latest_ts else None
+    )
+
     poly_service_stdout = ""
     service_rc = None
     if isinstance(poly_remote, dict):
@@ -389,8 +447,15 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
         service_status = "RED"
         service_variance = "inactive"
     else:
-        service_status = "AMBER"
-        service_variance = "status not confirmed"
+        # SSH status not confirmed; fall back to local bot log freshness.
+        # Use the same max_trade_age_h window (default 72h) — if the bot logged
+        # activity within that window it is considered operationally active locally.
+        if _poly_log_age_h is not None and _poly_log_age_h < max_trade_age_h:
+            service_status = "GREEN"
+            service_variance = f"active (local; VPS SSH unreachable; log {_poly_log_age_h:.1f}h ago)"
+        else:
+            service_status = "AMBER"
+            service_variance = "status not confirmed"
     items.append(
         _as_status_line(
             metric="Polymarket VPS service",
@@ -484,8 +549,15 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
     csv_latest_ts = _parse_polymarket_ts(poly_report.get("csv_latest_timestamp"))
     trade_age_h = ((generated_at - csv_latest_ts).total_seconds() / 3600.0) if csv_latest_ts else None
     if trade_age_h is None:
-        age_status = "AMBER"
-        age_variance = "missing"
+        # No CSV data — use bot log activity as a freshness proxy when available.
+        # A recently-active log (< max_trade_age_h) means the bot is running but
+        # hasn't resolved any trades yet: correct state, not a stale-data failure.
+        if _poly_log_age_h is not None and _poly_log_age_h < max_trade_age_h:
+            age_status = "GREEN"
+            age_variance = f"no trades resolved yet; bot active {_poly_log_age_h:.1f}h ago"
+        else:
+            age_status = "AMBER"
+            age_variance = "missing"
     elif trade_age_h <= max_trade_age_h:
         age_status = "GREEN"
         age_variance = f"{trade_age_h - max_trade_age_h:+.1f}h"
@@ -516,6 +588,11 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
     elif resolved_24h >= min_resolved_24h:
         resolved_status = "GREEN"
         resolved_variance = f"{resolved_24h - min_resolved_24h:+d}"
+    elif _to_int(poly_report.get("csv_rows")) == 0:
+        # No trades in history at all — bot is watching/paper-scanning with no positions.
+        # resolved=0 is the expected state; this is not a throughput failure.
+        resolved_status = "GREEN"
+        resolved_variance = "watching; no positions entered yet"
     else:
         resolved_status = "AMBER"
         resolved_variance = f"{resolved_24h - min_resolved_24h:+d}"
