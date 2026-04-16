@@ -439,6 +439,8 @@ _ALLOWED_PHASE3_SUBCOMMANDS: dict[str, dict[str, Any]] = {
     "daily_brief": {"required": set(), "allowed_flags": {"--force", "--config"}},
     "run_divisions": {"required": set(), "allowed_flags": {"--division", "--force", "--config"}},
     "run_holding": {"required": {"--mode"}, "allowed_flags": {"--mode", "--force", "--config"}},
+    "run_commercial": {"required": set(), "allowed_flags": {"--force", "--config"}},
+    "score_initiative": {"required": {"--text"}, "allowed_flags": {"--text", "--config"}},
     "read_bot_logs": {"required": {"--bot"}, "allowed_flags": {"--bot", "--lines", "--config"}},
     "check_website": {"required": {"--website"}, "allowed_flags": {"--website", "--config"}},
     "run_trading_script": {
