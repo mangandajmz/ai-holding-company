@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Any
 
-from monitoring import ROOT  # noqa: F401 — used by _load_shared_targets copy
+from monitoring import ROOT  # used in run_commercial_division to anchor report paths
 from utils import fmt_money as _fmt_money, now_utc_iso as _now_utc_iso, parse_float as _parse_float
 
 log = logging.getLogger(__name__)
@@ -154,15 +154,19 @@ def risk_check(brief_payload: dict[str, Any], targets: dict[str, Any]) -> dict[s
     company_targets = company_targets if isinstance(company_targets, dict) else {}
     dd_cfg = company_targets.get("max_drawdown_pct", {})
     dd_cfg = dd_cfg if isinstance(dd_cfg, dict) else {}
-    dd_red_threshold = _to_float(dd_cfg.get("target_max")) or 3.0
-    dd_amber_threshold = _to_float(dd_cfg.get("amber_max")) or 5.0
+    _dd_amber_v = _to_float(dd_cfg.get("target_max"))
+    dd_amber_threshold = _dd_amber_v if _dd_amber_v is not None else 3.0   # breach → AMBER
+    _dd_red_v = _to_float(dd_cfg.get("amber_max"))
+    dd_red_threshold = _dd_red_v if _dd_red_v is not None else 5.0         # breach → RED
 
     trading_targets = targets.get("trading", {})
     trading_targets = trading_targets if isinstance(trading_targets, dict) else {}
     poly_targets = trading_targets.get("polymarket", {})
     poly_targets = poly_targets if isinstance(poly_targets, dict) else {}
-    daily_loss_cap = _to_float(poly_targets.get("daily_loss_cap_usd")) or 60.0
-    max_open_positions = _to_int(poly_targets.get("max_open_positions")) or 12
+    _loss_v = _to_float(poly_targets.get("daily_loss_cap_usd"))
+    daily_loss_cap = _loss_v if _loss_v is not None else 60.0
+    _pos_v = _to_int(poly_targets.get("max_open_positions"))
+    max_open_positions = _pos_v if _pos_v is not None else 12
 
     bots: list[dict[str, Any]] = [
         b for b in brief_payload.get("bots", []) if isinstance(b, dict)
@@ -182,15 +186,15 @@ def risk_check(brief_payload: dict[str, Any], targets: dict[str, Any]) -> dict[s
     if drawdown_pct is None:
         drawdown_status = "AMBER"  # Missing data — don't assume GREEN
         exposure_flags.append("drawdown_data_missing")
-    elif drawdown_pct > dd_amber_threshold:
+    elif drawdown_pct > dd_red_threshold:
         drawdown_status = "RED"
         exposure_flags.append(
-            f"drawdown={drawdown_pct:.1f}% exceeds RED threshold ({dd_amber_threshold:.1f}%)"
+            f"drawdown={drawdown_pct:.1f}% exceeds RED threshold ({dd_red_threshold:.1f}%)"
         )
-    elif drawdown_pct > dd_red_threshold:
+    elif drawdown_pct > dd_amber_threshold:
         drawdown_status = "AMBER"
         exposure_flags.append(
-            f"drawdown={drawdown_pct:.1f}% exceeds AMBER threshold ({dd_red_threshold:.1f}%)"
+            f"drawdown={drawdown_pct:.1f}% exceeds AMBER threshold ({dd_amber_threshold:.1f}%)"
         )
     else:
         drawdown_status = "GREEN"
@@ -284,19 +288,16 @@ def score_initiative(initiative_text: str, config: dict[str, Any]) -> dict[str, 
     try:
         from sanitizer.prompt_sanitizer import safe_chat  # type: ignore[import]
     except ImportError:
-        # Sanitizer not on path — fall back to direct ollama with a warning logged.
-        # CODEX-DISPUTE: ImportError here is only possible when running from outside
-        # the worktree root. safe_chat is always available in the deployed environment.
-        log.warning("commercial: sanitizer not available; falling back to direct ollama import")
-        try:
-            import ollama as _ollama  # type: ignore[import]
-            safe_chat = _ollama.chat  # type: ignore[assignment]
-        except ImportError:
-            return {
-                "status": "llm_unavailable",
-                "error": "ollama package not installed",
-                "initiative_name": str(initiative_text)[:80],
-            }
+        # Hard failure — refuse to call the LLM without the prompt guard.
+        # R1 compliance requires safe_chat (sanitizer layer) to be present.
+        # ImportError means the environment is misconfigured; fail loudly so it
+        # is caught immediately rather than silently degrading safety.
+        log.error("commercial: sanitizer.prompt_sanitizer unavailable — refusing LLM call without prompt guard")
+        return {
+            "status": "llm_unavailable",
+            "error": "sanitizer unavailable — refusing to call LLM without prompt guard (check PYTHONPATH)",
+            "initiative_name": str(initiative_text)[:80],
+        }
 
     import re
 
@@ -353,13 +354,13 @@ def run_commercial_division(config: dict[str, Any], force: bool = False) -> dict
         }
     """
     # --- a. Load brief payload ---
-    try:
-        # Import here (same pattern as phase2_crews.py) to avoid circular imports
-        # and to stay consistent with how the existing orchestration layer works.
-        from monitoring import daily_brief  # pylint: disable=import-outside-toplevel
-        from pathlib import Path  # already in scope but explicit for clarity
-        from utils import load_yaml as _load_yaml  # pylint: disable=import-outside-toplevel
+    # Imports are deferred (same pattern as phase2_crews.py) to avoid circular imports.
+    # load_yaml and daily_brief are imported once here and reused in step b.
+    from pathlib import Path  # pylint: disable=import-outside-toplevel
+    from monitoring import daily_brief  # pylint: disable=import-outside-toplevel
+    from utils import load_yaml as _load_yaml  # pylint: disable=import-outside-toplevel
 
+    try:
         fresh = daily_brief(config=config, force=force)
         if not fresh.get("skipped"):
             brief_payload: dict[str, Any] = fresh
@@ -397,13 +398,10 @@ def run_commercial_division(config: dict[str, Any], force: bool = False) -> dict
 
     # --- b. Load targets ---
     try:
-        from utils import load_yaml as _load_yaml  # pylint: disable=import-outside-toplevel
-
         phase3_cfg = config.get("phase3", {})
         phase3_cfg = phase3_cfg if isinstance(phase3_cfg, dict) else {}
         targets_rel = str(phase3_cfg.get("targets_file", "config/targets.yaml")).strip()
-        from pathlib import Path as _Path  # already imported above; belt-and-braces
-        targets_path = (ROOT / targets_rel) if not _Path(targets_rel).is_absolute() else _Path(targets_rel)
+        targets_path = (ROOT / targets_rel) if not Path(targets_rel).is_absolute() else Path(targets_rel)
         targets: dict[str, Any] = {}
         if targets_path.exists():
             loaded = _load_yaml(targets_path)

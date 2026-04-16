@@ -1,4 +1,4 @@
-"""Command router used by OpenClaw heartbeat and chat directives."""
+"""Command router for Telegram-initiated directives and scheduled heartbeat jobs."""
 
 from __future__ import annotations
 

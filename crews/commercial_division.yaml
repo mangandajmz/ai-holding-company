@@ -72,7 +72,9 @@ tasks:
       Trading bots snapshot JSON:
       {bots_json}
 
-      Thresholds to check (from config/targets.yaml):
+      Thresholds to check (from config/targets.yaml — values below are documentation
+      defaults; actual enforcement is done by scripts/commercial.py risk_check(),
+      which reads targets.yaml at runtime):
       - max_drawdown_pct: 3.0% (AMBER above 3.0%, RED above 5.0%)
       - daily_loss_cap_usd: $60 per bot (Polymarket)
       - max_open_positions: 12 (Polymarket)
