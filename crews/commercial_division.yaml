@@ -1,0 +1,158 @@
+name: "Commercial Division"
+manager_agent: "commercial_manager"
+verbose: false
+
+agents:
+  - key: "commercial_manager"
+    role: "Commercial Division Manager"
+    goal: "Deliver a concise weekly commercial brief covering financial health, active
+           initiative scores, and risk flags. Surface only decisions that need CEO attention."
+    backstory: "You run the business-management function for AI Holding Company. You coordinate
+                finance reporting, initiative scoring, ROI analysis, and risk monitoring. You
+                follow the Board Pack format (PLAN.md §8) for every recommendation."
+    allow_delegation: true
+  - key: "finance_reporter"
+    role: "Finance Reporter"
+    goal: "Produce an accurate daily PNL roll-up and weekly P&L statement from MT5 and
+           Polymarket data. No estimates — only figures that can be verified from log data."
+    backstory: "You extract financial data from bot logs and produce clean, factual summaries.
+                You never invent numbers. If data is missing, you report it as missing."
+    allow_delegation: false
+  - key: "commercial_analyst"
+    role: "Commercial Analyst"
+    goal: "Score new initiatives against the Board Pack criteria (PLAN.md §8): expected upside,
+           effort/cost, confidence level, and go/no-go recommendation."
+    backstory: "You assess feasibility and ROI for proposed initiatives. You are the guardrail
+                before anything reaches the Board Pack. You are skeptical by default and require
+                evidence for optimistic projections."
+    allow_delegation: false
+  - key: "risk_monitor"
+    role: "Risk Monitor"
+    goal: "Detect drawdown breaches, cost spikes, and exposure flags against thresholds in
+           config/targets.yaml. Produce a clear risk status: GREEN, AMBER, or RED."
+    backstory: "You monitor financial risk for the holding company. You compare actual figures
+                against defined thresholds and flag any breach immediately."
+    allow_delegation: false
+
+tasks:
+  - key: "finance_task"
+    agent: "finance_reporter"
+    description: |
+      Produce the PNL roll-up from MT5 and Polymarket KPI data in the daily brief payload.
+
+      Trading bots snapshot JSON:
+      {bots_json}
+
+      Division alerts:
+      {alerts_json}
+
+      Output requirements:
+      - Use only figures present in the JSON. Do not estimate or interpolate.
+      - If a field is absent, report it explicitly as missing.
+      - Max 220 words.
+      - No tool-call syntax.
+
+      Return compact markdown with:
+      1) PNL Roll-Up
+         Include: mt5_pnl, polymarket_pnl, total_pnl, data_freshness, missing_data_flags.
+      2) Data Quality Notes
+         Call out any bots with null, stale, or zero-confidence figures.
+    expected_output: |
+      Markdown PNL roll-up with mt5_pnl, polymarket_pnl, total_pnl, data_freshness, and
+      missing_data_flags clearly stated.
+
+  - key: "risk_task"
+    agent: "risk_monitor"
+    context:
+      - "finance_task"
+    description: |
+      Compare the PNL and drawdown figures from the finance report against the thresholds
+      defined in config/targets.yaml.
+
+      Trading bots snapshot JSON:
+      {bots_json}
+
+      Thresholds to check (from config/targets.yaml):
+      - max_drawdown_pct: 3.0% (AMBER above 3.0%, RED above 5.0%)
+      - daily_loss_cap_usd: $60 per bot (Polymarket)
+      - max_open_positions: 12 (Polymarket)
+      - max_warning_lines_24h: 2
+
+      Output requirements:
+      - State each threshold check explicitly: actual value vs threshold.
+      - Assign one of GREEN / AMBER / RED per check.
+      - Max 220 words.
+      - No tool-call syntax.
+
+      Return compact markdown with:
+      1) Threshold Checks (one bullet per check)
+      2) Exposure Flags (list any active flags, or "None")
+      3) Risk Verdict (GREEN / AMBER / RED with one-line justification)
+      Output fields: drawdown_status, cost_spike_detected, exposure_flags, risk_verdict.
+    expected_output: |
+      Markdown risk assessment with explicit threshold checks, exposure flags, and a
+      final risk verdict of GREEN, AMBER, or RED.
+
+  - key: "scoring_task"
+    agent: "commercial_analyst"
+    context:
+      - "finance_task"
+      - "risk_task"
+    description: |
+      Score the highest-priority pending initiative for the CEO.
+
+      If there is an item in the CEO decision queue, score that item.
+      If the queue is empty, score the next stage on the critical path from PLAN.md §11.
+
+      Scoring criteria (Board Pack format, PLAN.md §8):
+      - Expected upside: quantified revenue or capability gain
+      - Effort / cost: estimated hours and direct spend
+      - Confidence level: LOW / MEDIUM / HIGH (require evidence for MEDIUM or HIGH)
+      - Go / No-Go recommendation with rationale
+
+      Output requirements:
+      - Be skeptical. Require concrete evidence for optimistic projections.
+      - Max 220 words.
+      - No tool-call syntax.
+
+      Return compact markdown with:
+      1) Initiative Name
+      2) Upside
+      3) Effort / Cost
+      4) Confidence Level
+      5) Go / No-Go
+      6) Rationale (2-4 sentences)
+      Output fields: initiative_name, upside, effort, confidence, go_no_go, rationale.
+    expected_output: |
+      Markdown initiative scorecard with upside, effort, confidence, and a clear
+      go/no-go recommendation backed by stated evidence.
+
+  - key: "commercial_brief_task"
+    agent: "commercial_manager"
+    context:
+      - "finance_task"
+      - "risk_task"
+      - "scoring_task"
+    description: |
+      Synthesise the finance, risk, and initiative reports into a single commercial brief
+      for the Owner/CEO.
+
+      Company identity:
+      {soul_text}
+
+      Output requirements:
+      - Derive every claim from the three preceding task outputs.
+      - Surface only what requires CEO attention or approval.
+      - Assign an overall division status: GREEN, AMBER, or RED.
+      - Max 320 words.
+      - No tool-call syntax.
+      - Any python command must be from `python scripts/tool_router.py ...`.
+
+      Return compact markdown with:
+      1) Financial Summary (total PNL, data freshness, missing flags)
+      2) Risk Status (overall GREEN / AMBER / RED with one-line justification)
+      3) Initiative Recommendation (go/no-go and why)
+      4) Required Owner Actions (max 3, explicit)
+    expected_output: |
+      Markdown commercial brief with financial summary, risk verdict, initiative
+      recommendation, and explicit owner actions. Status field is GREEN, AMBER, or RED.
