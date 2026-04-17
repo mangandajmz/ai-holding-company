@@ -1,7 +1,7 @@
 # AI Holding Company — Master Plan
-**Version:** 5  
+**Version:** 5.3  
 **Owner:** J (CEO)  
-**Last updated:** 2026-04-13  
+**Last updated:** 2026-04-17  
 **Supersedes:** All previous plan versions (v1–v4).
 
 ---
@@ -243,7 +243,7 @@ Locked. Do not re-open without a CEO directive.
 | H | Holding Board v2 + Board Pack upgrade | ✅ COMPLETE | P2 | — |
 | J | Content Studio (light) | 🔴 NOT STARTED | P2 | G1, G2, G3, G4 |
 | I | Steady State + Developer Tool + Time-Saved Proof | 🔴 NOT STARTED | P3 | — |
-| K | Marketing Division | 🔴 NOT STARTED | P3 | G1 (A+B+D must be green), G2, G3 |
+| K | Marketing Division | ✅ COMPLETE | P3 | G1 (A+B+D must be green), G2, G3 |
 | F | Ideas Division | ⚪ OPTIONAL | P3 | Reconsider once G+K exist |
 
 **Critical path:** A → B → D → G → H → J → I  
@@ -259,6 +259,7 @@ Locked. Do not re-open without a CEO directive.
 - Stage B (Scheduler Verification & Self-Heal): ✅ LIVE — confirmed working 2026-04-14. Scheduler config: Windows Task Scheduler (BridgeStartup + MorningBrief), jobs via tool_router.py. Self-heal wired. /scheduler command live.
 - Stage C (Sanitizer & Allowlist Remediation): ✅ LIVE — commit 261098d. safe_chat() wraps all Ollama calls. R8 path guard, R1 network guard, R11 provider scrub all active. /violations command live. 19 tests passing.
 - Stage H (Holding Board v2 + Board Pack): ✅ LIVE — 8-field Board Pack, dissent agent, MA gate, board_pack mode, 18 tests passing. /board pack Telegram command live.
+- Stage K (Marketing Division): ✅ LIVE — G3 guardrail (max 1 campaign/week), PENDING_CEO_APPROVAL R4 gate, campaign pipeline scoring, /campaign and /campaign_status Telegram commands, marketing division in phase2, 10 tests passing.
 - Latest commit: `67ec6c1`
 
 ---
@@ -329,6 +330,7 @@ Any agent proposing work in these areas must be blocked by the Compliance Guardi
 
 ---
 
-*End of PLAN.md — version 5.2 — AI Holding Company — 2026-04-17*  
+*End of PLAN.md — version 5.3 — AI Holding Company — 2026-04-17*  
 *v5.1 change: Added R11 (No OpenClaw; python-telegram-bot only). Updated Stage A, file structure, Out of Scope, and Capability Decisions.*  
-*v5.2 change: Stage H complete. Holding Board v2 live. 8-field Board Pack, dissent_agent, MA gate, board_pack mode in tool_router, /board pack Telegram command, 18 Stage H tests.*
+*v5.2 change: Stage H complete. Holding Board v2 live. 8-field Board Pack, dissent_agent, MA gate, board_pack mode in tool_router, /board pack Telegram command, 18 Stage H tests.*  
+*v5.3 change: Stage K complete. Marketing Division live. G3 guardrail (max 1 campaign/week), PENDING_CEO_APPROVAL R4 gate, campaign pipeline scoring, /campaign and /campaign_status Telegram commands, marketing in phase2 (all+marketing scope), 10 Stage K tests.*
