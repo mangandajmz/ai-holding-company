@@ -1,0 +1,38 @@
+# ============================================================
+# AI Holding Company — Heartbeat Schedule Configuration
+# This tells OpenClaw when to run automated tasks
+# ============================================================
+
+heartbeat:
+  every: "12h"
+  target: "last"
+  directPolicy: "allow"
+  lightContext: true
+  isolatedSession: true
+
+  tasks:
+    - name: morning-brief
+      interval: "24h"
+      start_time: "07:00"
+      prompt: >
+        Run the full daily brief as described in HEARTBEAT.md.
+        Check all trading bots (Forex, Gold, Polymarket) for PNL,
+        trades, win rate, drawdown, and errors.
+        Check all websites for uptime, response time, and SSL status.
+        Format as the structured daily brief and send to CEO.
+
+    - name: evening-recap
+      interval: "24h"
+      start_time: "19:00"
+      prompt: >
+        Run the evening recap. Summarise today's full trading
+        performance across all bots. Flag any website issues
+        that occurred during the day. Note any CEO directives
+        that were executed today and their outcomes.
+
+    - name: health-check
+      interval: "4h"
+      prompt: >
+        Quick health check: verify Ollama is running, Docker is up,
+        and all bot processes are active. Only alert CEO if
+        something is down or degraded.

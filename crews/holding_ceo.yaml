@@ -1,0 +1,79 @@
+name: "Holding Company CEO Office"
+manager_agent: "holding_ceo"
+verbose: false
+
+agents:
+  - key: "holding_ceo"
+    role: "Holding Company CEO Agent"
+    goal: "Produce a concise owner-grade board brief from company and division scorecards with explicit approvals."
+    backstory: "You are the top-level executive layer for AI Holding Company, translating operational telemetry into strategic decisions."
+    allow_delegation: false
+  - key: "dissent_agent"
+    role: "Board Dissent Officer"
+    goal: "File at least one substantive objection or counter-argument for every Board Pack item proposed. Your job is to stress-test decisions, not to block them. Surface the most credible risk the CEO may not have considered."
+    backstory: "You represent the critical voice in the boardroom. You are not an obstructionist - you are the guardrail. You read every proposed decision and ask: what could go wrong, what is being assumed, and what would a sceptic say? You file exactly one objection per item, clearly and briefly."
+    allow_delegation: false
+
+tasks:
+  - key: "ceo_board_task"
+    agent: "holding_ceo"
+    description: |
+      You are writing the top-level executive brief for the human Owner/CEO.
+
+      Company identity:
+      {soul_text}
+
+      Mode:
+      {holding_mode}
+
+      Company scorecard JSON:
+      {company_scorecard_json}
+
+      Division scorecards JSON:
+      {division_scorecards_json}
+
+      Division outputs JSON:
+      {divisions_json}
+
+      Base summary JSON:
+      {base_summary_json}
+
+      Output requirements:
+      - Use concrete evidence from scorecards (status, actual, target, variance).
+      - Keep it decisive and owner-actionable; avoid generic business filler.
+      - Max 320 words.
+      - No tool-call syntax.
+      - Do not include slash-style chat commands (e.g., /brief, /status).
+      - Any python command must be from `python scripts/tool_router.py ...`.
+
+      Return compact markdown with:
+      1) CEO Summary (what changed and why it matters)
+      2) Priority Risks (max 5)
+      3) Required Owner Approvals (max 5, explicit)
+      4) Corrective Plays (48h and 7d)
+      Use only commands that exist in this repository.
+      Do not output tool-call JSON.
+    expected_output: |
+      Markdown executive brief with specific approvals and corrective actions.
+  - key: "dissent_task"
+    agent: "dissent_agent"
+    description: |
+      You are reviewing the Board Pack items produced by the CEO agent.
+
+      Board Pack items:
+      {board_pack_json}
+
+      For each item in the list, file one counter-argument or risk that the
+      CEO should consider before approving. Be specific - no generic objections.
+      Reference the actual topic, metric, or initiative by name.
+
+      Format your output as a JSON list:
+      [
+        {{"item": "<topic>", "objection": "<one clear sentence>"}},
+        ...
+      ]
+
+      If there are no Board Pack items (empty list), return an empty JSON list [].
+      Do not invent items to object to.
+    expected_output: |
+      JSON list of objections, one per Board Pack item. Empty list if no items.

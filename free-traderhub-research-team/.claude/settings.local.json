@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Get-ChildItem -Path 'C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Manganda LTD\\\\AI Models\\\\free-traderhub-research-team' -Recurse -File | Select-Object FullName\")",
+      "Bash(venvScriptsactivate)",
+      "Bash(python -c \"import crewai_tools; print\\([x for x in dir\\(crewai_tools\\) if not x.startswith\\(''_''\\)]\\)\")",
+      "Bash(source venv/Scripts/activate)",
+      "Bash(python -c \"from langchain_community.tools import DuckDuckGoSearchRun; print\\(''langchain_community OK''\\)\")",
+      "Bash(python -c \"from langchain_community.tools import DuckDuckGoSearchRun\")",
+      "Bash(python -c \"from duckduckgo_search import DDGS; print\\(''DDGS OK''\\)\")",
+      "Bash(python -c \"from crew import build_crew; print\\(''OK''\\)\")",
+      "Bash(python run_weekly.py)",
+      "Bash(python -c \"from crewai import LLM; help\\(LLM.__init__\\)\")"
+    ]
+  }
+}

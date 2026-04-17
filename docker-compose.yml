@@ -1,0 +1,26 @@
+# ============================================================
+# AI Capital Group — Docker Compose
+# Runs OpenClaw gateway connected to your local Ollama instance
+# ============================================================
+
+services:
+  openclaw-gateway:
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Mount the workspace so OpenClaw can read HEARTBEAT.md and tools
+      - ./:/app/workspace
+      # Mount SSH keys for VPS bot access (read-only)
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      # Point to Ollama running on the Windows host
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OPENCLAW_LOG_LEVEL=${OPENCLAW_LOG_LEVEL:-info}
+    extra_hosts:
+      # Allows container to reach Windows host's Ollama
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./config/.env

@@ -1,0 +1,590 @@
+{
+  "ok": true,
+  "company_name": "AI Holding Company",
+  "generated_at_utc": "2026-04-17T15:53:41.313188+00:00",
+  "source_brief_mode": "cached_latest",
+  "divisions_ran": [
+    "trading",
+    "websites",
+    "content_studio"
+  ],
+  "base_summary": {
+    "bots_total": 2,
+    "websites_total": 3,
+    "websites_up": 3,
+    "pnl_total": -7.5,
+    "trades_total": 0,
+    "trade_events_24h_total": 5,
+    "error_lines_total": 11
+  },
+  "base_alerts": [
+    "polymarket: remote sync issue - 2 required remote file(s) failed to sync.",
+    "mt5_desk: report flagged attention state.",
+    "mt5_desk: elevated error lines detected (6).",
+    "polymarket: report flagged attention state."
+  ],
+  "base_bots": [
+    {
+      "id": "mt5_desk",
+      "name": "MT5 Agentic Trading Desk",
+      "status": "attention",
+      "pnl_total": 0.0,
+      "trades_total": 0,
+      "error_lines_total": 6,
+      "log_report": {
+        "bot_id": "mt5_desk",
+        "bot_name": "MT5 Agentic Trading Desk",
+        "checked_at_utc": "2026-04-17T15:14:47.124832+00:00",
+        "logs": [
+          {
+            "path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk\\logs\\runtime\\runtime.log",
+            "kind": "text",
+            "lines_scanned": 200,
+            "pnl_last": null,
+            "trades_last": null,
+            "drawdown_last": null,
+            "error_lines": 3,
+            "tail_excerpt": [
+              "[2026-04-14T20:15:02.090821+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T20:30:02.080152+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T20:30:02.081152+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T20:45:02.110551+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T20:45:02.111552+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T21:00:02.063909+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T21:00:02.064894+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T21:15:02.073970+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T21:15:02.074969+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T21:30:02.063994+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T21:30:02.064526+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-14T21:45:02.057054+00:00] WARNING cycle_skipped: trading_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-14T21:45:02.058071+00:00] INFO  scheduler_job_executed: Scheduler job 'trading_cycle' executed.",
+              "[2026-04-15T00:00:02.074347+00:00] WARNING cycle_skipped: research_cycle skipped because required dependencies were unavailable.",
+              "[2026-04-15T00:00:02.075347+00:00] INFO  scheduler_job_executed: Scheduler job 'research_cycle' executed."
+            ],
+            "exists": true
+          },
+          {
+            "path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk\\logs\\runtime\\runtime_events.jsonl",
+            "kind": "text",
+            "lines_scanned": 200,
+            "pnl_last": null,
+            "trades_last": null,
+            "drawdown_last": null,
+            "error_lines": 3,
+            "tail_excerpt": [
+              "{\"timestamp\": \"2026-04-14T20:15:02.090821+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 20:15:00...",
+              "{\"timestamp\": \"2026-04-14T20:30:02.080152+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T20:30:02.081152+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 20:30:00...",
+              "{\"timestamp\": \"2026-04-14T20:45:02.110551+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T20:45:02.111552+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 20:45:00...",
+              "{\"timestamp\": \"2026-04-14T21:00:02.063909+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T21:00:02.064894+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 21:00:00...",
+              "{\"timestamp\": \"2026-04-14T21:15:02.073970+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T21:15:02.074969+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 21:15:00...",
+              "{\"timestamp\": \"2026-04-14T21:30:02.063994+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T21:30:02.064526+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 21:30:00...",
+              "{\"timestamp\": \"2026-04-14T21:45:02.057054+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"trading_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"trading_cycle\", \"health\": {\"ok\": fa...",
+              "{\"timestamp\": \"2026-04-14T21:45:02.058071+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'trading_cycle' executed.\", \"details\": {\"job_id\": \"trading_cycle\", \"scheduled_run_time\": \"2026-04-14 21:45:00...",
+              "{\"timestamp\": \"2026-04-15T00:00:02.074347+00:00\", \"level\": \"WARNING\", \"event\": \"cycle_skipped\", \"message\": \"research_cycle skipped because required dependencies were unavailable.\", \"details\": {\"cycle\": \"research_cycle\", \"health\": {\"ok\": ...",
+              "{\"timestamp\": \"2026-04-15T00:00:02.075347+00:00\", \"level\": \"INFO\", \"event\": \"scheduler_job_executed\", \"message\": \"Scheduler job 'research_cycle' executed.\", \"details\": {\"job_id\": \"research_cycle\", \"scheduled_run_time\": \"2026-04-15 00:00:..."
+            ],
+            "exists": true
+          }
+        ]
+      },
+      "health_command": {
+        "ok": true,
+        "return_code": 0,
+        "elapsed_ms": 1333,
+        "stdout": "==================================================\nMT5 Connection Test\n==================================================\n\n[1] Connecting to MT5...\n  FAIL - Could not connect: (-6, 'Terminal: Authorization failed')\n",
+        "stderr": "",
+        "command": "python tests/test_mt5_connection.py",
+        "cwd": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk",
+        "bot_id": "mt5_desk",
+        "bot_name": "MT5 Agentic Trading Desk",
+        "command_key": "health",
+        "checked_at_utc": "2026-04-17T15:14:48.456695+00:00"
+      },
+      "report_command": {
+        "ok": true,
+        "return_code": 0,
+        "elapsed_ms": 142,
+        "stdout": "{\n  \"ok\": false,\n  \"status\": \"attention\",\n  \"generated_at_utc\": \"2026-04-17T15:14:48.598826+00:00\",\n  \"headline\": \"0/0 trading cycles complete in 24h; no-trade cycles=0.\",\n  \"repo\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\mt5-agentic-desk\",\n  \"runtime_log\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\mt5-agentic-desk\\\\logs\\\\runtime\\\\runtime.log\",\n  \"runtime_events\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\mt5-agentic-desk\\\\logs\\\\runtime\\\\runtime_events.jsonl\",\n  \"last_cycle_line\": \"\",\n  \"trading_cycles_24h\": 0,\n  \"trading_complete_24h\": 0,\n  \"trading_no_trade_24h\": 0,\n  \"research_cycles_24h\": 0,\n  \"research_complete_24h\": 0,\n  \"avg_trading_cycle_seconds\": null,\n  \"last_no_trade_reason\": null,\n  \"health_checks\": {\n    \"ollama_ok\": true,\n    \"mt5_ok\": true,\n    \"strategy_store_ok\": true,\n    \"strategy_store_active\": 9,\n    \"strategy_store_pending_review\": 21,\n    \"strategy_store_best_pf\": 2.09,\n    \"mt5_server\": \"MetaQuotes-Demo\",\n    \"mt5_login\": 5049029063\n  },\n  \"last_cycle_completed\": {\n    \"timestamp\": \"2026-04-13T21:45:03.105451+00:00\",\n    \"cycle\": \"trading_cycle\",\n    \"status\": \"complete\",\n    \"mode\": \"no_trade\",\n    \"reason\": \"No active strategy has a fresh live entry signal.\",\n    \"duration_s\": 1.05\n  },\n  \"latest_research_json\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\mt5-agentic-desk\\\\logs\\\\research\\\\research_20260412_230337.json\",\n  \"research_summary\": {\n    \"tested\": 434,\n    \"passed_backtest\": 0,\n    \"active_total\": 9,\n    \"best_active_strategy\": \"xauusd-donchian-breakout-h4-v1\",\n    \"best_active_pf\": 2.09\n  },\n  \"trade_events_24h\": 0\n}\n",
+        "stderr": "",
+        "command": "python C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py mt5 --repo .",
+        "cwd": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk",
+        "bot_id": "mt5_desk",
+        "bot_name": "MT5 Agentic Trading Desk",
+        "command_key": "report",
+        "checked_at_utc": "2026-04-17T15:14:48.612603+00:00"
+      },
+      "report_payload": {
+        "ok": false,
+        "status": "attention",
+        "generated_at_utc": "2026-04-17T15:14:48.598826+00:00",
+        "headline": "0/0 trading cycles complete in 24h; no-trade cycles=0.",
+        "repo": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk",
+        "runtime_log": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk\\logs\\runtime\\runtime.log",
+        "runtime_events": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk\\logs\\runtime\\runtime_events.jsonl",
+        "last_cycle_line": "",
+        "trading_cycles_24h": 0,
+        "trading_complete_24h": 0,
+        "trading_no_trade_24h": 0,
+        "research_cycles_24h": 0,
+        "research_complete_24h": 0,
+        "avg_trading_cycle_seconds": null,
+        "last_no_trade_reason": null,
+        "health_checks": {
+          "ollama_ok": true,
+          "mt5_ok": true,
+          "strategy_store_ok": true,
+          "strategy_store_active": 9,
+          "strategy_store_pending_review": 21,
+          "strategy_store_best_pf": 2.09,
+          "mt5_server": "MetaQuotes-Demo",
+          "mt5_login": 5049029063
+        },
+        "last_cycle_completed": {
+          "timestamp": "2026-04-13T21:45:03.105451+00:00",
+          "cycle": "trading_cycle",
+          "status": "complete",
+          "mode": "no_trade",
+          "reason": "No active strategy has a fresh live entry signal.",
+          "duration_s": 1.05
+        },
+        "latest_research_json": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk\\logs\\research\\research_20260412_230337.json",
+        "research_summary": {
+          "tested": 434,
+          "passed_backtest": 0,
+          "active_total": 9,
+          "best_active_strategy": "xauusd-donchian-breakout-h4-v1",
+          "best_active_pf": 2.09
+        },
+        "trade_events_24h": 0
+      },
+      "data_source": "local_repo",
+      "repo_used": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\mt5-agentic-desk"
+    },
+    {
+      "id": "polymarket",
+      "name": "Polymarket Copy Trading Bot",
+      "status": "attention",
+      "pnl_total": -7.5,
+      "trades_total": 0,
+      "error_lines_total": 5,
+      "log_report": {
+        "bot_id": "polymarket",
+        "bot_name": "Polymarket Copy Trading Bot",
+        "checked_at_utc": "2026-04-17T15:14:48.614612+00:00",
+        "logs": [
+          {
+            "path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot\\bot.log",
+            "kind": "text",
+            "lines_scanned": 200,
+            "pnl_last": -7.5,
+            "trades_last": null,
+            "drawdown_last": null,
+            "error_lines": 5,
+            "tail_excerpt": [
+              "2026-04-17 00:44:10 UTC - SCALE UP AVAILABLE: Bankroll $306.14 has crossed $150 threshold",
+              "2026-04-17 00:44:10 UTC -   Suggested config: BASE_BET=5, MAX_BET=15, DAILY_LOSS_CAP=30",
+              "2026-04-17 00:44:10 UTC - [SCALE UP] Service mode \u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.",
+              "2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.",
+              "2026-04-17 00:44:10 UTC - SCALE UP AVAILABLE: Bankroll $306.14 has crossed $300 threshold",
+              "2026-04-17 00:44:10 UTC -   Suggested config: BASE_BET=10, MAX_BET=30, DAILY_LOSS_CAP=60",
+              "2026-04-17 00:44:10 UTC - [SCALE UP] Service mode \u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.",
+              "2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.",
+              "2026-04-17 00:44:11 UTC -   [WARN] cond-1\u2026 resolved but px unknown \u2014 forcing close at 0.0",
+              "2026-04-17 00:44:11 UTC -   RESOLVED cond-1\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \u2192 LOSS",
+              "2026-04-17 00:44:11 UTC - SCALE UP AVAILABLE: Bankroll $292.50 has crossed $150 threshold",
+              "2026-04-17 00:44:11 UTC -   Suggested config: BASE_BET=5, MAX_BET=15, DAILY_LOSS_CAP=30",
+              "2026-04-17 00:44:11 UTC - [SCALE UP] Service mode \u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.",
+              "2026-04-17 00:44:11 UTC - Scaling declined, keeping current config.",
+              "2026-04-17 00:44:11 UTC - [HYBRID] Synced hybrid veto labels for 1 opportunity row(s) at threshold 0.65"
+            ],
+            "exists": true
+          },
+          {
+            "path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot\\paper_trades.csv",
+            "kind": "csv",
+            "rows": 0,
+            "pnl_total": 0.0,
+            "wins": 0,
+            "losses": 0,
+            "open": 0,
+            "exists": true
+          }
+        ]
+      },
+      "health_command": {
+        "ok": true,
+        "return_code": 0,
+        "elapsed_ms": 143,
+        "stdout": "{\n  \"ok\": false,\n  \"status\": \"attention\",\n  \"generated_at_utc\": \"2026-04-17T15:14:48.741786+00:00\",\n  \"headline\": \"resolved_24h=5, win_rate_24h=40.0%, net_pnl_24h=-4.77, warns_24h=1.\",\n  \"repo\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\",\n  \"state_db_path\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\\\\bot_state.db\",\n  \"state_db_candidates\": [\n    \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\\\\bot_state.db\"\n  ],\n  \"db_exists\": true,\n  \"csv_rows\": 0,\n  \"csv_pnl_total\": 0.0,\n  \"csv_wins\": 0,\n  \"csv_losses\": 0,\n  \"csv_open\": 0,\n  \"csv_latest_timestamp\": null,\n  \"starting_bankroll\": 300.0,\n  \"estimated_bankroll_current\": 300.0,\n  \"max_drawdown_usd_total\": 0.0,\n  \"max_drawdown_pct_total\": 0.0,\n  \"recent_resolved_count_24h\": 5,\n  \"recent_wins_24h\": 2,\n  \"recent_losses_24h\": 1,\n  \"win_rate_24h\": 40.0,\n  \"net_pnl_24h\": -4.7727,\n  \"gross_win_pnl_24h\": 12.2728,\n  \"gross_loss_pnl_24h\": -17.0455,\n  \"warning_lines_24h\": 1,\n  \"scale_events_24h\": 7,\n  \"hybrid_sync_events_24h\": 3,\n  \"latest_resolved_line\": \"2026-04-17 00:44:11 UTC -   RESOLVED cond-1\\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \\u2192 LOSS\",\n  \"notes\": [\n    \"1 warning/error line(s) found in bot.log over last 24h.\"\n  ],\n  \"last_log_lines\": [\n    \"2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:10 UTC - SCALE UP AVAILABLE: Bankroll $306.14 has crossed $300 threshold\",\n    \"2026-04-17 00:44:10 UTC -   Suggested config: BASE_BET=10, MAX_BET=30, DAILY_LOSS_CAP=60\",\n    \"2026-04-17 00:44:10 UTC - [SCALE UP] Service mode \\u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.\",\n    \"2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:11 UTC -   [WARN] cond-1\\u2026 resolved but px unknown \\u2014 forcing close at 0.0\",\n    \"2026-04-17 00:44:11 UTC -   RESOLVED cond-1\\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \\u2192 LOSS\",\n    \"2026-04-17 00:44:11 UTC - SCALE UP AVAILABLE: Bankroll $292.50 has crossed $150 threshold\",\n    \"2026-04-17 00:44:11 UTC -   Suggested config: BASE_BET=5, MAX_BET=15, DAILY_LOSS_CAP=30\",\n    \"2026-04-17 00:44:11 UTC - [SCALE UP] Service mode \\u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.\",\n    \"2026-04-17 00:44:11 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:11 UTC - [HYBRID] Synced hybrid veto labels for 1 opportunity row(s) at threshold 0.65\"\n  ],\n  \"trade_events_24h\": 5\n}\n",
+        "stderr": "",
+        "command": "python C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py polymarket --repo .",
+        "cwd": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot",
+        "bot_id": "polymarket",
+        "bot_name": "Polymarket Copy Trading Bot",
+        "command_key": "health",
+        "checked_at_utc": "2026-04-17T15:14:48.757600+00:00"
+      },
+      "report_command": {
+        "ok": true,
+        "return_code": 0,
+        "elapsed_ms": 135,
+        "stdout": "{\n  \"ok\": false,\n  \"status\": \"attention\",\n  \"generated_at_utc\": \"2026-04-17T15:14:48.887735+00:00\",\n  \"headline\": \"resolved_24h=5, win_rate_24h=40.0%, net_pnl_24h=-4.77, warns_24h=1.\",\n  \"repo\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\",\n  \"state_db_path\": \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\\\\bot_state.db\",\n  \"state_db_candidates\": [\n    \"C:\\\\Users\\\\james\\\\OneDrive\\\\Documents\\\\Claude\\\\Projects\\\\AI Holding Company\\\\ai-holding-company\\\\polymarket-bot\\\\bot_state.db\"\n  ],\n  \"db_exists\": true,\n  \"csv_rows\": 0,\n  \"csv_pnl_total\": 0.0,\n  \"csv_wins\": 0,\n  \"csv_losses\": 0,\n  \"csv_open\": 0,\n  \"csv_latest_timestamp\": null,\n  \"starting_bankroll\": 300.0,\n  \"estimated_bankroll_current\": 300.0,\n  \"max_drawdown_usd_total\": 0.0,\n  \"max_drawdown_pct_total\": 0.0,\n  \"recent_resolved_count_24h\": 5,\n  \"recent_wins_24h\": 2,\n  \"recent_losses_24h\": 1,\n  \"win_rate_24h\": 40.0,\n  \"net_pnl_24h\": -4.7727,\n  \"gross_win_pnl_24h\": 12.2728,\n  \"gross_loss_pnl_24h\": -17.0455,\n  \"warning_lines_24h\": 1,\n  \"scale_events_24h\": 7,\n  \"hybrid_sync_events_24h\": 3,\n  \"latest_resolved_line\": \"2026-04-17 00:44:11 UTC -   RESOLVED cond-1\\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \\u2192 LOSS\",\n  \"notes\": [\n    \"1 warning/error line(s) found in bot.log over last 24h.\"\n  ],\n  \"last_log_lines\": [\n    \"2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:10 UTC - SCALE UP AVAILABLE: Bankroll $306.14 has crossed $300 threshold\",\n    \"2026-04-17 00:44:10 UTC -   Suggested config: BASE_BET=10, MAX_BET=30, DAILY_LOSS_CAP=60\",\n    \"2026-04-17 00:44:10 UTC - [SCALE UP] Service mode \\u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.\",\n    \"2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:11 UTC -   [WARN] cond-1\\u2026 resolved but px unknown \\u2014 forcing close at 0.0\",\n    \"2026-04-17 00:44:11 UTC -   RESOLVED cond-1\\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \\u2192 LOSS\",\n    \"2026-04-17 00:44:11 UTC - SCALE UP AVAILABLE: Bankroll $292.50 has crossed $150 threshold\",\n    \"2026-04-17 00:44:11 UTC -   Suggested config: BASE_BET=5, MAX_BET=15, DAILY_LOSS_CAP=30\",\n    \"2026-04-17 00:44:11 UTC - [SCALE UP] Service mode \\u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.\",\n    \"2026-04-17 00:44:11 UTC - Scaling declined, keeping current config.\",\n    \"2026-04-17 00:44:11 UTC - [HYBRID] Synced hybrid veto labels for 1 opportunity row(s) at threshold 0.65\"\n  ],\n  \"trade_events_24h\": 5\n}\n",
+        "stderr": "",
+        "command": "python C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py polymarket --repo .",
+        "cwd": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot",
+        "bot_id": "polymarket",
+        "bot_name": "Polymarket Copy Trading Bot",
+        "command_key": "report",
+        "checked_at_utc": "2026-04-17T15:14:48.897768+00:00"
+      },
+      "report_payload": {
+        "ok": false,
+        "status": "attention",
+        "generated_at_utc": "2026-04-17T15:14:48.887735+00:00",
+        "headline": "resolved_24h=5, win_rate_24h=40.0%, net_pnl_24h=-4.77, warns_24h=1.",
+        "repo": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot",
+        "state_db_path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot\\bot_state.db",
+        "state_db_candidates": [
+          "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot\\bot_state.db"
+        ],
+        "db_exists": true,
+        "csv_rows": 0,
+        "csv_pnl_total": 0.0,
+        "csv_wins": 0,
+        "csv_losses": 0,
+        "csv_open": 0,
+        "csv_latest_timestamp": null,
+        "starting_bankroll": 300.0,
+        "estimated_bankroll_current": 300.0,
+        "max_drawdown_usd_total": 0.0,
+        "max_drawdown_pct_total": 0.0,
+        "recent_resolved_count_24h": 5,
+        "recent_wins_24h": 2,
+        "recent_losses_24h": 1,
+        "win_rate_24h": 40.0,
+        "net_pnl_24h": -4.7727,
+        "gross_win_pnl_24h": 12.2728,
+        "gross_loss_pnl_24h": -17.0455,
+        "warning_lines_24h": 1,
+        "scale_events_24h": 7,
+        "hybrid_sync_events_24h": 3,
+        "latest_resolved_line": "2026-04-17 00:44:11 UTC -   RESOLVED cond-1\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \u2192 LOSS",
+        "notes": [
+          "1 warning/error line(s) found in bot.log over last 24h."
+        ],
+        "last_log_lines": [
+          "2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.",
+          "2026-04-17 00:44:10 UTC - SCALE UP AVAILABLE: Bankroll $306.14 has crossed $300 threshold",
+          "2026-04-17 00:44:10 UTC -   Suggested config: BASE_BET=10, MAX_BET=30, DAILY_LOSS_CAP=60",
+          "2026-04-17 00:44:10 UTC - [SCALE UP] Service mode \u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.",
+          "2026-04-17 00:44:10 UTC - Scaling declined, keeping current config.",
+          "2026-04-17 00:44:11 UTC -   [WARN] cond-1\u2026 resolved but px unknown \u2014 forcing close at 0.0",
+          "2026-04-17 00:44:11 UTC -   RESOLVED cond-1\u2026 oidx=0 px=0.0000 shares=13.6364 cost=7.50 pnl=-7.5000 \u2192 LOSS",
+          "2026-04-17 00:44:11 UTC - SCALE UP AVAILABLE: Bankroll $292.50 has crossed $150 threshold",
+          "2026-04-17 00:44:11 UTC -   Suggested config: BASE_BET=5, MAX_BET=15, DAILY_LOSS_CAP=30",
+          "2026-04-17 00:44:11 UTC - [SCALE UP] Service mode \u2014 auto-declined. To apply, manually set BASE_BET, MAX_BET, DAILY_LOSS_CAP in the constants block and restart the service.",
+          "2026-04-17 00:44:11 UTC - Scaling declined, keeping current config.",
+          "2026-04-17 00:44:11 UTC - [HYBRID] Synced hybrid veto labels for 1 opportunity row(s) at threshold 0.65"
+        ],
+        "trade_events_24h": 5
+      },
+      "data_source": "local_repo",
+      "repo_used": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\polymarket-bot"
+    }
+  ],
+  "base_websites": [
+    {
+      "id": "freeghosttools",
+      "name": "Free Ghost Tools",
+      "url": "https://freeghosttools.com/",
+      "ok": true,
+      "status_code": 200,
+      "latency_ms": 190,
+      "error": null,
+      "reason": null,
+      "probe_mode": "system_proxy",
+      "network_diag": {
+        "domain": "freeghosttools.com",
+        "dns_ok": true,
+        "dns_ip": "172.67.178.231",
+        "tcp_443_ok": true,
+        "tcp_error": null
+      },
+      "local_diag": {
+        "local_project_path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\free-utility-tools",
+        "local_project_exists": true,
+        "local_sitemap_path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\free-utility-tools\\sitemap.xml",
+        "local_sitemap_exists": true,
+        "sitemap_url_count": 24,
+        "sitemap_latest_lastmod": "2026-04-02"
+      }
+    },
+    {
+      "id": "freetraderhub_website",
+      "name": "FreeTraderHub",
+      "url": "https://freetraderhub.com/",
+      "ok": true,
+      "status_code": 200,
+      "latency_ms": 254,
+      "error": null,
+      "reason": null,
+      "probe_mode": "system_proxy",
+      "network_diag": {
+        "domain": "freetraderhub.com",
+        "dns_ok": true,
+        "dns_ip": "104.21.21.84",
+        "tcp_443_ok": true,
+        "tcp_error": null
+      },
+      "local_diag": {
+        "local_project_path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\finance_web_page",
+        "local_project_exists": true
+      }
+    },
+    {
+      "id": "freetraderhub_research",
+      "name": "FreeTraderHub Research Team",
+      "url": "https://freetraderhub.com/",
+      "ok": true,
+      "status_code": 200,
+      "latency_ms": 333,
+      "error": null,
+      "reason": null,
+      "probe_mode": "system_proxy",
+      "network_diag": {
+        "domain": "freetraderhub.com",
+        "dns_ok": true,
+        "dns_ip": "104.21.21.84",
+        "tcp_443_ok": true,
+        "tcp_error": null
+      },
+      "local_diag": {
+        "local_project_path": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\free-traderhub-research-team",
+        "local_project_exists": true,
+        "local_reports_base": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\free-traderhub-research-team\\reports",
+        "local_reports_glob": "*/00_executive_brief.md",
+        "local_reports_latest_file": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\free-traderhub-research-team\\reports\\2026-03-27\\00_executive_brief.md",
+        "local_reports_latest_mtime_utc": "2026-03-28T06:05:12.439707+00:00"
+      }
+    }
+  ],
+  "warnings": [],
+  "divisions": [
+    {
+      "division": "trading",
+      "ok": true,
+      "engine": "crewai_hierarchical",
+      "status": "red",
+      "spec_file": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\crews\\trading_bots_division.yaml",
+      "final_output": "**Proposed Commands**\n```markdown\n- `python scripts/tool_router.py daily_brief --force` to review current division status and ensure all alerts are addressed.\n- `python scripts/tool_router.py run_divisions` to re-run the division's alert checks and verify that all issues have been resolved.\n- `[blocked command removed]` to investigate elevated error lines detected in MT5 Desk's report.\n- `[blocked command removed]` to investigate remote sync issue affecting Polymarket Copy Trading Bot.\n```\n\n**Expected Outcomes**\n* All division alerts should be resolved or acknowledged.\n* MT5 Desk's report should show no elevated error lines.\n* Polymarket Copy Trading Bot's remote sync issue should be resolved.\n\n**Rollback/Validation Checks**\n```markdown\n- Verify that all division alerts are cleared before proceeding with further actions.\n- Review MT5 Desk's report to ensure there are no elevated error lines detected.\n- Run a stress test on both bots after completing the investigation and adjustments to ensure they are functioning correctly.\n```\n\nPlease review these commands carefully and execute them in order.",
+      "task_outputs": [
+        {
+          "task": "monitor_task",
+          "output": "**Bot Operational Health Risks Assessment**\n\n1. **MT5 Desk**\n\t* Status: Attention\n\t* Pnl Total: 0.0\n\t* Trades Total: 0\n\t* Error Lines Total: 6\n\t* Report Age Hours: 24h\n2. **Polymarket Copy Trading Bot**\n\t* Status: Attention\n\t* Pnl Total: -7.5\n\t* Trades Total: 0\n\t* Error Lines Total: 5\n\t* Report Age Hours: 24h\n\n**Division Alerts**\n\n1. polymarket: remote sync issue - 2 required remote file(s) failed to sync.\n2. mt5_desk: report flagged attention state.\n3. mt5_desk: elevated error lines detected (6).\n4. polymarket: report flagged attention state.\n\n**Immediate Monitoring Actions**\n- Investigate and resolve the remote sync issue in Polymarket Copy Trading Bot.\n- Review MT5 Desk's report for any errors or warnings.\n- Check the bot's performance to ensure it is not causing any unnecessary load on the system."
+        },
+        {
+          "task": "analyst_task",
+          "output": "**Performance Findings**\n* **PnL Concentration and Outliers**: Polymarket Copy Trading Bot has a significant outlier in its Pnl Total (-7.5), indicating potential performance issues.\n* **Trade Volume Realism**: Both bots have zero trades executed, suggesting an issue with their trading logic or market conditions.\n* **Variance between Historical Totals and Recent 24h Signals**: Polymarket Copy Trading Bot's win rate (40.0%) is significantly higher than its historical average, indicating potential over-performance.\n\n**Risk Interpretation**\n* Elevated error lines in MT5 Desk (6) indicate potential issues with data quality or processing.\n* Remote sync issue in Polymarket Copy Trading Bot may lead to stale or delayed data.\n* Significant outlier in Pnl Total (-7.5) for Polymarket Copy Trading Bot suggests potential performance risks.\n\n**Owner Decision Options**\n1. **Run a thorough investigation into the remote sync issue**: Expected impact: High (potential data quality issues).\n2. **Review and adjust MT5 Desk's trading logic**: Expected impact: Medium (potential improvement in performance).\n3. **Monitor Polymarket Copy Trading Bot's performance closely**: Expected impact: Low (potential over-performance, but may be temporary).\n4. **Run a stress test on both bots to identify potential issues**: Expected impact: High (potential identification of underlying problems)."
+        },
+        {
+          "task": "executor_task",
+          "output": "**Proposed Commands**\n```markdown\n- `python scripts/tool_router.py daily_brief --force` to review current division status and ensure all alerts are addressed.\n- `python scripts/tool_router.py run_divisions` to re-run the division's alert checks and verify that all issues have been resolved.\n- `[blocked command removed]` to investigate elevated error lines detected in MT5 Desk's report.\n- `[blocked command removed]` to investigate remote sync issue affecting Polymarket Copy Trading Bot.\n```\n\n**Expected Outcomes**\n* All division alerts should be resolved or acknowledged.\n* MT5 Desk's report should show no elevated error lines.\n* Polymarket Copy Trading Bot's remote sync issue should be resolved.\n\n**Rollback/Validation Checks**\n```markdown\n- Verify that all division alerts are cleared before proceeding with further actions.\n- Review MT5 Desk's report to ensure there are no elevated error lines detected.\n- Run a stress test on both bots after completing the investigation and adjustments to ensure they are functioning correctly.\n```\n\nPlease review these commands carefully and execute them in order."
+        }
+      ],
+      "scorecard": {
+        "goal": "Run conservative, safety-first trading operations with validated strategy execution and enforced risk caps.",
+        "desired_outcome": "MT5 dependency health remains green, strategy quality stays above minimum PF, and Polymarket risk controls (loss cap/exposure/warnings) stay within configured bounds.",
+        "status": "RED",
+        "items": [
+          {
+            "metric": "MT5 dependencies",
+            "target": "ollama_ok, mt5_ok, strategy_store_ok = true",
+            "actual": "ollama=True mt5=True store=True",
+            "variance": "all dependencies healthy",
+            "status": "GREEN",
+            "action": "Run `python scripts/tool_router.py run_trading_script --bot mt5_desk --command-key health` and inspect failed dependency."
+          },
+          {
+            "metric": "Active validated strategies",
+            "target": ">= 1",
+            "actual": "9",
+            "variance": "+8",
+            "status": "GREEN",
+            "action": "Run MT5 research cycle and promote validated candidates if active strategy count is low."
+          },
+          {
+            "metric": "Best active strategy PF",
+            "target": ">= 1.30",
+            "actual": "2.09",
+            "variance": "+0.79",
+            "status": "GREEN",
+            "action": "If PF drops, pause weakest strategy and run research/backtest refresh."
+          },
+          {
+            "metric": "MT5 cycle freshness",
+            "target": "last cycle age <= 180m",
+            "actual": "3.7d",
+            "variance": "+5190m",
+            "status": "RED",
+            "action": "If stale, restart scheduler and verify `logs/runtime/runtime_events.jsonl` is advancing."
+          },
+          {
+            "metric": "Polymarket VPS service",
+            "target": "systemd status = active",
+            "actual": "active",
+            "variance": "active",
+            "status": "GREEN",
+            "action": "Run `ssh ... systemctl status polymarket-bot` and restart service if inactive."
+          },
+          {
+            "metric": "Polymarket 24h net PnL vs daily loss cap",
+            "target": ">= -$60.00",
+            "actual": "$-4.77",
+            "variance": "+55.23 vs loss cap buffer",
+            "status": "GREEN",
+            "action": "If RED, reduce BASE_BET/MAX_BET and pause new entries pending root-cause review."
+          },
+          {
+            "metric": "Polymarket warning/error lines (24h)",
+            "target": "<= 2",
+            "actual": "1",
+            "variance": "-1",
+            "status": "GREEN",
+            "action": "Inspect bot.log warning cluster and patch root causes before scaling risk."
+          },
+          {
+            "metric": "Polymarket open positions",
+            "target": "<= 12",
+            "actual": "0",
+            "variance": "-12",
+            "status": "GREEN",
+            "action": "If open exposure is high, tighten entry gating and let resolution loop de-risk."
+          },
+          {
+            "metric": "Polymarket latest resolved-trade data age",
+            "target": "<= 72h",
+            "actual": "n/a",
+            "variance": "missing",
+            "status": "AMBER",
+            "action": "If stale, verify remote sync and confirm resolution loop is recording settlements."
+          },
+          {
+            "metric": "Polymarket resolved trades in 24h",
+            "target": ">= 1",
+            "actual": "5",
+            "variance": "+4",
+            "status": "GREEN",
+            "action": "If persistently low, review market-selection filters and watchlist coverage."
+          }
+        ],
+        "risks": [
+          "MT5 scheduler appears stale for the expected operating cadence.",
+          "Polymarket resolved-trade recency signal is stale or missing."
+        ],
+        "actions": [
+          "Restart MT5 scheduler and verify trading/research cycles resume.",
+          "Verify polymarket remote sync and confirm settlement timestamps are being written."
+        ]
+      },
+      "warnings": [
+        "CrewAI output included non-allowlisted command suggestions; blocked command lines were removed."
+      ]
+    },
+    {
+      "division": "websites",
+      "ok": true,
+      "engine": "crewai_hierarchical",
+      "status": "amber",
+      "spec_file": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\crews\\websites_division.yaml",
+      "final_output": "**Reliability Findings**\n* Free Ghost Tools: No reliability concerns identified.\n* FreetraderHub Website: No reliability concerns identified.\n* FreetraderHub Research Team: Higher latency (333ms) compared to other websites.\n\n**Probable Root Causes**\n* FreetraderHub Research Team: Potential issues with server performance, network connectivity, or database queries.\n* FreetraderHub Website and Free Ghost Tools: No apparent root causes identified.\n\n**Preventive Actions and Monitoring Improvements**\n1. **FreetraderHub Research Team**: Implement latency optimization techniques (e.g., caching, content delivery networks) to reduce average latency.\n2. **Regularly Monitor Latency**: Track FreetraderHub Research Team's latency over time to detect any changes or trends.\n3. **Performance Testing**: Schedule regular performance testing for all websites to ensure optimal server performance and network connectivity.\n\n**Owner-Approvable Next Steps with Validation Checks**\n1. **Validate Latency Reduction**: Verify that implemented optimizations have reduced FreetraderHub Research Team's latency by 10% within the next 2 weeks.\n2. **Schedule Performance Testing**: Coordinate regular performance testing for all websites every 3 months to ensure optimal server performance and network connectivity.\n3. **Review DNS and HTTPS Checks**: Validate that DNS and HTTPS checks remain successful for all websites to prevent potential security vulnerabilities.",
+      "task_outputs": [
+        {
+          "task": "ops_task",
+          "output": "**Final Answer**\n\n**Site Status Matrix**\n* Free Ghost Tools:\n  - Status Code: 200\n  - Latency: 190ms\n  - DNS Check: Passed (dns_ok = true)\n  - HTTPS Check: Passed (tcp_443_ok = true)\n* FreetraderHub Website:\n  - Status Code: 200\n  - Latency: 254ms\n  - DNS Check: Passed (dns_ok = true)\n  - HTTPS Check: Passed (tcp_443_ok = true)\n* FreetraderHub Research Team:\n  - Status Code: 200\n  - Latency: 333ms\n  - DNS Check: Passed (dns_ok = true)\n  - HTTPS Check: Passed (tcp_443_ok = true)\n\n**Active Incidents**\nNone\n\n**Immediate Remediation Checks**\n1. Investigate the cause of higher latency on FreetraderHub Research Team.\n2. Monitor all websites for any further issues or changes in their operational posture."
+        },
+        {
+          "task": "reliability_task",
+          "output": "**Reliability Findings**\n* Free Ghost Tools: No reliability concerns identified.\n* FreetraderHub Website: No reliability concerns identified.\n* FreetraderHub Research Team: Higher latency (333ms) compared to other websites.\n\n**Probable Root Causes**\n* FreetraderHub Research Team: Potential issues with server performance, network connectivity, or database queries.\n* FreetraderHub Website and Free Ghost Tools: No apparent root causes identified.\n\n**Preventive Actions and Monitoring Improvements**\n1. **FreetraderHub Research Team**: Implement latency optimization techniques (e.g., caching, content delivery networks) to reduce average latency.\n2. **Regularly Monitor Latency**: Track FreetraderHub Research Team's latency over time to detect any changes or trends.\n3. **Performance Testing**: Schedule regular performance testing for all websites to ensure optimal server performance and network connectivity.\n\n**Owner-Approvable Next Steps with Validation Checks**\n1. **Validate Latency Reduction**: Verify that implemented optimizations have reduced FreetraderHub Research Team's latency by 10% within the next 2 weeks.\n2. **Schedule Performance Testing**: Coordinate regular performance testing for all websites every 3 months to ensure optimal server performance and network connectivity.\n3. **Review DNS and HTTPS Checks**: Validate that DNS and HTTPS checks remain successful for all websites to prevent potential security vulnerabilities."
+        }
+      ],
+      "scorecard": {
+        "goal": "Keep managed web properties reachable, fast, and operationally fresh for growth workflows.",
+        "desired_outcome": "All sites remain up with healthy latency/network diagnostics, while sitemap and research outputs stay fresh enough to support traffic and decision workflows.",
+        "status": "AMBER",
+        "items": [
+          {
+            "metric": "Website availability snapshot",
+            "target": ">= 100% (all sites up)",
+            "actual": "100% (3/3)",
+            "variance": "+0.00",
+            "status": "GREEN",
+            "action": "For any DOWN site, run `/site <id>` and verify DNS/TCP and deployment logs."
+          },
+          {
+            "metric": "Website latency ceiling (snapshot max)",
+            "target": "<= 500ms",
+            "actual": "333ms",
+            "variance": "-167ms",
+            "status": "GREEN",
+            "action": "If AMBER/RED, profile origin response and CDN/cache behavior for the slowest site."
+          },
+          {
+            "metric": "DNS + TCP(443) reachability",
+            "target": "all managed domains dns_ok=true and tcp_443_ok=true",
+            "actual": "all healthy",
+            "variance": "0 failures",
+            "status": "GREEN",
+            "action": "Fix DNS/edge/network path issues before app-level debugging."
+          },
+          {
+            "metric": "FreeGhostTools sitemap freshness",
+            "target": "latest sitemap lastmod age <= 14d",
+            "actual": "15.6d",
+            "variance": "+1.6d",
+            "status": "AMBER",
+            "action": "If stale, refresh sitemap/deploy pipeline so content updates are indexed promptly."
+          },
+          {
+            "metric": "FreeTraderHub research brief freshness",
+            "target": "latest executive brief age <= 8d (weekly cadence)",
+            "actual": "n/a",
+            "variance": "missing",
+            "status": "AMBER",
+            "action": "If stale, run free-traderhub weekly crew and publish fresh brief/output package."
+          }
+        ],
+        "risks": [
+          "FreeTraderHub research reports are stale relative to weekly operating cadence."
+        ],
+        "actions": [
+          "Run `free-traderhub-research-team` weekly pipeline to refresh strategy/content signals."
+        ]
+      },
+      "warnings": []
+    },
+    {
+      "division": "content_studio",
+      "ok": true,
+      "engine": "content_studio_orchestrator",
+      "status": "GREEN",
+      "spec_file": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\crews\\content_studio.yaml",
+      "final_output": "Content Studio status: GREEN. 0 draft(s) awaiting CEO approval under R3/R4.",
+      "task_outputs": [],
+      "warnings": [],
+      "drafts_pending": 0,
+      "last_approval_wait_hours": 0.0,
+      "notes": "Content Studio status: GREEN. 0 draft(s) awaiting CEO approval under R3/R4."
+    }
+  ],
+  "files": {
+    "markdown": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\reports\\phase2_divisions_20260417_155341.md",
+    "json": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\reports\\phase2_divisions_20260417_155341.json",
+    "latest_markdown": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\reports\\phase2_divisions_latest.md",
+    "latest_json": "C:\\Users\\james\\OneDrive\\Documents\\Claude\\Projects\\AI Holding Company\\ai-holding-company\\reports\\phase2_divisions_latest.json"
+  }
+}

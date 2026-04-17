@@ -1,0 +1,204 @@
+company:
+  name: "AI Holding Company"
+  timezone: "America/Vancouver"
+  owner_role: "Owner/CEO"
+
+chat:
+  preferred_app: "telegram" # Change to "slack" if needed
+  morning_brief_time_local: "08:00"
+
+bridge:
+  provider: "telegram"
+  observer_mode: true
+  state_file: "state/telegram_bridge_state.json"
+  audit_log_path: "state/bridge_audit.jsonl"
+  telegram:
+    bot_token_env: "TELEGRAM_BOT_TOKEN"
+    owner_chat_id_env: "TELEGRAM_OWNER_CHAT_ID"
+    owner_user_id_env: "TELEGRAM_OWNER_USER_ID"
+    poll_interval_sec: 3
+    allowed_chat_ids: []
+    allowed_user_ids: []
+
+paths:
+  reports_dir: "reports"
+  state_dir: "state"
+  memory_dir: "memory"
+  heartbeat_file: "HEARTBEAT.md"
+
+memory:
+  enabled: true
+  ollama_base_url: "http://127.0.0.1:11434"
+  embedding_model: "nomic-embed-text"
+
+trading_bots:
+  - id: "mt5_desk"
+    name: "MT5 Agentic Trading Desk"
+    repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/mt5-agentic-desk"
+    log_paths:
+      - "logs/runtime/runtime.log"
+      - "logs/runtime/runtime_events.jsonl"
+    commands:
+      health: "python tests/test_mt5_connection.py"
+      report: "python \"C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py\" mt5 --repo ."
+      execute: "python main.py --mode trading --quiet"
+    kpi_patterns:
+      pnl:
+        - "(?i)pnl\\s*[=:]\\s*([+-]?\\d+(?:\\.\\d+)?)"
+      trades:
+        - "(?i)trade(?:s)?\\s*[=:]\\s*(\\d+)"
+      errors:
+        - "(?i)(error|exception|traceback|\\[warn\\]|\\[ERROR\\])"
+      drawdown:
+        - "(?i)drawdown\\s*[=:]\\s*([+-]?\\d+(?:\\.\\d+)?)"
+
+  - id: "polymarket"
+    name: "Polymarket Copy Trading Bot"
+    repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/polymarket-bot"
+    log_paths:
+      - "bot.log"
+      - "paper_trades.csv"
+    commands:
+      health: "python \"C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py\" polymarket --repo ."
+      report: "python \"C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/scripts/project_reports.py\" polymarket --repo ."
+      execute: "python paper_trading_bot.py"
+    remote_readonly:
+      enabled: true
+      read_only: true
+      host: "167.234.219.208"
+      port: 22
+      user: "aicg_ro"
+      ssh_key_path: "C:/Users/james/.ssh/ai_capital_vps"
+      cache_repo_path: "repo"
+      files:
+        - remote_path: "/home/ubuntu/polymarket-bot/bot.log"
+          local_rel_path: "bot.log"
+          required: true
+        - remote_path: "/home/ubuntu/polymarket-bot/paper_trades.csv"
+          local_rel_path: "paper_trades.csv"
+          required: true
+        - remote_path: "/home/ubuntu/polymarket-bot/bot_state.db"
+          local_rel_path: "bot_state.db"
+          required: false
+      # SECURITY: .env is NOT synced remotely; place STARTING_BANKROLL in this config instead.
+      starting_bankroll: 300.0
+      service_check_cmd: "systemctl is-active polymarket-bot || true"
+      service_check_retries: 3
+      service_check_backoff_sec: 1.2
+    kpi_patterns:
+      pnl:
+        - "(?i)pnl\\s*[=:]\\s*([+-]?\\d+(?:\\.\\d+)?)"
+      trades:
+        - "(?i)trades?\\s*[=:]\\s*(\\d+)"
+      errors:
+        - "(?i)(error|exception|traceback|\\[warn\\]|\\[ERROR\\])"
+      drawdown:
+        - "(?i)drawdown\\s*[=:]\\s*([+-]?\\d+(?:\\.\\d+)?)"
+
+websites:
+  - id: "freeghosttools"
+    name: "Free Ghost Tools"
+    url: "https://freeghosttools.com/"
+    timeout_sec: 10
+    local_project_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-utility-tools"
+    local_sitemap_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-utility-tools/sitemap.xml"
+
+  - id: "freetraderhub_website"
+    name: "FreeTraderHub"
+    url: "https://freetraderhub.com/"
+    timeout_sec: 10
+    local_project_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/finance_web_page"
+
+  - id: "freetraderhub_research"
+    name: "FreeTraderHub Research Team"
+    url: "https://freetraderhub.com/"
+    timeout_sec: 10
+    local_project_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-traderhub-research-team"
+    local_reports_base: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-traderhub-research-team/reports"
+    local_reports_glob: "*/00_executive_brief.md"
+
+future_divisions:
+  - id: "research_division_seed"
+    name: "FreeTraderHub Research Team"
+    repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-traderhub-research-team"
+    notes: "Promote into full CrewAI division in Phase 4."
+
+  - id: "websites_division_seed"
+    name: "Free Utility Tools"
+    repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-utility-tools"
+    notes: "Website operations and growth tooling seed."
+
+projects:
+  content_studio:
+    project_name: "Content Studio"
+    project_type: "internal_division"
+    crew_config: "crews/content_studio.yaml"
+    status: "light"
+    enabled: true
+    notes: "Brief-driven content creation. All drafts require CEO approval before publishing (R3/R4)."
+
+kpis:
+  heartbeat:
+    required:
+      - "pnl"
+      - "trades"
+      - "errors"
+      - "uptime"
+      - "latency_ms"
+  thresholds:
+    max_error_lines_last_scan: 5
+    max_website_latency_ms: 3000
+
+phase2:
+  enabled: true
+  crewai:
+    ollama_model: "ollama/llama3.2:latest"
+    ollama_base_url: "http://127.0.0.1:11434"
+    temperature: 0.1
+    agent_max_iter: 1
+  targets:
+    trading:
+      mt5:
+        max_cycle_age_minutes: 180
+        min_active_strategies: 1
+        min_best_pf: 1.3
+        monitor_window_utc:
+          start_hour: 7
+          end_hour: 21
+          run_weekends: false
+      polymarket:
+        daily_loss_cap_usd: 60
+        max_warning_lines_24h: 2
+        max_open_positions: 12
+        max_trade_data_age_hours: 72
+        min_resolved_trades_24h: 1
+    websites:
+      snapshot_uptime_ratio_min: 1.0
+      max_latency_ms: 500
+      max_sitemap_age_days: 14
+      max_research_report_age_days: 8
+  reports:
+    markdown_latest: "reports/phase2_divisions_latest.md"
+    json_latest: "reports/phase2_divisions_latest.json"
+  divisions:
+    trading:
+      spec_file: "crews/trading_bots_division.yaml"
+    websites:
+      spec_file: "crews/websites_division.yaml"
+    content_studio:
+      spec_file: "crews/content_studio.yaml"
+
+phase3:
+  enabled: true
+  soul_file: "SOUL.md"
+  targets_file: "config/targets.yaml"
+  baseline_state_file: "state/phase3_company_baseline.json"
+  reports:
+    markdown_latest: "reports/phase3_holding_latest.md"
+    json_latest: "reports/phase3_holding_latest.json"
+  ceo:
+    spec_file: "crews/holding_ceo.yaml"
+    agent_max_iter: 1
+    ollama_model: "ollama/llama3.2:latest"
+    ollama_base_url: "http://127.0.0.1:11434"
+    temperature: 0.1
