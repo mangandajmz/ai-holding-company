@@ -764,7 +764,7 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
         ).strip()
     )
 
-    if payload.get("mode") == "board_review":
+    if payload.get("mode") in {"board_review", "board_pack"}:
         board = payload.get("board_review", {})
         board = board if isinstance(board, dict) else {}
         lines.append("")
@@ -786,6 +786,7 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     lines.append("## Owner Command Reminder")
     lines.append("- `python scripts/tool_router.py run_holding --mode heartbeat --force`")
     lines.append("- `python scripts/tool_router.py run_holding --mode board_review --force`")
+    lines.append("- `python scripts/tool_router.py run_holding --mode board_pack --force`")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -821,8 +822,8 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
     phase3 = _phase3_cfg(config)
     if phase3.get("enabled", True) is False:
         return {"ok": False, "error": "phase3_disabled", "message": "Phase 3 is disabled in config/projects.yaml"}
-    if mode not in {"heartbeat", "board_review"}:
-        return {"ok": False, "error": "invalid_mode", "message": "mode must be heartbeat or board_review"}
+    if mode not in {"heartbeat", "board_review", "board_pack"}:
+        return {"ok": False, "error": "invalid_mode", "message": "mode must be heartbeat, board_review, or board_pack"}
 
     phase2_payload = run_phase2_divisions(config=config, division="all", force=force)
     if not isinstance(phase2_payload, dict) or not phase2_payload.get("ok", False):
@@ -867,7 +868,7 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "phase2_payload_ref": phase2_payload.get("files", {}).get("latest_json"),
     }
 
-    if mode == "board_review":
+    if mode in {"board_review", "board_pack"}:
         payload["board_review"] = _build_board_review(company_scorecard=company_scorecard, divisions=divisions)
 
     markdown = _build_phase3_markdown(payload)

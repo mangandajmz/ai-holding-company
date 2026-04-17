@@ -60,8 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     holding.add_argument(
         "--mode",
         default="heartbeat",
-        choices=["heartbeat", "board_review"],
-        help="Holding mode: heartbeat (daily) or board_review (deeper review).",
+        choices=["heartbeat", "board_review", "board_pack"],
+        help="Holding mode: heartbeat (daily), board_review (deeper review), or board_pack (full Board Pack).",
     )
     holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
 
