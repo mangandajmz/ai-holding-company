@@ -221,8 +221,11 @@ class TelegramBridge:
 
         if lowered in {"/help", "help"}:
             return {"type": "help"}
-        if lowered in {"/status", "status"}:
+        if lowered == "/status":
             return {"type": "tool", "name": "daily_brief", "args": ["daily_brief"]}
+        # Plain-text "status", "CEO", "daily_brief", "commercial" → synthesised freetext answer
+        if lowered in {"status", "ceo", "daily_brief", "commercial", "/commercial"}:
+            return {"type": "freetext", "text": raw}
         if lowered in {"/brief", "brief"} or any(p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")):
             if self.phase3_enabled:
                 return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
@@ -330,29 +333,61 @@ class TelegramBridge:
 
         return {"type": "freetext", "text": raw}
 
+    @staticmethod
+    def _status_emoji(status: str) -> str:
+        return {"RED": "🔴", "AMBER": "🟡", "GREEN": "🟢"}.get(str(status).upper(), "⬜")
+
     def _format_help(self) -> str:
+        bots = ", ".join(sorted(self.bot_ids)) or "<none configured>"
+        sites = ", ".join(sorted(self.website_ids)) or "<none configured>"
+        observer = "ON  (execute blocked)" if self.observer_mode else "OFF"
         return (
-            "AI Holding Company bridge commands:\n"
-            "- /status\n"
-            "- /brief\n"
-            "- /site <website_id>\n"
-            "- /bot <bot_id> health\n"
-            "- /bot <bot_id> report\n"
-            "- /bot <bot_id> logs [lines]\n"
-            "- /divisions [all|trading|websites]\n"
-            "- /board review\n"
-            "- /note <text>\n"
-            "- /memory <query>\n"
-            "- /help\n"
-            f"Observer mode: {'ON' if self.observer_mode else 'OFF'}"
+            "MANGANDA LTD  ·  CEO Commands\n"
+            "──────────────────────────────\n"
+            "DAILY OPERATIONS\n"
+            "  /status          Quick pulse (cached, instant)\n"
+            "  /brief           CEO heartbeat — full scorecard\n"
+            "  /divisions all   Division operational review\n"
+            "\n"
+            "APPROVALS\n"
+            "  /board review    Approval matrix (formal)\n"
+            "  /board pack      Full 8-field board pack\n"
+            "\n"
+            "TRADING BOTS\n"
+            f"  Bots: {bots}\n"
+            "  /bot <id> health     Connectivity check\n"
+            "  /bot <id> report     Session P&L report\n"
+            "  /bot <id> logs 50    Last 50 log lines\n"
+            "\n"
+            "WEBSITES\n"
+            f"  Sites: {sites}\n"
+            "  /site <id>       Live ping\n"
+            "\n"
+            "MEMORY\n"
+            "  /note <text>    Save a directive\n"
+            "  /memory <q>     Search past context\n"
+            "\n"
+            "──────────────────────────────\n"
+            f"Observer mode: {observer}\n"
+            "→ Start with /brief"
         )
 
     def _summarize_tool_result(self, tool_name: str, result: dict[str, Any]) -> str:
         if not result.get("ok"):
             err = (result.get("stderr") or "").strip()
+            # Strip Python stack trace — internal details must not reach CEO
+            if "Traceback" in err:
+                clean = [
+                    line.strip() for line in err.split("\n")
+                    if line.strip()
+                    and not any(x in line for x in ("Traceback", "  File ", "    "))
+                    and not re.match(r"^[A-Za-z]+(?:Error|Exception):", line.strip())
+                ]
+                err = " ".join(clean) if clean else "Internal error — check server logs"
             return (
-                f"{tool_name}: FAILED (rc={result.get('return_code')})\n"
-                f"stderr: {err[:600] if err else '<empty>'}"
+                f"⚠ Command failed: {tool_name}\n"
+                f"Reason: {err[:300] if err else 'Unexpected error — check server logs'}\n"
+                "→ /status for last cached state"
             )
 
         payload = result.get("payload")
@@ -374,20 +409,53 @@ class TelegramBridge:
                     files = latest.get("files", {}) or files
                     bots = latest.get("bots", []) or []
                     websites = latest.get("websites", []) or []
+            alert_count = len(alerts)
+            if alert_count == 0:
+                overall = "🟢 ALL CLEAR"
+            elif alert_count <= 2:
+                overall = "🟡 AMBER"
+            else:
+                overall = "🔴 RED"
+            now_str = _utc_now()[:16].replace("T", "  ")
             lines = [
-                f"Daily brief: ok={payload.get('ok')}, skipped={payload.get('skipped')}",
-                f"PnL={summary.get('pnl_total')} | Trades={summary.get('trades_total')} | Errors={summary.get('error_lines_total')}",
-                f"Bots={summary.get('bots_total')} | Websites up={summary.get('websites_up')}/{summary.get('websites_total')}",
+                "─────────────────────────────",
+                "MANGANDA LTD  ·  Daily Pulse",
+                f"{now_str} UTC",
+                "─────────────────────────────",
+                f"{overall}  —  {alert_count} alert{'s' if alert_count != 1 else ''}",
+                "",
+                "TRADING",
             ]
+            pnl = summary.get("pnl_total")
+            trades = summary.get("trades_total")
+            errors = summary.get("error_lines_total")
+            if pnl is not None:
+                sign = "+" if float(pnl) >= 0 else ""
+                lines.append(f"  PnL today    {sign}{pnl}")
+            if trades is not None:
+                lines.append(f"  Trades       {trades}    (target ≥40)")
+            if errors is not None:
+                err_flag = "✓" if int(errors) <= 3 else "⚠"
+                lines.append(f"  Errors       {errors}    (threshold ≤3 {err_flag})")
             for bot in bots[:2]:
-                lines.append(f"Bot {bot.get('id')}: status={bot.get('status')} pnl={bot.get('pnl_total')}")
-            for site in websites[:2]:
-                lines.append(f"Site {site.get('id')}: {'UP' if site.get('ok') else 'DOWN'} latency={site.get('latency_ms')}ms")
+                icon = "🟢" if str(bot.get("status", "")).upper() == "RUNNING" else "🟡"
+                lines.append(f"  {icon} {bot.get('id')}    pnl={bot.get('pnl_total')}")
+            if websites:
+                lines.append("")
+                lines.append("INFRASTRUCTURE")
+                up = summary.get("websites_up", 0)
+                total = summary.get("websites_total", len(websites))
+                lines.append(f"  Websites     {up} / {total} UP")
+                for site in websites[:4]:
+                    icon = "🟢" if site.get("ok") else "🔴"
+                    lines.append(f"  {icon} {site.get('id')}    {site.get('latency_ms')}ms")
             if alerts:
-                lines.append(f"Alerts: {len(alerts)} (top: {alerts[0]})")
-            md_path = files.get("latest_markdown") or files.get("markdown")
-            if md_path:
-                lines.append(f"Report: {md_path}")
+                lines.append("")
+                lines.append(f"ALERTS  ({len(alerts)})")
+                for alert in alerts[:3]:
+                    lines.append(f"  ⚠ {alert}")
+            lines.append("")
+            lines.append("→ /brief for full CEO scorecard")
             return "\n".join(lines)
 
         if tool_name == "check_website":
@@ -406,25 +474,30 @@ class TelegramBridge:
             )
 
         if tool_name == "run_trading_script":
-            report = {
-                "ok": payload.get("ok"),
-                "bot_id": payload.get("bot_id"),
-                "command_key": payload.get("command_key"),
-                "return_code": payload.get("return_code"),
-                "elapsed_ms": payload.get("elapsed_ms"),
-            }
-            stdout_text = str(payload.get("stdout", "")).strip()
+            bot_id = payload.get("bot_id", "?")
+            cmd_key = str(payload.get("command_key", "?"))
+            rc = payload.get("return_code", -1)
+            elapsed = int(payload.get("elapsed_ms") or 0)
+            ok_flag = bool(payload.get("ok", rc == 0))
+            icon = "🟢" if ok_flag else "🔴"
+            status = "OK" if ok_flag else "FAILED"
+            elapsed_s = f"{elapsed // 1000}.{(elapsed % 1000) // 100}s" if elapsed else "—"
             headline = None
+            stdout_text = str(payload.get("stdout", "")).strip()
             if stdout_text.startswith("{"):
                 try:
-                    nested = json.loads(stdout_text)
-                    headline = nested.get("headline")
+                    headline = json.loads(stdout_text).get("headline")
                 except json.JSONDecodeError:
-                    headline = None
-            message = f"Bot command: {json.dumps(report)}"
+                    pass
+            name = bot_id.replace("_", " ").upper()
+            lines = [
+                f"{name}  ·  {cmd_key.title()}",
+                f"{icon} {status}  ·  {elapsed_s}",
+            ]
             if headline:
-                message += f"\nheadline: {headline}"
-            return message
+                lines.append(headline)
+            lines.append(f"→ /bot {bot_id} report for full detail")
+            return "\n".join(lines)
 
         if tool_name == "run_divisions":
             divs = payload.get("divisions", []) or []
@@ -498,13 +571,17 @@ class TelegramBridge:
         files = payload.get("files", {})
         files = files if isinstance(files, dict) else {}
 
+        company = payload.get("company_name", "Manganda LTD")
+        now_str = str(payload.get("generated_at_utc", _utc_now()))[:16].replace("T", "  ")
+        pnl = base.get("pnl_total", "—")
+        trades = base.get("trades_total", "—")
+        sites_up = base.get("websites_up", "—")
+        sites_total = base.get("websites_total", "—")
+        sign = "+" if isinstance(pnl, (int, float)) and float(pnl) >= 0 else ""
         lines = [
-            f"{payload.get('company_name', 'AI Holding Company')} - Division Heartbeat",
-            f"Generated (UTC): {payload.get('generated_at_utc')}",
-            f"PnL={base.get('pnl_total')} | Trades={base.get('trades_total')} | Errors={base.get('error_lines_total')}",
-            f"Websites up={base.get('websites_up')}/{base.get('websites_total')} | Alerts={len(alerts)}",
-            "",
-            "Division Priorities",
+            f"{company}  ·  Divisions",
+            f"{now_str} UTC",
+            f"PnL {sign}{pnl}  ·  Trades {trades}  ·  Sites {sites_up}/{sites_total} UP",
         ]
         owner_actions: list[str] = []
         priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
@@ -516,7 +593,8 @@ class TelegramBridge:
             scorecard = div.get("scorecard", {})
             scorecard = scorecard if isinstance(scorecard, dict) else {}
             status = str(scorecard.get("status", div.get("status", "unknown"))).upper()
-            lines.append(f"- {name}: status={status}")
+            lines.append("")
+            lines.append(f"{name.upper()}  {self._status_emoji(status)} {status}")
             if scorecard:
                 items = scorecard.get("items", [])
                 items = items if isinstance(items, list) else []
@@ -524,45 +602,36 @@ class TelegramBridge:
                     [item for item in items if isinstance(item, dict)],
                     key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
                 )
-                if ranked_items:
-                    item = ranked_items[0]
+                for item in ranked_items[:2]:
+                    emoji = self._status_emoji(item.get("status", ""))
                     lines.append(
-                        f"  [{item.get('status')}] {item.get('metric')} -> "
-                        f"actual={item.get('actual')} target={item.get('target')}"
+                        f"  {emoji} {item.get('metric')}   "
+                        f"{item.get('actual')}  vs  {item.get('target')}"
                     )
                 actions = scorecard.get("actions", [])
                 actions = actions if isinstance(actions, list) else []
-                if status in {"RED", "AMBER"}:
-                    for action in actions[:2]:
-                        action_text = str(action).strip()
-                        if action_text:
-                            owner_actions.append(f"{name}: {action_text}")
+                if status in {"RED", "AMBER"} and actions:
+                    owner_actions.append(f"{name}: {str(actions[0]).strip()}")
+                    lines.append(f"  Action: {str(actions[0]).strip()}")
+                elif status == "GREEN":
+                    lines.append("  No action required")
             else:
                 top_lines = self._extract_lines(str(div.get("final_output", "")), limit=4)
-                if top_lines:
-                    for line_text in top_lines:
-                        normalized = line_text.strip()
-                        if normalized.startswith("- ") or normalized.startswith("* "):
-                            normalized = normalized[2:].strip()
-                        lines.append(f"  - {normalized}")
+                for line_text in top_lines:
+                    normalized = line_text.strip().lstrip("- *").strip()
+                    if normalized:
+                        lines.append(f"  {normalized}")
             warnings = div.get("warnings", [])
             warnings = warnings if isinstance(warnings, list) else []
             for warning in warnings[:1]:
-                lines.append(f"  - warning: {warning}")
+                lines.append(f"  ⚠ {warning}")
 
-        if owner_actions:
-            lines.append("")
-            lines.append("Owner Decisions")
-            for action in owner_actions[:5]:
-                lines.append(f"- {action}")
-
-        report_path = files.get("latest_markdown")
-        if report_path:
-            lines.append("")
-            lines.append(f"Division report file: {report_path}")
         if alerts:
-            lines.append(f"Top alert: {alerts[0]}")
-        lines.append("Owner reminder: /divisions all | /status | /bot <id> health")
+            lines.append("")
+            lines.append(f"⚠ Alert: {alerts[0]}")
+
+        lines.append("")
+        lines.append("→ /brief for CEO scorecard  ·  /bot <id> health")
         return "\n".join(lines).strip()
 
     def _summarize_holding_brief(self, payload: dict[str, Any]) -> str:
@@ -574,80 +643,138 @@ class TelegramBridge:
         company = company if isinstance(company, dict) else {}
         divisions = payload.get("divisions", [])
         divisions = divisions if isinstance(divisions, list) else []
+        base_alerts = payload.get("base_alerts", []) or []
+        mode = str(payload.get("mode", "heartbeat"))
+        company_name = str(payload.get("company_name", "Manganda LTD"))
+        now_str = str(payload.get("generated_at_utc", _utc_now()))[:16].replace("T", "  ")
+
+        # — Exec summary line
+        company_status = str(company.get("status", "UNKNOWN")).upper()
+        priority_order = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        all_items = [i for i in company.get("items", []) if isinstance(i, dict)]
+        count_red = sum(1 for i in all_items if str(i.get("status", "")).upper() == "RED")
+        count_amber = sum(1 for i in all_items if str(i.get("status", "")).upper() == "AMBER")
+        count_green = sum(1 for i in all_items if str(i.get("status", "")).upper() == "GREEN")
+        summary_line = (
+            f"{self._status_emoji(company_status)} {company_status}"
+            + (f"  —  {count_red} RED" if count_red else "")
+            + (f"  ·  {count_amber} AMBER" if count_amber else "")
+            + (f"  ·  {count_green} GREEN" if count_green else "")
+        )
 
         lines = [
-            f"{payload.get('company_name', 'AI Holding Company')} - CEO Heartbeat",
-            f"Mode={payload.get('mode')} | Generated (UTC): {payload.get('generated_at_utc')}",
-            f"Company status={company.get('status')} | PnL={summary.get('pnl_total')} | Trades={summary.get('trades_total')}",
-            f"Websites up={summary.get('websites_up')}/{summary.get('websites_total')} | Alerts={len(payload.get('base_alerts', []) or [])}",
+            "══════════════════════════════",
+            f"{company_name}  ·  CEO Heartbeat",
+            f"{now_str} UTC  ·  {mode}",
+            "══════════════════════════════",
+            summary_line,
             "",
-            "Company KPI Snapshot",
+            "COMPANY KPIs",
         ]
 
-        priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
-        ranked_company = sorted(
-            [item for item in company.get("items", []) if isinstance(item, dict)],
-            key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
-        )
-        for item in ranked_company[:4]:
+        ranked_company = sorted(all_items, key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3))
+        for item in ranked_company[:5]:
+            emoji = self._status_emoji(item.get("status", ""))
+            action_flag = "  → REVIEW" if str(item.get("status", "")).upper() == "RED" else (
+                "  → WATCH" if str(item.get("status", "")).upper() == "AMBER" else ""
+            )
             lines.append(
-                f"- [{item.get('status')}] {item.get('metric')}: "
-                f"actual={item.get('actual')} target={item.get('target')} variance={item.get('variance')}"
+                f"{emoji} {item.get('metric')}   "
+                f"{item.get('actual')}  vs  {item.get('target')}  ({item.get('variance')}){action_flag}"
             )
 
         lines.append("")
-        lines.append("Division Snapshot")
+        lines.append("DIVISIONS")
         for div in divisions:
             if not isinstance(div, dict):
                 continue
             scorecard = div.get("scorecard", {})
             scorecard = scorecard if isinstance(scorecard, dict) else {}
-            lines.append(f"- {str(div.get('division')).title()}: status={scorecard.get('status')}")
+            div_status = str(scorecard.get("status", "UNKNOWN")).upper()
+            div_name = str(div.get("division", "division")).title()
+            lines.append(f"{div_name}    {self._status_emoji(div_status)} {div_status}")
             div_items = sorted(
-                [item for item in scorecard.get("items", []) if isinstance(item, dict)],
-                key=lambda item: priority.get(str(item.get("status", "")).upper(), 3),
+                [i for i in scorecard.get("items", []) if isinstance(i, dict)],
+                key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3),
             )
             if div_items:
                 top = div_items[0]
                 lines.append(
-                    f"  [{top.get('status')}] {top.get('metric')} -> actual={top.get('actual')} target={top.get('target')}"
+                    f"  {self._status_emoji(top.get('status', ''))} {top.get('metric')}   "
+                    f"{top.get('actual')}  vs  {top.get('target')}"
                 )
 
-        if payload.get("mode") in ("board_review", "board_pack"):
+        # — Decisions block (RED/AMBER items with actions)
+        decisions = [
+            (item, div)
+            for div in divisions if isinstance(div, dict)
+            for item in (div.get("scorecard", {}) or {}).get("items", []) if isinstance(item, dict)
+            if str(item.get("status", "")).upper() in ("RED", "AMBER")
+        ]
+        company_decisions = [
+            item for item in ranked_company
+            if str(item.get("status", "")).upper() in ("RED", "AMBER") and item.get("action")
+        ]
+        if company_decisions:
             lines.append("")
-            mode_label = "Board Pack" if payload.get("mode") == "board_pack" else "Board Review"
+            lines.append(f"DECISIONS REQUIRED  ({count_red} RED · {count_amber} AMBER)")
+            for n, item in enumerate(company_decisions[:4], 1):
+                deadline = "today" if str(item.get("status", "")).upper() == "RED" else "+7 days"
+                lines.append(
+                    f"{n}. {self._status_emoji(item.get('status', ''))} {item.get('metric')}: "
+                    f"{item.get('action', '').rstrip('.')}"
+                )
+                lines.append(f"   Owner: Trading  ·  Deadline: {deadline}")
+
+        if mode in ("board_review", "board_pack"):
+            lines.append("")
+            mode_label = "Board Pack" if mode == "board_pack" else "Board Review"
             board = payload.get("board_review", {})
             board = board if isinstance(board, dict) else {}
 
             if board.get("gate_blocked"):
-                lines.append(f"MA GATE: {mode_label} contains incomplete items - CEO review blocked.")
+                lines.append("🔴 GATE BLOCKED — CEO review cannot proceed")
                 incomplete = [
-                    f"  - {item.get('topic', '?')}: missing {', '.join(item.get('validation_warnings', []))}"
+                    f"  • {item.get('topic', '?')}: missing {', '.join(item.get('validation_warnings', []))}"
                     for item in board.get("approvals", [])
                     if isinstance(item, dict) and item.get("validation_warnings")
                 ]
                 lines.extend(incomplete)
+                lines.append("")
+                lines.append("→ /brief to force a fresh scorecard run")
             else:
                 lines.append(f"{mode_label} Approvals")
                 approvals = board.get("approvals", [])
                 approvals = approvals if isinstance(approvals, list) else []
                 if not approvals:
-                    lines.append("- None")
+                    lines.append("  None required")
                 else:
-                    for item in approvals[:5]:
+                    for n, item in enumerate(approvals[:5], 1):
                         if not isinstance(item, dict):
                             continue
-                        dissent = item.get("dissent", "")
-                        dissent_short = "" if not dissent or dissent.startswith("PENDING") else f" | Dissent: {dissent[:60]}"
-                        lines.append(
-                            f"- [{item.get('priority')}] {item.get('topic')}{dissent_short}"
-                        )
+                        pri = str(item.get("priority", "")).upper()
+                        deadline = item.get("deadline", "—")
+                        owner = str(item.get("owner", "—")).title()
+                        dissent = str(item.get("dissent", "")).strip()
+                        dissent_label = "PENDING review" if dissent.startswith("PENDING") else dissent[:60]
+                        measure = str(item.get("measurement_plan", "")).strip()
+                        lines.append(f"\n{n}. {self._status_emoji(pri)} {item.get('topic')}")
+                        lines.append(f"   Owner: {owner}  ·  Deadline: {deadline}")
+                        lines.append(f"   Dissent: {dissent_label}")
+                        if measure:
+                            lines.append(f"   Measure: {measure}")
+                lines.append("")
+                lines.append("Approve, defer, or reject each item explicitly.")
 
         report_path = payload.get("files", {}).get("latest_markdown") if isinstance(payload.get("files"), dict) else None
         if report_path:
             lines.append("")
-            lines.append(f"Holding report file: {report_path}")
-        lines.append("Owner reminder: /brief | /board review | /divisions all | /status")
+            lines.append(f"Report: {report_path}")
+
+        if mode in ("board_review", "board_pack"):
+            lines.append("→ /brief to re-run scorecard after changes")
+        else:
+            lines.append("→ /board review to formalise approvals")
         return "\n".join(lines).strip()
 
     def _search_memory(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
@@ -671,43 +798,299 @@ class TelegramBridge:
         except Exception:  # noqa: BLE001
             return []
 
+    # ------------------------------------------------------------------ #
+    #  Freetext helpers                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _load_latest_report(self, name: str) -> dict[str, Any] | None:
+        """Load reports/{name}_latest.json; return None on any failure."""
+        path = self.reports_dir / f"{name}_latest.json"
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _resolve_entity_id(self, lowered: str, id_set: set[str]) -> str | None:
+        """Fuzzy-match a natural mention to a configured bot/site ID.
+
+        Handles: exact substring, underscore→space, hyphen→space, and
+        all-significant-words-present matching (e.g. "mt5 desk" → "mt5_desk").
+        """
+        for entity_id in id_set:
+            if entity_id.lower() in lowered:
+                return entity_id
+            friendly = entity_id.lower().replace("_", " ").replace("-", " ")
+            if friendly in lowered:
+                return entity_id
+            words = [w for w in friendly.split() if len(w) > 2]
+            if words and all(w in lowered for w in words):
+                return entity_id
+        return None
+
+    @staticmethod
+    def _dedupe_memory(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for f in facts:
+            key = str(f.get("text", "")).strip()[:80].lower()
+            if key and key not in seen:
+                seen.add(key)
+                out.append(f)
+        return out
+
+    @staticmethod
+    def _is_question(lowered: str) -> bool:
+        starters = (
+            "what", "how", "why", "when", "where", "which", "who",
+            "is ", "are ", "can ", "could ", "do ", "does ", "did ",
+            "has ", "have ", "will ", "would ", "should ",
+        )
+        return lowered.endswith("?") or any(lowered.startswith(s) for s in starters)
+
+    def _detect_intent(self, lowered: str) -> str | None:
+        """Return a coarse intent tag for a freetext message."""
+        # Commercial — no live data yet
+        if re.match(r"^/?commercial\b", lowered):
+            return "commercial"
+
+        # Direction (imperative, not a question)
+        direction_patterns = [
+            r"\b(focus|prioritise|prioritize|ignore|skip|defer|stop|start|pause|switch)\b",
+            r"\b(for now|going forward|from now on|until further notice)\b",
+            r"\b(make sure|ensure|remember to|note that|don't|do not)\b",
+        ]
+        if not self._is_question(lowered) and any(re.search(p, lowered) for p in direction_patterns):
+            return "direction"
+
+        # Bot-specific
+        bot_id = self._resolve_entity_id(lowered, self.bot_ids)
+        if bot_id:
+            return f"bot:{bot_id}"
+
+        # Site-specific
+        site_id = self._resolve_entity_id(lowered, self.website_ids)
+        if site_id:
+            return f"site:{site_id}"
+
+        # Trading
+        if any(w in lowered for w in ("trading", "trades", "pnl", "p&l", "profit", "loss", "drawdown", "position", "strategy", "mt5")):
+            return "trading"
+
+        # Websites
+        if any(w in lowered for w in ("website", "uptime", "latency", "site")):
+            return "websites"
+
+        # Company / CEO / status
+        if any(w in lowered for w in ("company", "overall", "ceo", "holding", "status", "daily_brief", "how are we", "how is the", "everything")):
+            return "company"
+
+        return None
+
+    def _format_bot_summary(self, bot_id: str, result: dict[str, Any]) -> str:
+        name = bot_id.replace("_", " ").title()
+        payload = result.get("payload") or {}
+        ok = result.get("ok", False)
+        icon = "🟢" if ok else "🔴"
+        status = "CONNECTED" if ok else "ATTENTION"
+        lines = [f"{name} status: {status}"]
+        pnl = payload.get("pnl_total") or payload.get("pnl")
+        trades = payload.get("trades_total") or payload.get("trades")
+        errors = payload.get("error_lines") or payload.get("errors")
+        metrics = []
+        if pnl is not None:
+            metrics.append(f"PnL: {pnl}")
+        if trades is not None:
+            metrics.append(f"Trades: {trades}")
+        if errors is not None:
+            metrics.append(f"Errors: {errors}")
+        if metrics:
+            lines.append(" | ".join(metrics))
+        stdout_text = str(payload.get("stdout", "")).strip()
+        if stdout_text.startswith("{"):
+            try:
+                headline = json.loads(stdout_text).get("headline")
+                if headline:
+                    lines.append(f"Latest report: {headline}")
+            except json.JSONDecodeError:
+                pass
+        lines.append(f"Live health: {icon} rc={result.get('return_code', '—')}")
+        lines.append(f"→ /bot {bot_id} report for full detail")
+        return "\n".join(lines)
+
+    def _format_site_summary(self, site_id: str, result: dict[str, Any]) -> str:
+        payload = result.get("payload") or {}
+        name = site_id.replace("_", " ").replace("-", " ").title()
+        ok = payload.get("ok", result.get("ok", False))
+        icon = "🟢" if ok else "🔴"
+        lines = [f"{name}: {icon} {'UP' if ok else 'DOWN'}"]
+        details = []
+        if payload.get("status_code"):
+            details.append(f"HTTP {payload['status_code']}")
+        if payload.get("latency_ms") is not None:
+            details.append(f"{payload['latency_ms']}ms")
+        if payload.get("probe_mode"):
+            details.append(f"mode={payload['probe_mode']}")
+        if details:
+            lines.append(" | ".join(details))
+        if not ok and payload.get("reason"):
+            lines.append(f"Reason: {payload['reason']}")
+        return "\n".join(lines)
+
+    def _format_trading_summary(self, report: dict[str, Any]) -> str:
+        divisions = report.get("divisions", []) or []
+        trading_div = next(
+            (d for d in divisions if isinstance(d, dict) and str(d.get("division", "")).lower() == "trading"),
+            None,
+        )
+        if not trading_div:
+            return "Trading status: no data available.\n→ /divisions all to run a fresh report."
+        scorecard = trading_div.get("scorecard", {}) or {}
+        status = str(scorecard.get("status", "UNKNOWN")).upper()
+        lines = [f"Trading status: {self._status_emoji(status)} {status}"]
+        priority_order = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        items = [i for i in scorecard.get("items", []) if isinstance(i, dict)]
+        ranked = sorted(items, key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3))
+        non_green = [i for i in ranked if str(i.get("status", "")).upper() in ("RED", "AMBER")]
+        if non_green:
+            lines.append("Main issues:")
+            for item in non_green[:3]:
+                lines.append(f"  - {item.get('metric')}: {item.get('actual')} vs {item.get('target')}")
+        actions = scorecard.get("actions", []) or []
+        if actions:
+            lines.append("Next moves:")
+            for action in actions[:3]:
+                lines.append(f"  - {str(action).strip()}")
+        return "\n".join(lines)
+
+    def _format_websites_summary(self, report: dict[str, Any]) -> str:
+        divisions = report.get("divisions", []) or []
+        websites_div = next(
+            (d for d in divisions if isinstance(d, dict) and str(d.get("division", "")).lower() == "websites"),
+            None,
+        )
+        if not websites_div:
+            return "Website status: no data available.\n→ /divisions all to run a fresh report."
+        scorecard = websites_div.get("scorecard", {}) or {}
+        status = str(scorecard.get("status", "UNKNOWN")).upper()
+        lines = [f"Website status: {self._status_emoji(status)} {status}"]
+        priority_order = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        items = [i for i in scorecard.get("items", []) if isinstance(i, dict)]
+        ranked = sorted(items, key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3))
+        non_green = [i for i in ranked if str(i.get("status", "")).upper() in ("RED", "AMBER")]
+        if non_green:
+            lines.append("Main issues:")
+            for item in non_green[:3]:
+                lines.append(f"  - {item.get('metric')}: {item.get('actual')} vs {item.get('target')}")
+        actions = scorecard.get("actions", []) or []
+        if actions:
+            lines.append("Next moves:")
+            for action in actions[:3]:
+                lines.append(f"  - {str(action).strip()}")
+        if not non_green and not actions:
+            lines.append("All metrics on target.")
+        return "\n".join(lines)
+
+    def _format_company_summary(self, report: dict[str, Any]) -> str:
+        company = report.get("company_scorecard", {}) or {}
+        summary = report.get("base_summary", {}) or {}
+        alerts = report.get("base_alerts", []) or []
+        status = str(company.get("status", "UNKNOWN")).upper()
+        pnl = summary.get("pnl_total", "—")
+        trades = summary.get("trades_total", "—")
+        sign = "+" if isinstance(pnl, (int, float)) and float(pnl) >= 0 else ""
+        lines = [
+            f"Company status: {self._status_emoji(status)} {status}",
+            f"PnL: {sign}{pnl} | Trades: {trades} | Alerts: {len(alerts)}",
+        ]
+        priority_order = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        items = [i for i in company.get("items", []) if isinstance(i, dict)]
+        ranked = sorted(items, key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3))
+        non_green = [i for i in ranked if str(i.get("status", "")).upper() in ("RED", "AMBER")]
+        if non_green:
+            lines.append("Priority issues:")
+            for item in non_green[:4]:
+                emoji = self._status_emoji(item.get("status", ""))
+                lines.append(f"  - {emoji} {item.get('metric')}: {item.get('actual')} vs {item.get('target')}")
+        lines.append("→ /brief for full CEO scorecard")
+        return "\n".join(lines)
+
     def _answer_freetext(self, text: str) -> str:
-        """Answer a natural language question using memory search + live health if a bot is named."""
-        lowered = text.lower()
+        """Synthesise a structured answer — memory is background context only, never raw output."""
+        lowered = text.lower().strip()
+        intent = self._detect_intent(lowered)
 
-        mentioned_bot = next((bid for bid in self.bot_ids if bid.lower() in lowered), None)
-        mentioned_site = next((sid for sid in self.website_ids if sid.lower() in lowered), None)
+        # 1. Direction → log and confirm
+        if intent == "direction":
+            self._run_tool_router(
+                ["log_direction", "--text", text.strip(), "--source", "telegram_owner"],
+                timeout_sec=10,
+            )
+            return f'Direction logged.\n"{text.strip()}"'
 
-        facts = self._search_memory(text, top_k=3)
+        # 2. Commercial → clear fallback, no memory dump
+        if intent == "commercial":
+            return (
+                "Commercial status is not wired cleanly into the chat bridge yet.\n"
+                "Try /brief for the full company scorecard."
+            )
 
-        lines: list[str] = []
-        if facts:
-            lines.append("[context]")
-            for f in facts:
-                lines.append(f"- {f['text']}")
-
-        if mentioned_bot:
+        # 3. Bot-specific
+        if intent and intent.startswith("bot:"):
+            bot_id = intent[4:]
             result = self._run_tool_router(
-                ["run_trading_script", "--bot", mentioned_bot, "--command-key", "health"],
+                ["run_trading_script", "--bot", bot_id, "--command-key", "health"],
                 timeout_sec=60,
             )
-            summary = self._summarize_tool_result("run_trading_script", result)
-            lines.append(f"\n[live: {mentioned_bot}]\n{summary}")
-        elif mentioned_site:
+            return self._format_bot_summary(bot_id, result)
+
+        # 4. Site-specific
+        if intent and intent.startswith("site:"):
+            site_id = intent[5:]
             result = self._run_tool_router(
-                ["check_website", "--website", mentioned_site],
+                ["check_website", "--website", site_id],
                 timeout_sec=30,
             )
-            summary = self._summarize_tool_result("check_website", result)
-            lines.append(f"\n[live: {mentioned_site}]\n{summary}")
+            return self._format_site_summary(site_id, result)
 
-        if not lines:
-            return (
-                "I don't have enough context to answer that yet.\n"
-                "Try /brief for a full report, or /help for all commands."
-            )
+        # 5. Trading question → prefer Phase 2 cached report
+        if intent == "trading":
+            report = self._load_latest_report("phase2_divisions")
+            if report:
+                return self._format_trading_summary(report)
 
-        return "\n".join(lines)
+        # 6. Websites question → prefer Phase 2 cached report
+        if intent == "websites":
+            report = self._load_latest_report("phase2_divisions")
+            if report:
+                return self._format_websites_summary(report)
+
+        # 7. Company / CEO / status → prefer Phase 3, fallback Phase 2
+        if intent == "company":
+            report = self._load_latest_report("phase3_holding")
+            if report:
+                return self._format_company_summary(report)
+            report = self._load_latest_report("phase2_divisions")
+            if report:
+                return self._format_trading_summary(report)
+
+        # 8. Fallback: memory search (deduped, no [context] header, no raw dump)
+        facts = self._dedupe_memory(self._search_memory(text, top_k=5))
+        if facts:
+            lines = ["Here's what I found:"]
+            for f in facts[:3]:
+                snippet = str(f.get("text", "")).replace("\n", " ").strip()[:200]
+                if snippet:
+                    lines.append(f"• {snippet}")
+            lines.append("\nTry /brief for a live report.")
+            return "\n".join(lines)
+
+        return (
+            "I don't have enough context to answer that yet.\n"
+            "Try /brief for a full report, or /help for all commands."
+        )
 
     def handle_text(self, text: str) -> str:
         action = self._parse_action(text)
