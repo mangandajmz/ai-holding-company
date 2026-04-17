@@ -236,6 +236,21 @@ class TelegramBridge:
             brief_text = (content_match.group(1) or "").strip()
             return {"type": "content", "brief_text": brief_text}
 
+        if re.match(r"^/develop_status$", raw, re.I):
+            return {"type": "develop_status"}
+
+        approve_match = re.match(r"^/develop_approve(?:\s+([a-zA-Z0-9_:-]+))?$", raw, re.I)
+        if approve_match:
+            return {"type": "develop_approve", "approval_id": (approve_match.group(1) or "").strip()}
+
+        deny_match = re.match(r"^/develop_deny(?:\s+([a-zA-Z0-9_:-]+))?$", raw, re.I)
+        if deny_match:
+            return {"type": "develop_deny", "approval_id": (deny_match.group(1) or "").strip()}
+
+        develop_match = re.match(r"^/develop(?:\s+(.+))?$", raw, re.I)
+        if develop_match:
+            return {"type": "develop", "task": (develop_match.group(1) or "").strip()}
+
         if re.match(r"^/board(?:\s+review)?$", raw, re.I):
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
@@ -342,6 +357,10 @@ class TelegramBridge:
             "- /brief\n"
             "- /content <brief_text>\n"
             "- /content_status\n"
+            "- /develop <task_description>\n"
+            "- /develop_approve <approval_id>\n"
+            "- /develop_deny <approval_id>\n"
+            "- /develop_status\n"
             "- /site <website_id>\n"
             "- /bot <bot_id> health\n"
             "- /bot <bot_id> report\n"
@@ -747,6 +766,98 @@ class TelegramBridge:
                 f"Drafts pending CEO approval: {result.get('drafts_pending')}\n"
                 f"Oldest draft pending: {result.get('last_approval_wait_hours')} hours\n\n"
                 f"{result.get('notes')}"
+            )
+        if action.get("type") == "develop":
+            from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+            task = str(action.get("task", "")).strip()
+            if not task:
+                return (
+                    "Developer Tool - AI-assisted internal script development\n\n"
+                    "Usage: /develop <task description>\n"
+                    "Example: /develop Add KPI tracking for pending approvals\n\n"
+                    "Process:\n"
+                    "1. You describe the task in plain English\n"
+                    "2. qwen2.5-coder generates Python code\n"
+                    "3. Scope gate validates ai-holding-company/ only (R8)\n"
+                    "4. CEO reviews and approves or denies\n"
+                    "5. Approved changes deploy with audit logging\n\n"
+                    "Scope: ai-holding-company/ files only (R8)\n"
+                    "All code changes require CEO approval (R5)\n"
+                    "All actions are logged to artifacts/developer_tool_audit.jsonl"
+                )
+
+            result = run_developer_tool(config=self.config, task=task, action="submit")
+            if result.get("status") == "PENDING_CEO_APPROVAL":
+                approval_id = str(result.get("approval_id", ""))
+                code_preview = str(result.get("code_preview", ""))[:700]
+                diff = result.get("diff", {})
+                diff_file = str(diff.get("file", "scripts/developer_generated.py"))
+                diff_summary = str(diff.get("diff_summary", "Diff captured"))
+                return (
+                    f"Code generated for task: {task[:80]}\n\n"
+                    f"Approval ID: `{approval_id}`\n"
+                    f"Target file: {diff_file}\n"
+                    f"Diff: {diff_summary}\n\n"
+                    f"Preview:\n```python\n{code_preview}\n```\n\n"
+                    f"To approve: `/develop_approve {approval_id}`\n"
+                    f"To deny: `/develop_deny {approval_id}`\n\n"
+                    "Scope gate: PASSED (ai-holding-company/ only, R8)"
+                )
+            details = result.get("message") or result.get("violations") or result.get("status")
+            return f"Developer Tool request failed: {result.get('status')}\nDetails: {details}"
+        if action.get("type") == "develop_approve":
+            from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+            approval_id = str(action.get("approval_id", "")).strip()
+            if not approval_id:
+                return "Approval ID required. Usage: /develop_approve <approval_id>"
+            result = run_developer_tool(config=self.config, approval_id=approval_id, action="approve")
+            if result.get("ok"):
+                git_commit = str(result.get("git_commit", "")).strip()
+                commit_line = f"\nGit commit: {git_commit}" if git_commit else ""
+                return (
+                    "Code approved and deployed\n\n"
+                    f"Approval ID: {approval_id}\n"
+                    f"File: {result.get('file')}\n"
+                    f"Status: {result.get('status')}\n"
+                    f"Timestamp: {result.get('timestamp')}"
+                    f"{commit_line}\n\n"
+                    "R5 gate satisfied: CEO approval recorded."
+                )
+            details = result.get("message") or result.get("violations") or result.get("error")
+            return f"Deployment failed: {result.get('status')}\nDetails: {details}"
+        if action.get("type") == "develop_deny":
+            from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+            approval_id = str(action.get("approval_id", "")).strip()
+            if not approval_id:
+                return "Approval ID required. Usage: /develop_deny <approval_id>"
+            result = run_developer_tool(config=self.config, approval_id=approval_id, action="deny")
+            if result.get("ok"):
+                return f"Code submission denied and discarded (ID: {approval_id})"
+            return f"Denial failed: {result.get('status')}"
+        if action.get("type") == "develop_status":
+            from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+            result = run_developer_tool(config=self.config, action="status")
+            pending_count = int(result.get("pending_count", 0))
+            if pending_count == 0:
+                return "No pending code approvals."
+            lines = []
+            for item in result.get("pending", []):
+                if not isinstance(item, dict):
+                    continue
+                approval_id = str(item.get("approval_id", ""))
+                task = str(item.get("task", ""))[:60]
+                stamp = str(item.get("timestamp", ""))[:10]
+                lines.append(f"- {approval_id}: {task}... ({stamp})")
+            pending_list = "\n".join(lines)
+            return (
+                f"Developer Tool Pending Approvals ({pending_count})\n\n"
+                f"{pending_list}\n\n"
+                "To approve: /develop_approve <approval_id>\n"
+                "To deny: /develop_deny <approval_id>"
             )
         tool_name = str(action.get("name"))
         args = action.get("args", [])

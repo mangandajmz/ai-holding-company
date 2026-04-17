@@ -56,3 +56,32 @@ content_studio:
     target: "GREEN"
     red_threshold: "ANY draft without PENDING_CEO_APPROVAL status"
     amber_threshold: "Any CEO-approval item pending >48 hours"
+
+semantic_memory:
+  # Semantic search readiness tracking
+  vector_store_size:
+    target: 100 # Target 100+ indexed documents for rich search
+    alert_threshold_min: 0
+    alert_threshold_max: 1000
+
+  embedding_model:
+    target: "nomic-embed-text" # Required model
+    alert_threshold: "mismatch" # Alert if different model used
+
+  search_latency_ms:
+    target: 100 # Semantic search should return in <100ms
+    alert_threshold: 500
+
+time_saved:
+  weekly_hours:
+    target: 5 # R9 guardrail: 5 hours/week minimum
+    alert_threshold: 2.5 # AMBER if <2.5
+    red_threshold: 0 # RED if <0 (net negative)
+
+  checkin_frequency:
+    target: 12 # Check-ins every 2 hours (12/day)
+    alert_threshold: 6 # Alert if <6/day
+
+  r9_status:
+    target: "GREEN"
+    red_trigger: "Two consecutive weeks with <5 hours/week saved"

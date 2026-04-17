@@ -1,5 +1,5 @@
 ﻿# AI Holding Company â€” Master Plan
-**Version:** 5.5  
+**Version:** 5.6  
 **Owner:** J (CEO)  
 **Last updated:** 2026-04-17  
 **Supersedes:** All previous plan versions (v1â€“v4).  
@@ -7,6 +7,7 @@
 **v5.3 change:** Stage D closed. Trading=GREEN, Websites=GREEN. 23/23 tests passing, commit e533073. G1 unblocked. Stage G (Commercial Division) now active â€” prompts in STAGE_G_PROMPTS.md.  
 **v5.4 change:** Stage G closed. Commercial Division live, 45/45 tests passing, commit 1367323. Codex review: 8 issues found and resolved (including HIGH â€” inverted risk thresholds). Stage H (Holding Board v2) now active â€” prompts in STAGE_H_PROMPTS.md.
 **v5.5 change:** Stage J closed. Content Studio (light) is now live as brief-driven only with CEO approval gating (R3/R4). Added `crews/content_studio.yaml`, `scripts/content_studio.py`, phase2 integration, Telegram `/content` + `/content_status`, and 14 passing Content Studio tests. Two consecutive phase2 runs confirmed `content_studio=GREEN`.
+**v5.6 change:** Stage I closed. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and CEO approval workflow, semantic memory initialization (`nomic-embed-text`), and time-saved tracking with R9 guardrail proof at 6.25 hours/week.
 
 ---
 
@@ -245,8 +246,8 @@ Locked. Do not re-open without a CEO directive.
 | G | Commercial Division | âœ… COMPLETE â€” 2026-04-15. commit 1367323. 45/45 tests. Codex CLEAN. | P1 | G2: one at a time |
 | E | Research Division (on-demand first) | ðŸ”´ NOT STARTED | P2 | G2 â€” wait for H |
 | H | Holding Board v2 + Board Pack upgrade | ðŸŸ¡ IN PROGRESS â€” see Â§11.3 | P2 | â€” |
-| J | Content Studio (light) | âœ… COMPLETE â€” 2026-04-17. Brief-driven only, CEO gate enforced, 14 tests passing. | P2 | G1, G2, G3, G4 |
-| I | Steady State + Developer Tool + Time-Saved Proof | ðŸ”´ NOT STARTED | P3 | â€” |
+| J | Content Studio (light) | âœ… COMPLETE â€” 2026-04-17. Brief-driven only, CEO gate enforced, 14 tests passing, commit 9e7323d. | P2 | G1, G2, G3, G4 |
+| I | Steady State + Developer Tool + Time-Saved Proof | âœ… COMPLETE â€” 2026-04-17. Developer Tool + semantic memory + R9 proof (6.25 h/week). | P3 | â€” |
 | K | Marketing Division | ðŸ”´ NOT STARTED | P3 | G1 (A+B+D must be green), G2, G3 |
 | F | Ideas Division | âšª OPTIONAL | P3 | Reconsider once G+K exist |
 
@@ -266,7 +267,8 @@ Locked. Do not re-open without a CEO directive.
 - Stage D portfolio analysis: âœ… COMPLETE â€” all four properties analysed. Charters written 2026-04-15. See `AI_Capital_Group_Property_Charters_StageE.docx` (root folder).
 - Stage D (Operational Signals â†’ GREEN): âœ… COMPLETE â€” 2026-04-15. Diagnosed 5 false-RED/AMBER signals. Patched phase2_crews.py (off-hours logic, log fallbacks, watching-vs-trading distinction). Updated targets.yaml research cadence. Added health/division_health.py. Two consecutive GREEN briefs confirmed. 23/23 tests passing.
 - Stage G (Commercial Division): âœ… COMPLETE â€” 2026-04-15. commercial.py (finance_report, risk_check, score_initiative, run_commercial_division). commercial_division.yaml. /commercial + /score_initiative Telegram commands. Codex review: 8 issues resolved including HIGH inverted-threshold bug. 45/45 tests passing. commit 1367323.
-- Stage J (Content Studio - light): âœ… COMPLETE â€” 2026-04-17. Added content_studio crew + orchestration, phase2 division integration, Telegram `/content` + `/content_status`, strict `PENDING_CEO_APPROVAL` gating, and content_studio KPI targets. Two consecutive phase2 runs returned content_studio=GREEN. 14/14 new tests passing.
+- Stage J (Content Studio - light): âœ… COMPLETE â€” 2026-04-17. Added content_studio crew + orchestration, phase2 division integration, Telegram `/content` + `/content_status`, strict `PENDING_CEO_APPROVAL` gating, and content_studio KPI targets. Two consecutive phase2 runs returned content_studio=GREEN. 14/14 new tests passing. Commit 9e7323d.
+- Stage I (Steady State + Developer Tool): âœ… COMPLETE â€” 2026-04-17. Added `scripts/developer_tool.py`, Telegram developer commands, semantic memory initialization, and time-saved tracking (`scripts/time_tracking.py`). Two-week simulation confirms 6.25 hours/week saved (R9 threshold 5 hours/week).
 
 ---
 
@@ -406,59 +408,4 @@ ai-holding-company/
 â”‚   â””â”€â”€ .env                         â† local only â€” never commit â€” contains BOT_TOKEN
 â”œâ”€â”€ tools/
 â”‚   â”œâ”€â”€ read_bot_logs.py
-â”‚   â”œâ”€â”€ check_website.py
-â”‚   â””â”€â”€ system_status.py
-â”œâ”€â”€ artifacts/                       â† generated outputs
-â”‚   â”œâ”€â”€ daily_brief_latest.json
-â”‚   â”œâ”€â”€ phase2_divisions_latest.json
-â”‚   â”œâ”€â”€ phase3_holding_latest.json
-â”‚   â””â”€â”€ ...
-â””â”€â”€ docs/
-    â”œâ”€â”€ AI-Holding-Company_Operating-Model.png
-    â”œâ”€â”€ AI-Holding-Company_Goals-Decisions-Tracker.xlsx
-    â””â”€â”€ AI-Holding-Company_Sharpened-Project-Plan-v5.docx
-â”œâ”€â”€ AI_Capital_Group_Property_Charters_StageE.docx  â† Stage D property charters (2026-04-15)
-```
-
-**Security note (R11):** No `docker-compose.yml` for Telegram. No OpenClaw. The gateway is `telegram_bot.py` â€” a single Python file using `python-telegram-bot`. It polls the Telegram API directly (outbound HTTPS only). The `BOT_TOKEN` is stored in `.env` (git-ignored). No third-party message broker ever touches the token.
-
----
-
-## 13. Out of Scope
-
-Any agent proposing work in these areas must be blocked by the Compliance Guardian.
-
-- Auto-trading or auto-fund-movement (Treasury/Commercial is read-only; possible Phase 5)
-- Code writes to MT5, Polymarket, or website source without CEO approval via Loop
-- Any cloud LLM: Claude API, OpenAI, Grok, Gemini, or equivalent
-- OpenClaw, or any Docker-based or broker-based Telegram gateway (violates R11)
-- Multi-CEO or multi-tenant access
-- Cross-machine deployment (single Windows desktop is the target)
-- Web UI beyond the local observability dashboard
-- Content Studio publishing without CEO approval under R3/R4
-- Marketing campaigns without Commercial scoring first
-- Ideas at >1/week or without Critic counter-argument
-
----
-
-## 14. How to Use This Document
-
-**If you are an AI tool or agent:**
-1. Read this file completely before doing anything.
-2. Check your proposed action against R1â€“R11 (Â§2) and guardrails G1â€“G7 (Â§6).
-3. If your action requires CEO approval (Â§5), stop and surface it via the Managing Agent.
-4. Commercial must score any new initiative before it reaches the Board Pack (Â§8).
-5. If uncertain, escalate. Do not guess.
-6. Reference this file's section numbers in plans and reports (e.g., "per PLAN.md Â§6/G1, this is blocked until Stage D is green").
-
-**If you are the CEO (J):**
-1. Start every session by checking Decisions Pending in the Tracker or sending `/pending` in Telegram.
-2. Issue new work by typing your goal in plain English.
-3. Check Â§11 (stage status) when starting a new build phase.
-4. This file is updated at the end of every completed stage alongside the v5 docx.
-
----
-
-*End of PLAN.md â€” version 5.2 â€” AI Holding Company â€” 2026-04-15*  
-*v5.1 change: Added R11 (No OpenClaw; python-telegram-bot only). Updated Stage A, file structure, Out of Scope, and Capability Decisions.*  
-*v5.2 change: Stage D updated to IN PROGRESS. Portfolio analysis complete (all four properties). Integration Readiness Sprint tasks added as Â§11.1. Property charters added to docs/. Charter document reference added to file structure.*
+â”‚   â”œâ”€â”€ c

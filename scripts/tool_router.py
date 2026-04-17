@@ -72,6 +72,24 @@ def build_parser() -> argparse.ArgumentParser:
     mem_search = sub.add_parser("memory_search", help="Query local vector memory.")
     mem_search.add_argument("--query", required=True, help="Memory query text.")
     mem_search.add_argument("--top-k", type=int, default=5, help="Number of matches.")
+
+    develop = sub.add_parser("develop", help="Submit Developer Tool task for CEO-gated code generation.")
+    develop.add_argument("--task", required=True, help="Plain-English development task.")
+
+    develop_approve = sub.add_parser("develop_approve", help="Approve a pending Developer Tool submission.")
+    develop_approve.add_argument("--approval-id", required=True, help="Approval ID from /develop response.")
+
+    develop_deny = sub.add_parser("develop_deny", help="Deny a pending Developer Tool submission.")
+    develop_deny.add_argument("--approval-id", required=True, help="Approval ID from /develop response.")
+
+    sub.add_parser("develop_status", help="List pending Developer Tool approvals.")
+
+    time_cmd = sub.add_parser("time_checkin", help="Log CEO time saved (Stage I tracking).")
+    time_cmd.add_argument("--activity", required=True, help="What activity saved time.")
+    time_cmd.add_argument("--hours", type=float, required=True, help="Hours saved.")
+
+    time_report = sub.add_parser("time_report", help="Get time-saved report and R9 status.")
+    time_report.add_argument("--days", type=int, default=14, help="Lookback window in days.")
     return parser
 
 
@@ -151,6 +169,44 @@ def main() -> None:
 
     if args.command == "memory_search":
         _emit(_memory_search(config=config, query=args.query, top_k=args.top_k))
+        return
+
+    if args.command == "develop":
+        from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+        _emit(run_developer_tool(config=config, task=args.task, action="submit"))
+        return
+
+    if args.command == "develop_approve":
+        from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+        _emit(run_developer_tool(config=config, approval_id=args.approval_id, action="approve"))
+        return
+
+    if args.command == "develop_deny":
+        from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+        _emit(run_developer_tool(config=config, approval_id=args.approval_id, action="deny"))
+        return
+
+    if args.command == "develop_status":
+        from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+        _emit(run_developer_tool(config=config, action="status"))
+        return
+
+    if args.command == "time_checkin":
+        from time_tracking import log_time_checkin  # pylint: disable=import-outside-toplevel
+
+        _emit(log_time_checkin(activity=args.activity, hours_saved=args.hours))
+        return
+
+    if args.command == "time_report":
+        from time_tracking import check_r9_guardrail, get_time_saved_report  # pylint: disable=import-outside-toplevel
+
+        report = get_time_saved_report(days=args.days)
+        guard = check_r9_guardrail(weeks=max(1, args.days // 7))
+        _emit({"ok": True, "report": report, "r9_guardrail": guard})
         return
 
 
