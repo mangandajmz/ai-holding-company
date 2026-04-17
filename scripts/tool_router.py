@@ -60,10 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     holding.add_argument(
         "--mode",
         default="heartbeat",
-        choices=["heartbeat", "board_review"],
-        help="Holding mode: heartbeat (daily) or board_review (deeper review).",
+        choices=["heartbeat", "board_review", "board_pack"],
+        help="Holding mode: heartbeat (daily), board_review (deeper review), or board_pack (full 8-field Board Pack with dissent).",
     )
     holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
+
+    board_pack_cmd = sub.add_parser("run_holding_board_pack", help="Run Phase 3 full Board Pack with dissent agent (shortcut for --mode board_pack).")
+    board_pack_cmd.add_argument("--force", action="store_true", help="Force a fresh base brief.")
 
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
@@ -143,6 +146,12 @@ def main() -> None:
         from phase3_holding import run_phase3_holding  # pylint: disable=import-outside-toplevel
 
         _emit(run_phase3_holding(config=config, mode=args.mode, force=args.force))
+        return
+
+    if args.command == "run_holding_board_pack":
+        from phase3_holding import run_phase3_holding  # pylint: disable=import-outside-toplevel
+
+        _emit(run_phase3_holding(config=config, mode="board_pack", force=args.force))
         return
 
     if args.command == "log_direction":

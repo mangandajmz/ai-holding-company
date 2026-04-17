@@ -312,6 +312,22 @@ def _score_company(
             risks.append(f"{item['metric']} is AMBER ({item['actual']} vs target {item['target']}).")
             actions.append(item["action"])
 
+    # Include commercial division health if present in the divisions list.
+    for division in divisions:
+        if not isinstance(division, dict):
+            continue
+        if str(division.get("division", "")).lower() == "commercial":
+            comm_status = str(division.get("status", "")).upper()
+            if comm_status and comm_status != "GREEN":
+                items.append({
+                    "metric": "commercial_health",
+                    "target": "GREEN",
+                    "actual": comm_status,
+                    "variance": f"Commercial division is {comm_status}",
+                    "status": comm_status,
+                    "action": "Review commercial risk check and finance report.",
+                })
+
     if not actions:
         actions.append("Company-level KPIs are within target range; continue current operating cadence.")
 
@@ -439,6 +455,7 @@ _ALLOWED_PHASE3_SUBCOMMANDS: dict[str, dict[str, Any]] = {
     "daily_brief": {"required": set(), "allowed_flags": {"--force", "--config"}},
     "run_divisions": {"required": set(), "allowed_flags": {"--division", "--force", "--config"}},
     "run_holding": {"required": {"--mode"}, "allowed_flags": {"--mode", "--force", "--config"}},
+    "run_holding_board_pack": {"required": set(), "allowed_flags": {"--force", "--config"}},
     "read_bot_logs": {"required": {"--bot"}, "allowed_flags": {"--bot", "--lines", "--config"}},
     "check_website": {"required": {"--website"}, "allowed_flags": {"--website", "--config"}},
     "run_trading_script": {
@@ -662,27 +679,70 @@ def _run_ceo_brief(
     }
 
 
-def _build_board_review(company_scorecard: dict[str, Any], divisions: list[dict[str, Any]]) -> dict[str, Any]:
-    approvals: list[dict[str, str]] = []
-    rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+def _build_board_review(
+    company_scorecard: dict[str, Any],
+    divisions: list[dict[str, Any]],
+    commercial_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build Board Pack with 8 required fields per PLAN.md §8.
 
-    for item in sorted(company_scorecard.get("items", []), key=lambda x: rank.get(str(x.get("status", "")).upper(), 3)):
+    Returns dict with 'approvals' list, 'gate_blocked' key, and 'notes'.
+    """
+    approvals: list[dict[str, Any]] = []
+    rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    def _make_item(
+        status: str,
+        topic: str,
+        action: str,
+        owner: str,
+        metric: str | None = None,
+    ) -> dict[str, Any]:
+        deadline = today if status == "RED" else "+7d"
+        return {
+            "priority": status,
+            "topic": topic,
+            "rationale": (
+                f"KPI '{metric or topic}' is {status} (target not met). "
+                f"Immediate review required."
+            ),
+            "expected_upside": f"Restores '{metric or topic}' to target",
+            "effort_cost": "n/a",
+            "confidence": "Medium — derived from telemetry; LLM scoring not yet applied",
+            "owner": owner,
+            "deadline": deadline,
+            "dissent": "PENDING — dissent_agent review required",
+            "measurement_plan": (
+                f"Monitor '{metric or topic}' in next daily brief. "
+                "GREEN for 2 consecutive runs."
+            ),
+        }
+
+    for item in sorted(
+        company_scorecard.get("items", []),
+        key=lambda x: rank.get(str(x.get("status", "")).upper(), 3),
+    ):
         if not isinstance(item, dict):
             continue
         status = str(item.get("status", "")).upper()
         if status == "GREEN":
             continue
+        metric = str(item.get("metric", "unknown"))
         approvals.append(
-            {
-                "priority": status,
-                "topic": f"Company KPI: {item.get('metric')}",
-                "decision": str(item.get("action")),
-            }
+            _make_item(
+                status=status,
+                topic=f"Company KPI: {metric}",
+                action=str(item.get("action", "")),
+                owner="holding",
+                metric=metric,
+            )
         )
 
     for division in divisions:
         if not isinstance(division, dict):
             continue
+        div_name = str(division.get("division", "unknown"))
         scorecard = division.get("scorecard", {})
         scorecard = scorecard if isinstance(scorecard, dict) else {}
         for item in sorted(
@@ -694,18 +754,71 @@ def _build_board_review(company_scorecard: dict[str, Any], divisions: list[dict[
             status = str(item.get("status", "")).upper()
             if status == "GREEN":
                 continue
+            metric = str(item.get("metric", "unknown"))
             approvals.append(
-                {
-                    "priority": status,
-                    "topic": f"{str(division.get('division')).title()} KPI: {item.get('metric')}",
-                    "decision": str(item.get("action")),
-                }
+                _make_item(
+                    status=status,
+                    topic=f"{div_name.title()} KPI: {metric}",
+                    action=str(item.get("action", "")),
+                    owner=div_name,
+                    metric=metric,
+                )
             )
+
+    if commercial_result and isinstance(commercial_result, dict):
+        comm_status = str(commercial_result.get("status", "GREEN")).upper()
+        if comm_status != "GREEN":
+            risk = commercial_result.get("risk", {})
+            risk = risk if isinstance(risk, dict) else {}
+            exposure_flags = risk.get("exposure_flags", [])
+            exposure_label = exposure_flags[0] if exposure_flags else "Commercial risk detected"
+            risk_verdict = str(risk.get("risk_verdict", comm_status))
+            approvals.append({
+                "priority": comm_status,
+                "topic": f"Commercial: {exposure_label}",
+                "rationale": risk_verdict,
+                "expected_upside": "Risk reduction and financial health improvement",
+                "effort_cost": "n/a",
+                "confidence": "Medium — derived from risk check module",
+                "owner": "commercial",
+                "deadline": today if comm_status == "RED" else "+7d",
+                "dissent": "PENDING — dissent_agent review required",
+                "measurement_plan": "Re-run commercial risk check. GREEN for 1 run.",
+            })
 
     return {
         "approvals": approvals[:10],
+        "gate_blocked": False,
         "notes": "Approve, defer, or reject each item explicitly to keep accountability clear.",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _validate_board_pack_item(item: dict[str, Any]) -> list[str]:
+    """Return list of missing field names for a Board Pack item.
+
+    Per PLAN.md §8: rationale, expected_upside, effort_cost, confidence, owner,
+    deadline, dissent, measurement_plan must all be present and non-empty.
+    Empty list means item is valid.
+    """
+    required = [
+        "rationale", "expected_upside", "effort_cost", "confidence",
+        "owner", "deadline", "dissent", "measurement_plan",
+    ]
+    missing = []
+    for field in required:
+        value_str = str(item.get(field, "")).strip()
+        if field in ("effort_cost", "expected_upside") and value_str == "n/a":
+            continue
+        if field == "dissent" and "unavailable" in value_str.lower():
+            continue
+        # PENDING placeholder counts as missing (dissent agent must have run).
+        if field == "dissent" and value_str.startswith("PENDING"):
+            missing.append(field)
+            continue
+        if not value_str or value_str == "n/a":
+            missing.append(field)
+    return missing
 
 
 def _build_phase3_markdown(payload: dict[str, Any]) -> str:
@@ -762,11 +875,14 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
         ).strip()
     )
 
-    if payload.get("mode") == "board_review":
+    if payload.get("mode") in ("board_review", "board_pack"):
         board = payload.get("board_review", {})
         board = board if isinstance(board, dict) else {}
+        mode_label = "Board Pack" if payload.get("mode") == "board_pack" else "Board Review"
         lines.append("")
-        lines.append("## Board Review Mode")
+        lines.append(f"## {mode_label}")
+        if board.get("gate_blocked"):
+            lines.append("**MA GATE: Board Pack contains incomplete items — CEO review blocked.**")
         approvals = board.get("approvals", [])
         approvals = approvals if isinstance(approvals, list) else []
         if not approvals:
@@ -775,16 +891,92 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
             for item in approvals:
                 if not isinstance(item, dict):
                     continue
-                lines.append(
-                    f"- [{item.get('priority')}] {item.get('topic')}: {item.get('decision')}"
-                )
-        lines.append(f"- Notes: {board.get('notes')}")
+                lines.append(f"\n### [{item.get('priority')}] {item.get('topic')}")
+                lines.append(f"- **Rationale:** {item.get('rationale', 'n/a')}")
+                lines.append(f"- **Upside:** {item.get('expected_upside', 'n/a')}")
+                lines.append(f"- **Effort/Cost:** {item.get('effort_cost', 'n/a')}")
+                lines.append(f"- **Confidence:** {item.get('confidence', 'n/a')}")
+                lines.append(f"- **Owner:** {item.get('owner', 'n/a')}")
+                lines.append(f"- **Deadline:** {item.get('deadline', 'n/a')}")
+                lines.append(f"- **Dissent:** {item.get('dissent', 'n/a')}")
+                lines.append(f"- **Measurement:** {item.get('measurement_plan', 'n/a')}")
+                if item.get("validation_warnings"):
+                    lines.append(f"- **Missing fields:** {', '.join(item['validation_warnings'])}")
+        lines.append(f"\nNotes: {board.get('notes')}")
 
     lines.append("")
     lines.append("## Owner Command Reminder")
     lines.append("- `python scripts/tool_router.py run_holding --mode heartbeat --force`")
     lines.append("- `python scripts/tool_router.py run_holding --mode board_review --force`")
+    lines.append("- `python scripts/tool_router.py run_holding_board_pack --force`")
     return "\n".join(lines).strip() + "\n"
+
+
+def _run_dissent_task(
+    config: dict[str, Any],
+    llm: Any | None,
+    spec: dict[str, Any],
+    approvals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Run the dissent_task against board approvals. Returns list of {item, objection} dicts.
+
+    Returns empty list on any failure (graceful — dissent is advisory, not blocking).
+    """
+    if llm is None or not approvals:
+        return []
+
+    try:
+        from crewai import Agent, Crew, Process, Task  # pylint: disable=import-outside-toplevel
+    except Exception:  # noqa: BLE001
+        return []
+
+    try:
+        dissent_agent_spec = next(
+            (a for a in spec.get("agents", []) if isinstance(a, dict) and a.get("key") == "dissent_agent"),
+            None,
+        )
+        dissent_task_spec = next(
+            (t for t in spec.get("tasks", []) if isinstance(t, dict) and t.get("key") == "dissent_task"),
+            None,
+        )
+        if not dissent_agent_spec or not dissent_task_spec:
+            return []
+
+        phase3_cfg = config.get("phase3", {}) or {}
+        ceo_cfg = phase3_cfg.get("ceo", {}) or {}
+
+        agent = Agent(
+            role=str(dissent_agent_spec.get("role", "Dissent Officer")),
+            goal=str(dissent_agent_spec.get("goal", "")),
+            backstory=str(dissent_agent_spec.get("backstory", "")),
+            llm=llm,
+            allow_delegation=False,
+            max_iter=int(ceo_cfg.get("agent_max_iter", 1)),
+            verbose=bool(spec.get("verbose", False)),
+        )
+
+        board_pack_json = json.dumps(
+            [{"topic": a.get("topic"), "rationale": a.get("rationale")} for a in approvals],
+            indent=2,
+        )
+        description = str(dissent_task_spec.get("description", "")).replace(
+            "{board_pack_json}", board_pack_json
+        )
+        task = Task(
+            description=description,
+            expected_output=str(dissent_task_spec.get("expected_output", "")),
+            agent=agent,
+        )
+        crew = Crew(agents=[agent], tasks=[task], process=Process.sequential, verbose=False)
+        raw_output = str(crew.kickoff()).strip()
+
+        # Extract JSON from output (may be wrapped in prose)
+        json_match = re.search(r"\[.*\]", raw_output, re.DOTALL)
+        if not json_match:
+            return []
+        return json.loads(json_match.group(0))
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _persist_phase3_reports(config: dict[str, Any], payload: dict[str, Any], markdown: str) -> dict[str, str]:
@@ -819,8 +1011,8 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
     phase3 = _phase3_cfg(config)
     if phase3.get("enabled", True) is False:
         return {"ok": False, "error": "phase3_disabled", "message": "Phase 3 is disabled in config/projects.yaml"}
-    if mode not in {"heartbeat", "board_review"}:
-        return {"ok": False, "error": "invalid_mode", "message": "mode must be heartbeat or board_review"}
+    if mode not in {"heartbeat", "board_review", "board_pack"}:
+        return {"ok": False, "error": "invalid_mode", "message": "mode must be heartbeat, board_review, or board_pack"}
 
     phase2_payload = run_phase2_divisions(config=config, division="all", force=force)
     if not isinstance(phase2_payload, dict) or not phase2_payload.get("ok", False):
@@ -865,8 +1057,57 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "phase2_payload_ref": phase2_payload.get("files", {}).get("latest_json"),
     }
 
-    if mode == "board_review":
-        payload["board_review"] = _build_board_review(company_scorecard=company_scorecard, divisions=divisions)
+    if mode in ("board_review", "board_pack"):
+        # Try to include commercial result if the module is available.
+        commercial_result: dict[str, Any] | None = None
+        try:
+            from commercial import run_commercial_division  # pylint: disable=import-outside-toplevel
+            commercial_result = run_commercial_division(config=config, force=force)
+        except ImportError:
+            pass  # commercial module not yet on this branch — graceful skip
+        except Exception:  # noqa: BLE001
+            pass
+
+        board_review = _build_board_review(
+            company_scorecard=company_scorecard,
+            divisions=divisions,
+            commercial_result=commercial_result,
+        )
+
+        if mode == "board_pack":
+            # Load the CEO spec to get the dissent task definition.
+            ceo_cfg = phase3.get("ceo", {}) or {}
+            spec_rel = str(ceo_cfg.get("spec_file", "crews/holding_ceo.yaml")).strip()
+            spec_path = ROOT / spec_rel if not Path(spec_rel).is_absolute() else Path(spec_rel)
+            try:
+                spec = _load_yaml(spec_path)
+            except Exception:  # noqa: BLE001
+                spec = {}
+
+            dissent_items = _run_dissent_task(
+                config=config,
+                llm=llm,
+                spec=spec,
+                approvals=board_review.get("approvals", []),
+            )
+
+            # Merge dissent objections back into approvals by topic.
+            for approval in board_review["approvals"]:
+                for dissent in dissent_items:
+                    if isinstance(dissent, dict) and dissent.get("item") == approval.get("topic"):
+                        approval["dissent"] = str(dissent.get("objection", approval["dissent"]))
+                        break
+
+            # Validate completeness and set gate flag.
+            gate_blocked = False
+            for approval in board_review["approvals"]:
+                missing = _validate_board_pack_item(approval)
+                if missing:
+                    approval["validation_warnings"] = missing
+                    gate_blocked = True
+            board_review["gate_blocked"] = gate_blocked
+
+        payload["board_review"] = board_review
 
     markdown = _build_phase3_markdown(payload)
     payload["files"] = _persist_phase3_reports(config=config, payload=payload, markdown=markdown)

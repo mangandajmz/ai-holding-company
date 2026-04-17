@@ -228,6 +228,9 @@ class TelegramBridge:
                 return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
             return {"type": "tool", "name": "run_divisions", "args": ["run_divisions", "--division", "all", "--force"]}
 
+        if re.match(r"^/board\s+pack$", raw, re.I):
+            return {"type": "tool", "name": "run_holding_board_pack", "args": ["run_holding_board_pack", "--force"]}
+
         if re.match(r"^/board(?:\s+review)?$", raw, re.I):
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
@@ -610,22 +613,35 @@ class TelegramBridge:
                     f"  [{top.get('status')}] {top.get('metric')} -> actual={top.get('actual')} target={top.get('target')}"
                 )
 
-        if payload.get("mode") == "board_review":
+        if payload.get("mode") in ("board_review", "board_pack"):
             lines.append("")
-            lines.append("Board Review Approvals")
+            mode_label = "Board Pack" if payload.get("mode") == "board_pack" else "Board Review"
             board = payload.get("board_review", {})
             board = board if isinstance(board, dict) else {}
-            approvals = board.get("approvals", [])
-            approvals = approvals if isinstance(approvals, list) else []
-            if not approvals:
-                lines.append("- None")
+
+            if board.get("gate_blocked"):
+                lines.append(f"MA GATE: {mode_label} contains incomplete items - CEO review blocked.")
+                incomplete = [
+                    f"  - {item.get('topic', '?')}: missing {', '.join(item.get('validation_warnings', []))}"
+                    for item in board.get("approvals", [])
+                    if isinstance(item, dict) and item.get("validation_warnings")
+                ]
+                lines.extend(incomplete)
             else:
-                for item in approvals[:5]:
-                    if not isinstance(item, dict):
-                        continue
-                    lines.append(
-                        f"- [{item.get('priority')}] {item.get('topic')}: {item.get('decision')}"
-                    )
+                lines.append(f"{mode_label} Approvals")
+                approvals = board.get("approvals", [])
+                approvals = approvals if isinstance(approvals, list) else []
+                if not approvals:
+                    lines.append("- None")
+                else:
+                    for item in approvals[:5]:
+                        if not isinstance(item, dict):
+                            continue
+                        dissent = item.get("dissent", "")
+                        dissent_short = "" if not dissent or dissent.startswith("PENDING") else f" | Dissent: {dissent[:60]}"
+                        lines.append(
+                            f"- [{item.get('priority')}] {item.get('topic')}{dissent_short}"
+                        )
 
         report_path = payload.get("files", {}).get("latest_markdown") if isinstance(payload.get("files"), dict) else None
         if report_path:
