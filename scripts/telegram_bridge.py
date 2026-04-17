@@ -179,8 +179,9 @@ class TelegramBridge:
             )
         if self.allowed_chat_ids and chat_id not in self.allowed_chat_ids:
             return False
-        if self.allowed_user_ids and user_id is not None and user_id not in self.allowed_user_ids:
-            return False
+        if self.allowed_user_ids:
+            if user_id is None or user_id not in self.allowed_user_ids:
+                return False
         return True
 
     def _audit(self, payload: dict[str, Any]) -> None:
@@ -221,9 +222,13 @@ class TelegramBridge:
 
         if lowered in {"/help", "help"}:
             return {"type": "help"}
-        if lowered in {"/status", "status"}:
-            return {"type": "tool", "name": "daily_brief", "args": ["daily_brief"]}
-        if lowered in {"/brief", "brief"} or any(p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")):
+        if lowered in {"/commercial", "commercial"}:
+            return {"type": "freetext", "text": raw}
+        if lowered in {"/status", "status", "daily_brief", "ceo"}:
+            return {"type": "freetext", "text": "What is the company status?"}
+        if lowered in {"/brief", "brief"} or any(
+            p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")
+        ):
             if self.phase3_enabled:
                 return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
             return {"type": "tool", "name": "run_divisions", "args": ["run_divisions", "--division", "all", "--force"]}
@@ -514,6 +519,351 @@ class TelegramBridge:
                 break
         return filtered
 
+    def _load_latest_report_json(self, filename: str) -> dict[str, Any] | None:
+        path = self.reports_dir / filename
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _tokenize_text(text: str) -> set[str]:
+        return {token for token in re.findall(r"[a-z0-9]+", str(text).lower()) if token}
+
+    def _entity_aliases(self, entity_id: str, entity_name: str) -> set[str]:
+        aliases = {
+            re.sub(r"[^a-z0-9]+", "", str(entity_id).lower()),
+            re.sub(r"[^a-z0-9]+", "", str(entity_name).lower()),
+        }
+        tokens = self._tokenize_text(f"{entity_id} {entity_name}")
+        significant = [token for token in tokens if token not in {"agentic", "trading", "bot", "website", "team", "copy"}]
+        if significant:
+            aliases.add("".join(significant))
+        return {alias for alias in aliases if alias}
+
+    def _match_entity(self, text: str, catalog: list[dict[str, str]]) -> str | None:
+        normalized = re.sub(r"[^a-z0-9]+", "", text.lower())
+        query_tokens = self._tokenize_text(text)
+        best_id = None
+        best_score = 0
+        for item in catalog:
+            entity_id = str(item.get("id", "")).strip()
+            entity_name = str(item.get("name", "")).strip()
+            if not entity_id:
+                continue
+            aliases = self._entity_aliases(entity_id=entity_id, entity_name=entity_name)
+            if any(alias and alias in normalized for alias in aliases):
+                return entity_id
+            entity_tokens = self._tokenize_text(f"{entity_id} {entity_name}")
+            overlap = len(query_tokens.intersection(entity_tokens))
+            if overlap >= 2:
+                return entity_id
+            if overlap > best_score:
+                best_id = entity_id
+                best_score = overlap
+        return best_id if best_score >= 1 and len(query_tokens) <= 2 else None
+
+    def _match_bot_reference(self, text: str) -> str | None:
+        bots = self.config.get("trading_bots", []) or []
+        catalog = [
+            {"id": str(item.get("id", "")).strip(), "name": str(item.get("name", "")).strip()}
+            for item in bots
+            if isinstance(item, dict)
+        ]
+        return self._match_entity(text=text, catalog=catalog)
+
+    def _match_website_reference(self, text: str) -> str | None:
+        websites = self.config.get("websites", []) or []
+        catalog = [
+            {"id": str(item.get("id", "")).strip(), "name": str(item.get("name", "")).strip()}
+            for item in websites
+            if isinstance(item, dict)
+        ]
+        return self._match_entity(text=text, catalog=catalog)
+
+    @staticmethod
+    def _dedupe_memory_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in results:
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            normalized = re.sub(r"\s+", " ", text.lower())
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(item)
+        return deduped
+
+    @staticmethod
+    def _format_money(value: Any) -> str:
+        try:
+            return f"${float(value):+.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _top_non_green_items(scorecard: dict[str, Any], limit: int = 2) -> list[dict[str, Any]]:
+        rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        items = [item for item in scorecard.get("items", []) if isinstance(item, dict)]
+        ranked = sorted(items, key=lambda item: rank.get(str(item.get("status", "")).upper(), 3))
+        return [item for item in ranked if str(item.get("status", "")).upper() != "GREEN"][:limit]
+
+    @staticmethod
+    def _find_division(payload: dict[str, Any] | None, division_name: str) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        divisions = payload.get("divisions", [])
+        if not isinstance(divisions, list):
+            return None
+        for division in divisions:
+            if not isinstance(division, dict):
+                continue
+            if str(division.get("division", "")).strip().lower() == division_name:
+                return division
+        return None
+
+    @staticmethod
+    def _find_bot_payload(payload: dict[str, Any] | None, bot_id: str) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        for bot in payload.get("bots", []):
+            if isinstance(bot, dict) and str(bot.get("id", "")).strip().lower() == bot_id.lower():
+                return bot
+        return None
+
+    @staticmethod
+    def _find_site_payload(payload: dict[str, Any] | None, site_id: str) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        for site in payload.get("websites", []):
+            if isinstance(site, dict) and str(site.get("id", "")).strip().lower() == site_id.lower():
+                return site
+        return None
+
+    @staticmethod
+    def _looks_like_question(text: str) -> bool:
+        lowered = text.lower().strip()
+        return (
+            "?" in text
+            or lowered.startswith(("what", "whats", "what's", "how", "give me", "show me", "tell me", "status", "update"))
+            or "status" in lowered
+            or "happening" in lowered
+        )
+
+    @staticmethod
+    def _looks_like_direction(text: str) -> bool:
+        lowered = text.lower().strip()
+        if not lowered or "?" in lowered:
+            return False
+        starters = (
+            "focus on",
+            "prioritize",
+            "ignore",
+            "pause",
+            "resume",
+            "monitor",
+            "investigate",
+            "check ",
+            "run ",
+            "restart",
+            "refresh",
+            "hold ",
+            "defer",
+        )
+        return lowered.startswith(starters)
+
+    @staticmethod
+    def _lines_to_text(lines: list[str]) -> str:
+        return "\n".join([line for line in lines if line]).strip()
+
+    def _summarize_trading_question(self, daily: dict[str, Any] | None, phase2: dict[str, Any] | None) -> str:
+        division = self._find_division(phase2, "trading")
+        if isinstance(division, dict):
+            scorecard = division.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            lines = [f"Trading status: {str(scorecard.get('status', division.get('status', 'unknown'))).upper()}"]
+            top_items = self._top_non_green_items(scorecard=scorecard, limit=2)
+            if top_items:
+                lines.append("Main issues:")
+                for item in top_items:
+                    lines.append(
+                        f"- {item.get('metric')}: {item.get('actual')} vs {item.get('target')} ({item.get('status')})"
+                    )
+            actions = [str(action).strip() for action in scorecard.get("actions", []) if str(action).strip()]
+            if actions:
+                lines.append("Next moves:")
+                for action in actions[:2]:
+                    lines.append(f"- {action}")
+            return self._lines_to_text(lines)
+
+        summary = daily.get("summary", {}) if isinstance(daily, dict) else {}
+        bots = daily.get("bots", []) if isinstance(daily, dict) else []
+        trading_alerts = [
+            str(alert) for alert in (daily.get("alerts", []) if isinstance(daily, dict) else []) if "website" not in str(alert).lower()
+        ]
+        lines = [
+            "Trading status: attention" if trading_alerts else "Trading status: stable",
+            f"PnL: {self._format_money(summary.get('pnl_total'))} | Trades: {summary.get('trades_total')} | Errors: {summary.get('error_lines_total')}",
+        ]
+        for bot in bots[:2]:
+            if isinstance(bot, dict):
+                lines.append(
+                    f"- {bot.get('name', bot.get('id'))}: status={bot.get('status')} pnl={self._format_money(bot.get('pnl_total'))} errors={bot.get('error_lines_total')}"
+                )
+        if trading_alerts:
+            lines.append(f"Top issue: {trading_alerts[0]}")
+        return self._lines_to_text(lines)
+
+    def _summarize_websites_question(self, daily: dict[str, Any] | None, phase2: dict[str, Any] | None) -> str:
+        division = self._find_division(phase2, "websites")
+        if isinstance(division, dict):
+            scorecard = division.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            lines = [f"Websites status: {str(scorecard.get('status', division.get('status', 'unknown'))).upper()}"]
+            top_items = self._top_non_green_items(scorecard=scorecard, limit=2)
+            if top_items:
+                lines.append("Main issues:")
+                for item in top_items:
+                    lines.append(
+                        f"- {item.get('metric')}: {item.get('actual')} vs {item.get('target')} ({item.get('status')})"
+                    )
+            actions = [str(action).strip() for action in scorecard.get("actions", []) if str(action).strip()]
+            if actions:
+                lines.append("Next moves:")
+                for action in actions[:2]:
+                    lines.append(f"- {action}")
+            return self._lines_to_text(lines)
+
+        summary = daily.get("summary", {}) if isinstance(daily, dict) else {}
+        websites = daily.get("websites", []) if isinstance(daily, dict) else []
+        lines = [
+            f"Websites status: {summary.get('websites_up')}/{summary.get('websites_total')} up",
+        ]
+        for site in websites[:3]:
+            if isinstance(site, dict):
+                lines.append(
+                    f"- {site.get('name', site.get('id'))}: {'UP' if site.get('ok') else 'DOWN'} status={site.get('status_code')} latency={site.get('latency_ms')}ms"
+                )
+        return self._lines_to_text(lines)
+
+    def _summarize_bot_question(self, bot_id: str, daily: dict[str, Any] | None) -> str:
+        bot = self._find_bot_payload(payload=daily, bot_id=bot_id)
+        if not isinstance(bot, dict):
+            return f"I couldn't find current bot data for {bot_id}. Try /brief for a fresh report."
+        report_payload = bot.get("report_payload", {})
+        report_payload = report_payload if isinstance(report_payload, dict) else {}
+        lines = [
+            f"{bot.get('name', bot_id)} status: {str(bot.get('status', 'unknown')).upper()}",
+            f"PnL: {self._format_money(bot.get('pnl_total'))} | Trades: {bot.get('trades_total')} | Errors: {bot.get('error_lines_total')}",
+        ]
+        headline = str(report_payload.get("headline", "")).strip()
+        if headline:
+            lines.append(f"Latest report: {headline}")
+        health = bot.get("health_command", {})
+        health = health if isinstance(health, dict) else {}
+        if health:
+            lines.append(f"Live health: {'OK' if health.get('ok') else 'FAILED'} (rc={health.get('return_code')})")
+        return self._lines_to_text(lines)
+
+    def _summarize_site_question(self, site_id: str, daily: dict[str, Any] | None) -> str:
+        site = self._find_site_payload(payload=daily, site_id=site_id)
+        if not isinstance(site, dict):
+            return f"I couldn't find current website data for {site_id}. Try /brief for a fresh report."
+        lines = [
+            f"{site.get('name', site_id)} status: {'UP' if site.get('ok') else 'DOWN'}",
+            f"HTTP status: {site.get('status_code')} | Latency: {site.get('latency_ms')}ms | Probe: {site.get('probe_mode')}",
+        ]
+        reason = str(site.get("reason", "")).strip()
+        if reason:
+            lines.append(f"Reason: {reason}")
+        return self._lines_to_text(lines)
+
+    def _summarize_company_question(self, daily: dict[str, Any] | None, phase3: dict[str, Any] | None) -> str:
+        if isinstance(phase3, dict):
+            company = phase3.get("company_scorecard", {})
+            company = company if isinstance(company, dict) else {}
+            summary = phase3.get("base_summary", {})
+            summary = summary if isinstance(summary, dict) else {}
+            lines = [
+                f"Company status: {company.get('status')}",
+                f"PnL: {self._format_money(summary.get('pnl_total'))} | Trades: {summary.get('trades_total')} | Alerts: {len(phase3.get('base_alerts', []) or [])}",
+            ]
+            top_items = self._top_non_green_items(scorecard=company, limit=2)
+            if top_items:
+                lines.append("Priority issues:")
+                for item in top_items:
+                    lines.append(
+                        f"- {item.get('metric')}: {item.get('actual')} vs {item.get('target')} ({item.get('status')})"
+                    )
+            return self._lines_to_text(lines)
+        summary = daily.get("summary", {}) if isinstance(daily, dict) else {}
+        return self._lines_to_text(
+            [
+                "Company status: latest daily brief only",
+                f"PnL: {self._format_money(summary.get('pnl_total'))} | Trades: {summary.get('trades_total')} | Errors: {summary.get('error_lines_total')}",
+            ]
+        )
+
+    def _summarize_commercial_question(self, phase2: dict[str, Any] | None, phase3: dict[str, Any] | None) -> str:
+        division = self._find_division(phase2, "commercial")
+        if isinstance(division, dict):
+            scorecard = division.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            lines = [f"Commercial status: {str(scorecard.get('status', division.get('status', 'unknown'))).upper()}"]
+            risks = [str(risk).strip() for risk in scorecard.get("risks", []) if str(risk).strip()]
+            actions = [str(action).strip() for action in scorecard.get("actions", []) if str(action).strip()]
+            if risks:
+                lines.append("Main issues:")
+                for risk in risks[:2]:
+                    lines.append(f"- {risk}")
+            if actions:
+                lines.append("Next moves:")
+                for action in actions[:2]:
+                    lines.append(f"- {action}")
+            return self._lines_to_text(lines)
+
+        if isinstance(phase3, dict):
+            company = phase3.get("company_scorecard", {})
+            company = company if isinstance(company, dict) else {}
+            commercial_item = next(
+                (
+                    item
+                    for item in company.get("items", [])
+                    if isinstance(item, dict) and str(item.get("metric", "")).strip().lower() == "commercial_health"
+                ),
+                None,
+            )
+            if isinstance(commercial_item, dict):
+                return self._lines_to_text(
+                    [
+                        f"Commercial status: {commercial_item.get('status')}",
+                        f"Current signal: {commercial_item.get('actual')} ({commercial_item.get('variance')})",
+                        f"Recommended action: {commercial_item.get('action')}",
+                    ]
+                )
+
+        return (
+            "Commercial status is not wired cleanly into the chat bridge yet.\n"
+            "I don't have a dedicated commercial payload to summarize here. Use /board review for the broader company view."
+        )
+
+    def _answer_from_memory(self, text: str) -> str:
+        facts = self._dedupe_memory_results(self._search_memory(text, top_k=6))
+        if not facts:
+            return (
+                "I don't have enough context to answer that clearly yet.\n"
+                "Try /brief for a full report, or ask about trading, websites, MT5 desk, or company status."
+            )
+        lines = ["Closest relevant context:"]
+        for fact in facts[:3]:
+            lines.append(f"- {fact.get('text')}")
+        return self._lines_to_text(lines)
+
     def _summarize_divisions_brief(self, payload: dict[str, Any]) -> str:
         base = payload.get("base_summary", {})
         base = base if isinstance(base, dict) else {}
@@ -685,42 +1035,42 @@ class TelegramBridge:
             return []
 
     def _answer_freetext(self, text: str) -> str:
-        """Answer a natural language question using memory search + live health if a bot is named."""
+        """Answer a natural language question with concise summaries and directive capture."""
         lowered = text.lower()
+        daily = self._load_latest_daily_brief()
+        phase2 = self._load_latest_report_json("phase2_divisions_latest.json")
+        phase3 = self._load_latest_report_json("phase3_holding_latest.json")
 
-        mentioned_bot = next((bid for bid in self.bot_ids if bid.lower() in lowered), None)
-        mentioned_site = next((sid for sid in self.website_ids if sid.lower() in lowered), None)
+        if self._looks_like_direction(text):
+            result = self._run_tool_router(["log_direction", "--text", text, "--source", "telegram_freetext"])
+            if result.get("ok"):
+                return self._lines_to_text(
+                    [
+                        "Direction logged.",
+                        f"- Directive: {text.strip()}",
+                        "- I will treat this as owner guidance for future context and follow-up.",
+                    ]
+                )
+            return "I understood that as a direction, but logging it failed. Try /note <directive>."
 
-        facts = self._search_memory(text, top_k=3)
-
-        lines: list[str] = []
-        if facts:
-            lines.append("[context]")
-            for f in facts:
-                lines.append(f"- {f['text']}")
-
+        mentioned_bot = self._match_bot_reference(text)
         if mentioned_bot:
-            result = self._run_tool_router(
-                ["run_trading_script", "--bot", mentioned_bot, "--command-key", "health"],
-                timeout_sec=60,
-            )
-            summary = self._summarize_tool_result("run_trading_script", result)
-            lines.append(f"\n[live: {mentioned_bot}]\n{summary}")
-        elif mentioned_site:
-            result = self._run_tool_router(
-                ["check_website", "--website", mentioned_site],
-                timeout_sec=30,
-            )
-            summary = self._summarize_tool_result("check_website", result)
-            lines.append(f"\n[live: {mentioned_site}]\n{summary}")
+            return self._summarize_bot_question(bot_id=mentioned_bot, daily=daily)
 
-        if not lines:
-            return (
-                "I don't have enough context to answer that yet.\n"
-                "Try /brief for a full report, or /help for all commands."
-            )
+        mentioned_site = self._match_website_reference(text)
+        if mentioned_site:
+            return self._summarize_site_question(site_id=mentioned_site, daily=daily)
 
-        return "\n".join(lines)
+        if "/commercial" in lowered or "commercial" == lowered.strip():
+            return self._summarize_commercial_question(phase2=phase2, phase3=phase3)
+        if any(term in lowered for term in ("trading", "mt5", "polymarket")):
+            return self._summarize_trading_question(daily=daily, phase2=phase2)
+        if any(term in lowered for term in ("website", "websites", "site", "sites")):
+            return self._summarize_websites_question(daily=daily, phase2=phase2)
+        if self._looks_like_question(text):
+            return self._summarize_company_question(daily=daily, phase3=phase3)
+
+        return self._answer_from_memory(text)
 
     def handle_text(self, text: str) -> str:
         action = self._parse_action(text)
