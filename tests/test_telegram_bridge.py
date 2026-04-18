@@ -205,11 +205,11 @@ def test_bot_question_resolves_friendly_name(bridge):
 # ---------------------------------------------------------------------------
 
 def test_commercial_returns_fallback_no_context(bridge):
-    """/commercial and 'commercial' must return a clear fallback, not a memory dump."""
-    for input_text in ("/commercial", "commercial"):
+    """/commercial, 'commercial', and mid-sentence 'commercial' all return the fallback."""
+    for input_text in ("/commercial", "commercial", "what is the commercial status?"):
         text = bridge._answer_freetext(input_text)
         assert "[context]" not in text, f"[context] must not appear for input: {input_text!r}"
-        assert "commercial" in text.lower(), "Response should mention commercial"
+        assert "commercial" in text.lower(), f"Response should mention commercial for: {input_text!r}"
         assert len(text) < 400, "Fallback should be concise"
 
 
@@ -283,6 +283,7 @@ class TestDetectIntent:
     def test_commercial_detected(self, bridge):
         assert bridge._detect_intent("commercial") == "commercial"
         assert bridge._detect_intent("/commercial") == "commercial"
+        assert bridge._detect_intent("what is the commercial status?") == "commercial"
 
     def test_direction_detected(self, bridge):
         intent = bridge._detect_intent("focus on trading first and ignore website issues for now")
@@ -315,6 +316,20 @@ class TestDetectIntent:
 # ---------------------------------------------------------------------------
 # Bonus: _resolve_entity_id fuzzy matching
 # ---------------------------------------------------------------------------
+
+class TestNoiseInputs:
+    def test_hello_returns_redirect_not_memory(self, bridge):
+        with patch.object(bridge, "_search_memory", return_value=[]) as mock_mem:
+            text = bridge._answer_freetext("hello")
+        mock_mem.assert_not_called()
+        assert "[context]" not in text
+        assert "brief" in text.lower() or "help" in text.lower()
+
+    def test_single_word_gibberish_returns_redirect(self, bridge):
+        text = bridge._answer_freetext("what?")
+        assert "[context]" not in text
+        assert "brief" in text.lower() or "help" in text.lower()
+
 
 class TestResolveEntityId:
     def test_exact_match(self, bridge):

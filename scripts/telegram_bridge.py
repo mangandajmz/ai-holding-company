@@ -852,8 +852,8 @@ class TelegramBridge:
 
     def _detect_intent(self, lowered: str) -> str | None:
         """Return a coarse intent tag for a freetext message."""
-        # Commercial — no live data yet
-        if re.match(r"^/?commercial\b", lowered):
+        # Commercial — no live data yet (match anywhere in the sentence)
+        if re.search(r"\bcommercial\b", lowered):
             return "commercial"
 
         # Direction (imperative, not a question)
@@ -1076,20 +1076,24 @@ class TelegramBridge:
             if report:
                 return self._format_trading_summary(report)
 
-        # 8. Fallback: memory search (deduped, no [context] header, no raw dump)
-        facts = self._dedupe_memory(self._search_memory(text, top_k=5))
-        if facts:
-            lines = ["Here's what I found:"]
-            for f in facts[:3]:
-                snippet = str(f.get("text", "")).replace("\n", " ").strip()[:200]
-                if snippet:
-                    lines.append(f"• {snippet}")
-            lines.append("\nTry /brief for a live report.")
-            return "\n".join(lines)
+        # 8. Fallback: memory search — skip for noise/greeting inputs
+        words = [w for w in re.split(r"\W+", lowered) if len(w) > 2]
+        if len(words) >= 2:
+            facts = self._dedupe_memory(self._search_memory(text, top_k=5))
+            if facts:
+                lines = ["Here's what I found:"]
+                for f in facts[:3]:
+                    snippet = str(f.get("text", "")).replace("\n", " ").strip()[:200]
+                    if snippet:
+                        lines.append(f"• {snippet}")
+                lines.append("\nTry /brief for a live report.")
+                return "\n".join(lines)
 
         return (
-            "I don't have enough context to answer that yet.\n"
-            "Try /brief for a full report, or /help for all commands."
+            "Not sure what you mean. Try:\n"
+            "  /brief — full company scorecard\n"
+            "  /status — quick pulse\n"
+            "  /help — all commands"
         )
 
     def handle_text(self, text: str) -> str:
