@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prop Cockpit - Brand Verification | FreeTraderHub</title>
+    <meta name="description" content="Prop Cockpit brand verification surface for the Cockpit Quietude design system.">
+    <link rel="stylesheet" href="tokens.css">
+    <link rel="stylesheet" href="components.css">
+    <style>
+      .page-shell {
+        width: min(100%, var(--page-max));
+        margin: 0 auto;
+        padding: var(--sp-5);
+      }
+
+      .page {
+        display: grid;
+        gap: var(--sp-5);
+      }
+
+      .page-header {
+        display: grid;
+        gap: var(--sp-3);
+        padding-top: var(--sp-4);
+      }
+
+      .page-header p {
+        max-width: calc(var(--x) * 28);
+      }
+
+      .lockup {
+        width: min(100%, calc(var(--x) * 17));
+      }
+
+      .section-block {
+        display: grid;
+        gap: var(--sp-4);
+        padding: var(--sp-4) 0;
+        border-top: var(--hairline);
+      }
+
+      .section-heading {
+        display: grid;
+        gap: var(--sp-2);
+      }
+
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(calc(var(--x) * 8), 1fr));
+        gap: var(--sp-3);
+      }
+
+      .swatch {
+        display: grid;
+        gap: var(--sp-2);
+      }
+
+      .swatch__chip {
+        height: var(--sp-6);
+        border: var(--hairline);
+      }
+
+      .swatch__chip--ink {
+        background: var(--ink);
+      }
+
+      .swatch__chip--amber {
+        background: var(--amber);
+      }
+
+      .swatch__chip--paper-deep {
+        background: var(--paper-deep);
+      }
+
+      .type-stack,
+      .button-row,
+      .field-grid,
+      .stat-grid,
+      .card-grid,
+      .tag-row,
+      .alert-stack,
+      .structure-demo {
+        display: grid;
+        gap: var(--sp-3);
+      }
+
+      .field-grid,
+      .stat-grid,
+      .card-grid {
+        grid-template-columns: repeat(auto-fit, minmax(calc(var(--x) * 10), 1fr));
+      }
+
+      .button-row,
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+      }
+
+      .type-stack p,
+      .card p,
+      .alert p {
+        max-width: calc(var(--x) * 19);
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+      }
+
+      .table caption {
+        margin-bottom: var(--sp-3);
+        text-align: left;
+      }
+
+      .footer .page-shell {
+        padding-top: 0;
+        padding-bottom: 0;
+      }
+
+      @media (max-width: 720px) {
+        .nav,
+        .footer__row {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav page-shell" aria-label="Primary">
+      <a class="nav__lockup" href="#top">
+        <img class="lockup" src="lockup-primary.svg" alt="Prop Cockpit lockup">
+      </a>
+      <div class="nav__links">
+        <a class="nav__link" aria-current="page" href="#colour">Brand</a>
+        <a class="nav__link" href="#table">Rules</a>
+        <a class="nav__link" href="#alerts">Risk</a>
+      </div>
+    </nav>
+
+    <main class="page page-shell" id="top">
+      <header class="page-header">
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+          <span>Cockpit</span>
+          <span class="breadcrumb__sep">/</span>
+          <span>Brand</span>
+          <span class="breadcrumb__sep">/</span>
+          <span class="breadcrumb__current" aria-current="page">Verification</span>
+        </nav>
+        <h1>Prop Cockpit&trade; Brand Verification</h1>
+        <p>
+          Pass the challenge. Keep the funded account. This canvas checks the
+          locked Cockpit Quietude system against the firms and rule pressure
+          points prop traders actually navigate.
+        </p>
+        <p class="legend">v1 / 2026-04-19 / FreeTraderHub / Cockpit Quietude</p>
+      </header>
+
+      <section class="section-block" id="colour" aria-labelledby="colour-title">
+        <div class="section-heading">
+          <p class="legend">01 / 10</p>
+          <h2 id="colour-title">Colour</h2>
+        </div>
+        <div class="swatches">
+          <article class="swatch">
+            <div class="swatch__chip swatch__chip--ink" aria-hidden="true"></div>
+            <p class="label">Ink</p>
+            <p class="numeric">#0E1A2B</p>
+          </article>
+          <article class="swatch">
+            <div class="swatch__chip swatch__chip--amber" aria-hidden="true"></div>
+            <p class="label">Amber</p>
+            <p class="numeric">#E8A33D</p>
+          </article>
+          <article class="swatch">
+            <div class="swatch__chip swatch__chip--paper-deep" aria-hidden="true"></div>
+            <p class="label">Paper Deep</p>
+            <p class="numeric">#ECE6DA</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-block" id="type" aria-labelledby="type-title">
+        <div class="section-heading">
+          <p class="legend">02 / 10</p>
+          <h2 id="type-title">Type</h2>
+        </div>
+        <div class="type-stack">
+          <p class="wordmark">PROP COCKPIT</p>
+          <p class="endorse">A FREETRADERHUB PROPERTY</p>
+          <h2>Protect the account before the rule breach arrives.</h2>
+          <h3>Challenge math gets easier when the interface speaks plainly.</h3>
+          <p>
+            Prop Cockpit helps FTMO, MyFundedFX, and FundedNext traders keep
+            position size, loss limits, and pass probability in view before a
+            routine day turns into a failed challenge.
+          </p>
+          <p class="label">Rule aware / funded account protection / challenge discipline</p>
+          <p class="legend">The instrument does the work.</p>
+        </div>
+      </section>
+
+      <section class="section-block" id="buttons" aria-labelledby="buttons-title">
+        <div class="section-heading">
+          <p class="legend">03 / 10</p>
+          <h2 id="buttons-title">Buttons</h2>
+        </div>
+        <div class="button-row">
+          <button class="btn" type="button">Open rule card</button>
+          <button class="btn btn--ghost" type="button">Compare firms</button>
+          <button class="btn btn--signal" type="button">Stop trading</button>
+        </div>
+      </section>
+
+      <section class="section-block" id="inputs" aria-labelledby="inputs-title">
+        <div class="section-heading">
+          <p class="legend">04 / 10</p>
+          <h2 id="inputs-title">Inputs</h2>
+        </div>
+        <div class="field-grid">
+          <label class="input--label">
+            <span class="label">Account size</span>
+            <input class="input numeric" type="text" value="$100,000">
+          </label>
+          <label class="input--label">
+            <span class="label">Risk per trade</span>
+            <input class="input numeric" type="text" value="0.50%">
+          </label>
+        </div>
+      </section>
+
+      <section class="section-block" id="stats" aria-labelledby="stats-title">
+        <div class="section-heading">
+          <p class="legend">05 / 10</p>
+          <h2 id="stats-title">Stat Cells</h2>
+        </div>
+        <div class="stat-grid">
+          <article class="stat">
+            <span class="stat__label">Daily loss limit</span>
+            <span class="stat__value numeric">$5,000</span>
+            <span class="stat__delta">FTMO 100K challenge</span>
+          </article>
+          <article class="stat">
+            <span class="stat__label">Risk used today</span>
+            <span class="stat__value numeric">82%</span>
+            <span class="stat__delta stat__delta--signal">Signal / stop before breach</span>
+          </article>
+          <article class="stat">
+            <span class="stat__label">Max position</span>
+            <span class="stat__value numeric">2.10 lots</span>
+            <span class="stat__delta">EURUSD / 25 pip stop</span>
+          </article>
+          <article class="stat">
+            <span class="stat__label">Pass probability</span>
+            <span class="stat__value numeric">61%</span>
+            <span class="stat__delta">Needs two green sessions</span>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-block" id="cards" aria-labelledby="cards-title">
+        <div class="section-heading">
+          <p class="legend">06 / 10</p>
+          <h2 id="cards-title">Cards</h2>
+        </div>
+        <div class="card-grid">
+          <article class="card">
+            <p class="label">Position size</p>
+            <h3>One click sizing for FTMO 100K</h3>
+            <p>
+              At 0.50% risk and a 25 pip stop, Prop Cockpit sizes the trade
+              before the order ticket turns a routine setup into a rules issue.
+            </p>
+          </article>
+          <article class="card card--deep">
+            <p class="label">Loss limit tracker</p>
+            <h3>Daily drawdown with firm context</h3>
+            <p>
+              MyFundedFX resets, trailing constraints, and remaining risk are
+              shown together so the trader reads the rule as a live number.
+            </p>
+          </article>
+          <article class="card card--inverse">
+            <p class="label">Pass simulator</p>
+            <h3>Model the funded path before the session opens</h3>
+            <p>
+              FundedNext scenarios keep expected payoff, drawdown headroom, and
+              required hit rate on one inverse surface for quick review.
+            </p>
+            <p class="legend">Inverse surface / signal remains reserved</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-block" id="tags" aria-labelledby="tags-title">
+        <div class="section-heading">
+          <p class="legend">07 / 10</p>
+          <h2 id="tags-title">Tags</h2>
+        </div>
+        <div class="tag-row">
+          <span class="tag">FTMO</span>
+          <span class="tag tag--active">MyFundedFX</span>
+          <span class="tag">FundedNext</span>
+          <span class="tag tag--signal">Rules updated</span>
+        </div>
+      </section>
+
+      <section class="section-block" id="table" aria-labelledby="table-title">
+        <div class="section-heading">
+          <p class="legend">08 / 10</p>
+          <h2 id="table-title">Table</h2>
+        </div>
+        <div class="table-wrap">
+          <table class="table">
+            <caption><span class="legend">Rule comparison / standard challenge snapshot</span></caption>
+            <thead>
+              <tr>
+                <th scope="col">Firm</th>
+                <th class="numeric" scope="col">Challenge size</th>
+                <th class="numeric" scope="col">Daily loss</th>
+                <th class="numeric" scope="col">Max drawdown</th>
+                <th class="numeric" scope="col">Profit target</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>FTMO</td>
+                <td class="numeric">$100K</td>
+                <td class="numeric">5%</td>
+                <td class="numeric">10%</td>
+                <td class="numeric">8%</td>
+              </tr>
+              <tr>
+                <td>MyFundedFX</td>
+                <td class="numeric">$100K</td>
+                <td class="numeric">5%</td>
+                <td class="numeric">8%</td>
+                <td class="numeric">8%</td>
+              </tr>
+              <tr>
+                <td>FundedNext</td>
+                <td class="numeric">$100K</td>
+                <td class="numeric">5%</td>
+                <td class="numeric">10%</td>
+                <td class="numeric">8%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section-block" id="alerts" aria-labelledby="alerts-title">
+        <div class="section-heading">
+          <p class="legend">09 / 10</p>
+          <h2 id="alerts-title">Alerts</h2>
+        </div>
+        <div class="alert-stack">
+          <article class="alert">
+            <div>
+              <span class="alert__label">Notice</span>
+              <p>FTMO updated the 10K Challenge profit target to 8% on 2026-04-15.</p>
+            </div>
+          </article>
+          <article class="alert alert--signal">
+            <div>
+              <span class="alert__label">Signal</span>
+              <p>You are at 82% of today's loss limit. Consider stopping.</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section-block" id="structure" aria-labelledby="structure-title">
+        <div class="section-heading">
+          <p class="legend">10 / 10</p>
+          <h2 id="structure-title">Structure</h2>
+        </div>
+        <div class="structure-demo">
+          <div>
+            <div class="hairline" aria-hidden="true"></div>
+            <p class="legend">Hairline / secondary division</p>
+          </div>
+          <div>
+            <div class="hairline hairline--ink" aria-hidden="true"></div>
+            <p class="legend">Hairline ink / primary division</p>
+          </div>
+          <p class="legend"><span class="legend__tick" aria-hidden="true"></span>Signal markers stay small and specific.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="page-shell">
+        <div class="footer__row">
+          <img class="lockup" src="lockup-inverted.svg" alt="Prop Cockpit lockup inverted">
+          <p class="footer__legend legend">Pass the challenge. Keep the funded account.</p>
+        </div>
+        <div class="footer__hairline" aria-hidden="true"></div>
+        <div class="footer__row">
+          <p class="legend footer__legend">FTMO / MyFundedFX / FundedNext / rule-aware tools</p>
+          <p class="legend footer__legend">Verification surface / v1</p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
