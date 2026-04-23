@@ -153,6 +153,29 @@ def _has_meaningful_metric(payload: Any) -> bool:
     return True
 
 
+def _parse_utc_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _age_days_from_iso(value: Any, generated_at: datetime) -> float | None:
+    parsed = _parse_utc_datetime(value)
+    if parsed is None:
+        return None
+    age_seconds = (generated_at - parsed).total_seconds()
+    if age_seconds < 0:
+        return 0.0
+    return age_seconds / 86400.0
+
+
 def _property_metrics_sources_dir(config: dict[str, Any]) -> Path:
     phase3 = _phase3_cfg(config)
     rel = str(phase3.get("property_metric_sources_dir", "state/property_metrics")).strip()
@@ -243,6 +266,18 @@ def _resolve_property_website_id(property_id: str, charter_entry: dict[str, Any]
     return defaults.get(property_id)
 
 
+def _resolve_property_research_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    research_id = str(tracking.get("research_website_id", "")).strip()
+    if research_id:
+        return research_id
+    defaults = {
+        "freetraderhub": "freetraderhub_research",
+    }
+    return defaults.get(property_id)
+
+
 def _latest_content_drafts_pending(phase2_payload: dict[str, Any]) -> int | None:
     for division in phase2_payload.get("divisions", []):
         if not isinstance(division, dict):
@@ -262,6 +297,116 @@ def _website_snapshot_by_id(phase2_payload: dict[str, Any]) -> dict[str, dict[st
         if website_id:
             output[website_id] = website
     return output
+
+
+def _build_property_metric_feed_from_phase2(
+    config: dict[str, Any],
+    phase2_payload: dict[str, Any],
+    generated_at: datetime,
+) -> dict[str, Any]:
+    charters = _property_charters(config)
+    website_snapshots = _website_snapshot_by_id(phase2_payload)
+    drafts_pending = _latest_content_drafts_pending(phase2_payload)
+    output: dict[str, Any] = {}
+
+    for property_id, raw_entry in charters.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        if raw_entry.get("active", True) is False:
+            continue
+        charter = raw_entry.get("charter", {})
+        charter = charter if isinstance(charter, dict) else {}
+        charter_version = str(charter.get("version", "")).strip().lower()
+        if charter_version.startswith("v0-stub"):
+            continue
+
+        tracking: dict[str, Any] = {}
+        pipeline: dict[str, Any] = {}
+        ops: dict[str, Any] = {}
+        movers: dict[str, Any] = {}
+
+        if drafts_pending is not None:
+            pipeline["drafts_pending"] = drafts_pending
+
+        website_id = _resolve_property_website_id(property_id, raw_entry)
+        website_snapshot = website_snapshots.get(website_id or "")
+        website_snapshot = website_snapshot if isinstance(website_snapshot, dict) else {}
+        local_diag = website_snapshot.get("local_diag", {})
+        local_diag = local_diag if isinstance(local_diag, dict) else {}
+        sitemap_lastmod = _clean_optional_text(local_diag.get("sitemap_latest_lastmod"))
+        sitemap_age_days = _age_days_from_iso(sitemap_lastmod, generated_at) if sitemap_lastmod else None
+        if sitemap_age_days is not None:
+            pipeline["sitemap_lastmod_age_days"] = round(sitemap_age_days, 2)
+            if sitemap_age_days > 14.0:
+                movers["biggest_risk"] = "sitemap freshness stale"
+
+        research_id = _resolve_property_research_id(property_id, raw_entry)
+        research_snapshot = website_snapshots.get(research_id or "")
+        research_snapshot = research_snapshot if isinstance(research_snapshot, dict) else {}
+        research_local_diag = research_snapshot.get("local_diag", {})
+        research_local_diag = research_local_diag if isinstance(research_local_diag, dict) else {}
+        research_mtime = _clean_optional_text(research_local_diag.get("local_reports_latest_mtime_utc"))
+        research_age_days = _age_days_from_iso(research_mtime, generated_at) if research_mtime else None
+        if research_age_days is not None:
+            ops["research_brief_age_days"] = round(research_age_days, 2)
+            if research_age_days > 8.0 and "biggest_risk" not in movers:
+                movers["biggest_risk"] = "research brief stale"
+
+        if pipeline:
+            tracking["pipeline"] = pipeline
+        if ops:
+            tracking["ops"] = ops
+        if movers:
+            tracking["movers"] = movers
+        if not tracking:
+            continue
+
+        output[property_id] = {
+            "updated_at_utc": _now_utc_iso(),
+            "source": "phase2_system_telemetry",
+            "tracking": tracking,
+        }
+
+    return output
+
+
+def _refresh_property_metric_feed_from_phase2(
+    config: dict[str, Any],
+    phase2_payload: dict[str, Any],
+    generated_at: datetime,
+) -> str:
+    feed_path = _property_metric_feed_path(config)
+    existing = _load_json_mapping(feed_path)
+    existing_properties = existing.get("properties", existing)
+    existing_properties = existing_properties if isinstance(existing_properties, dict) else {}
+    merged_properties: dict[str, Any] = dict(existing_properties)
+
+    produced = _build_property_metric_feed_from_phase2(
+        config=config,
+        phase2_payload=phase2_payload,
+        generated_at=generated_at,
+    )
+    for property_id, produced_entry in produced.items():
+        if not isinstance(produced_entry, dict):
+            continue
+        prior_entry = merged_properties.get(property_id, {})
+        prior_entry = prior_entry if isinstance(prior_entry, dict) else {}
+        prior_tracking = _extract_tracking_payload(prior_entry)
+        produced_tracking = _extract_tracking_payload(produced_entry)
+        merged_tracking = _merge_non_null(prior_tracking, produced_tracking)
+        merged_entry = dict(prior_entry)
+        merged_entry["tracking"] = merged_tracking
+        merged_entry["updated_at_utc"] = _now_utc_iso()
+        merged_entry["source"] = "phase2_system_telemetry"
+        merged_properties[property_id] = merged_entry
+
+    payload = {
+        "generated_at_utc": generated_at.isoformat(),
+        "producer": "phase3_holding",
+        "properties": merged_properties,
+    }
+    _persist_json_mapping(feed_path, payload)
+    return str(feed_path)
 
 
 def _update_r12_counter(
@@ -391,6 +536,7 @@ def _build_property_pnl_blocks(
         pages_indexed_7d = _to_int(pipeline.get("pages_indexed_7d"))
         backlinks_dr30_7d = _to_int(pipeline.get("backlinks_dr30_7d"))
         backlinks_dr30_total = _to_int(pipeline.get("backlinks_dr30_total"))
+        sitemap_lastmod_age_days = _to_float(pipeline.get("sitemap_lastmod_age_days"))
         active_campaign = _clean_optional_text(pipeline.get("active_campaign"))
         top_revenue_line = _clean_optional_text(movers.get("top_revenue_line"))
         top_growth_lever = _clean_optional_text(movers.get("top_growth_lever"))
@@ -403,6 +549,7 @@ def _build_property_pnl_blocks(
         hours_invested_7d = _to_float(ops.get("hours_invested_7d"))
         direct_costs_usd_7d = _to_float(ops.get("direct_costs_usd_7d"))
         quantified_value_usd_7d = _to_float(ops.get("quantified_value_usd_7d"))
+        research_brief_age_days = _to_float(ops.get("research_brief_age_days"))
         value_delta_usd = None
         if (
             hours_invested_7d is not None
@@ -448,6 +595,9 @@ def _build_property_pnl_blocks(
         if website_latency_ms is not None and website_latency_ms > latency_target and status == "GREEN":
             status = "AMBER"
             reasons.append("website latency above target")
+        if research_brief_age_days is not None and research_brief_age_days > 8.0 and status == "GREEN":
+            status = "AMBER"
+            reasons.append("research brief stale")
 
         forecast_target_mrr_usd = _to_float(targets.get("day90_mrr_usd"))
         pct_to_forecast = None
@@ -473,6 +623,7 @@ def _build_property_pnl_blocks(
                 "pages_indexed_7d": pages_indexed_7d,
                 "backlinks_dr30_7d": backlinks_dr30_7d,
                 "backlinks_dr30_total": backlinks_dr30_total,
+                "sitemap_lastmod_age_days": sitemap_lastmod_age_days,
                 "active_campaign": active_campaign,
             },
             "movers": {
@@ -487,6 +638,7 @@ def _build_property_pnl_blocks(
                 "hours_invested_7d": hours_invested_7d,
                 "direct_costs_usd_7d": direct_costs_usd_7d,
                 "quantified_value_usd_7d": quantified_value_usd_7d,
+                "research_brief_age_days": research_brief_age_days,
             },
         }
         existing_memory_tracking = _extract_tracking_payload(memory_entry)
@@ -524,6 +676,7 @@ def _build_property_pnl_blocks(
                 "pages_indexed_7d": pages_indexed_7d,
                 "backlinks_dr30_7d": backlinks_dr30_7d,
                 "backlinks_dr30_total": backlinks_dr30_total,
+                "sitemap_lastmod_age_days": sitemap_lastmod_age_days,
                 "active_campaign": active_campaign,
             },
             "top_movers": {
@@ -535,6 +688,7 @@ def _build_property_pnl_blocks(
                 "hours_invested_7d": hours_invested_7d,
                 "direct_costs_usd_7d": direct_costs_usd_7d,
                 "quantified_value_usd_7d": quantified_value_usd_7d,
+                "research_brief_age_days": research_brief_age_days,
                 "value_delta_usd": value_delta_usd,
             },
             "website_observability": {
@@ -608,11 +762,12 @@ def _render_property_pnl_blocks_markdown(blocks: list[dict[str, Any]]) -> list[s
         pipeline = block.get("pipeline", {})
         pipeline = pipeline if isinstance(pipeline, dict) else {}
         lines.append(
-            "- Pipeline: drafts_pending={drafts} | pages_indexed_7d={indexed} | backlinks_dr30_7d={bl7} | backlinks_dr30_total={blt} | campaign={campaign}".format(
+            "- Pipeline: drafts_pending={drafts} | pages_indexed_7d={indexed} | backlinks_dr30_7d={bl7} | backlinks_dr30_total={blt} | sitemap_age_days={sitemap_age} | campaign={campaign}".format(
                 drafts=pipeline.get("drafts_pending", "n/a"),
                 indexed=pipeline.get("pages_indexed_7d", "n/a"),
                 bl7=pipeline.get("backlinks_dr30_7d", "n/a"),
                 blt=pipeline.get("backlinks_dr30_total", "n/a"),
+                sitemap_age=pipeline.get("sitemap_lastmod_age_days", "n/a"),
                 campaign=(pipeline.get("active_campaign") or "n/a"),
             )
         )
@@ -749,8 +904,10 @@ def _build_property_department_briefs(
         backlinks_7d = _to_float(pipeline.get("backlinks_dr30_7d"))
         drafts_pending = _to_float(pipeline.get("drafts_pending"))
         pages_indexed = _to_float(pipeline.get("pages_indexed_7d"))
+        sitemap_age_days = _to_float(pipeline.get("sitemap_lastmod_age_days"))
         latency_ms = _to_float(observability.get("latency_ms"))
         latency_target = _to_float(observability.get("latency_target_ms"))
+        research_brief_age_days = _to_float(operations.get("research_brief_age_days"))
         r12_counter = _to_int(r12.get("counter")) or 0
         r12_halt = bool(r12.get("halt_active"))
 
@@ -883,6 +1040,20 @@ def _build_property_department_briefs(
             elif pages_indexed < (_to_float(operations_cfg.get("pages_indexed_green_7d")) or 5.0):
                 operations_status = _status_worst([operations_status, "AMBER"])
                 operations_signals.append("pages indexed below green target")
+        elif sitemap_age_days is not None:
+            if sitemap_age_days > 14.0:
+                operations_status = _status_worst([operations_status, "RED"])
+                operations_signals.append("sitemap freshness stale")
+            elif sitemap_age_days > 7.0:
+                operations_status = _status_worst([operations_status, "AMBER"])
+                operations_signals.append("sitemap freshness drifting")
+        if research_brief_age_days is not None:
+            if research_brief_age_days > 14.0:
+                operations_status = _status_worst([operations_status, "RED"])
+                operations_signals.append("research brief stale")
+            elif research_brief_age_days > 8.0:
+                operations_status = _status_worst([operations_status, "AMBER"])
+                operations_signals.append("research brief aging past target")
         if value_delta is not None and value_delta < 0:
             operations_status = _status_worst([operations_status, "AMBER"])
             operations_signals.append("execution cost/value mix under target")
@@ -935,7 +1106,8 @@ def _build_property_department_briefs(
                 "score": _status_to_score(operations_status),
                 "headline": (
                     f"drafts_pending={drafts_pending if drafts_pending is not None else 'n/a'} | "
-                    f"pages_indexed_7d={pages_indexed if pages_indexed is not None else 'n/a'}"
+                    f"pages_indexed_7d={pages_indexed if pages_indexed is not None else 'n/a'} | "
+                    f"research_age_days={research_brief_age_days if research_brief_age_days is not None else 'n/a'}"
                 ),
                 "signals": operations_signals or ["on plan"],
                 "proposal": operations_proposal,
@@ -980,6 +1152,8 @@ def _build_property_department_briefs(
                     "total_mrr_usd": total_mrr,
                     "r12_counter": r12_counter,
                     "r12_halt_active": r12_halt,
+                    "sitemap_lastmod_age_days": sitemap_age_days,
+                    "research_brief_age_days": research_brief_age_days,
                 },
             }
         )
@@ -2199,6 +2373,15 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
     targets = _load_targets(config)
     soul_text = _load_soul(config)
     generated_at = datetime.now(timezone.utc)
+    feed_refresh_warning: str | None = None
+    try:
+        _refresh_property_metric_feed_from_phase2(
+            config=config,
+            phase2_payload=phase2_payload,
+            generated_at=generated_at,
+        )
+    except OSError as exc:
+        feed_refresh_warning = f"Property metric feed refresh failed: {exc}"
     property_pnl_blocks = _build_property_pnl_blocks(
         config=config,
         phase2_payload=phase2_payload,
@@ -2262,7 +2445,11 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "soul_file": str((_phase3_cfg(config).get("soul_file") or "SOUL.md")),
         "base_summary": phase2_payload.get("base_summary", {}),
         "base_alerts": phase2_payload.get("base_alerts", []),
-        "warnings": [warning for warning in [llm_warning, ceo_result.get("warning"), history_warning] if warning],
+        "warnings": [
+            warning
+            for warning in [llm_warning, ceo_result.get("warning"), history_warning, feed_refresh_warning]
+            if warning
+        ],
         "company_scorecard": company_scorecard,
         "property_pnl_blocks": property_pnl_blocks,
         "property_department_briefs": property_department_briefs,

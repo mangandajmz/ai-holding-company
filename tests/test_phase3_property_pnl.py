@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -270,6 +271,77 @@ def test_build_property_pnl_blocks_ingests_department_source_files(tmp_path: Pat
     assert block["operations"]["value_delta_usd"] == pytest.approx(350.0)
     assert block["ingestion"]["source_present"] is True
     assert len(block["ingestion"]["source_files_used"]) >= 2
+
+
+def test_build_property_metric_feed_from_phase2_derives_operational_signals(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    config["property_charters"]["freetraderhub"]["tracking"] = {}
+    phase2_payload = _base_phase2_payload()
+    phase2_payload["base_websites"] = [
+        {
+            "id": "freetraderhub_website",
+            "latency_ms": 280,
+            "local_diag": {"sitemap_latest_lastmod": "2026-04-10T00:00:00+00:00"},
+        },
+        {
+            "id": "freetraderhub_research",
+            "latency_ms": 220,
+            "local_diag": {"local_reports_latest_mtime_utc": "2026-04-01T00:00:00+00:00"},
+        },
+    ]
+
+    feed = phase3_holding._build_property_metric_feed_from_phase2(
+        config=config,
+        phase2_payload=phase2_payload,
+        generated_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+    )
+
+    assert "freetraderhub" in feed
+    tracking = feed["freetraderhub"]["tracking"]
+    assert tracking["pipeline"]["drafts_pending"] == 6
+    assert tracking["pipeline"]["sitemap_lastmod_age_days"] == pytest.approx(12.0)
+    assert tracking["ops"]["research_brief_age_days"] == pytest.approx(21.0)
+    assert tracking["movers"]["biggest_risk"] == "research brief stale"
+
+
+def test_refresh_property_metric_feed_from_phase2_merges_with_existing_feed(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    config["property_charters"]["freetraderhub"]["tracking"] = {}
+    feed_path = tmp_path / "property_metric_feed.json"
+    feed_path.write_text(
+        """
+{
+  "properties": {
+    "freetraderhub": {
+      "tracking": {
+        "revenue": {
+          "total_mrr_usd": 700
+        }
+      }
+    }
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    phase2_payload = _base_phase2_payload()
+    phase2_payload["base_websites"] = [
+        {
+            "id": "freetraderhub_research",
+            "local_diag": {"local_reports_latest_mtime_utc": "2026-04-20T00:00:00+00:00"},
+        }
+    ]
+
+    phase3_holding._refresh_property_metric_feed_from_phase2(
+        config=config,
+        phase2_payload=phase2_payload,
+        generated_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+    )
+
+    payload = json.loads(feed_path.read_text(encoding="utf-8"))
+    tracking = payload["properties"]["freetraderhub"]["tracking"]
+    assert tracking["revenue"]["total_mrr_usd"] == 700
+    assert tracking["ops"]["research_brief_age_days"] == pytest.approx(2.0)
 
 
 def test_update_r12_counter_increments_weekly_and_halts_at_threshold(tmp_path: Path) -> None:
