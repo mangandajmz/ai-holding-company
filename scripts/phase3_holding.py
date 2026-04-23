@@ -46,6 +46,375 @@ def _fmt_ratio(value: float | None) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _fmt_optional_pct(value: float | None, digits: int = 1) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.{digits}f}%"
+
+
+def _fmt_optional_money(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return _fmt_money(value)
+
+
+def _property_charters(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("property_charters", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _r12_counter_path(config: dict[str, Any]) -> Path:
+    phase3 = _phase3_cfg(config)
+    rel = str(phase3.get("r12_counter_state_file", "state/r12_property_counters.json")).strip()
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _load_r12_counters(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _persist_r12_counters(path: Path, counters: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(counters, indent=2), encoding="utf-8")
+
+
+def _week_key(generated_at: datetime) -> str:
+    iso = generated_at.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
+
+
+def _resolve_property_website_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    website_id = str(tracking.get("website_id", "")).strip()
+    if website_id:
+        return website_id
+    defaults = {
+        "freetraderhub": "freetraderhub_website",
+        "freeghosttools": "freeghosttools",
+    }
+    return defaults.get(property_id)
+
+
+def _latest_content_drafts_pending(phase2_payload: dict[str, Any]) -> int | None:
+    for division in phase2_payload.get("divisions", []):
+        if not isinstance(division, dict):
+            continue
+        if str(division.get("division", "")).strip().lower() != "content_studio":
+            continue
+        return _to_int(division.get("drafts_pending"))
+    return None
+
+
+def _website_snapshot_by_id(phase2_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for website in phase2_payload.get("base_websites", []):
+        if not isinstance(website, dict):
+            continue
+        website_id = str(website.get("id", "")).strip()
+        if website_id:
+            output[website_id] = website
+    return output
+
+
+def _update_r12_counter(
+    config: dict[str, Any],
+    property_id: str,
+    value_delta: float | None,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    counter_path = _r12_counter_path(config)
+    counters = _load_r12_counters(counter_path)
+    record = counters.get(property_id, {})
+    record = record if isinstance(record, dict) else {}
+
+    counter = max(_to_int(record.get("consecutive_negative_weeks")) or 0, 0)
+    current_week = _week_key(generated_at)
+    last_week = str(record.get("last_week_key", ""))
+
+    if value_delta is not None and current_week != last_week:
+        counter = counter + 1 if value_delta < 0 else 0
+        record["consecutive_negative_weeks"] = counter
+        record["last_week_key"] = current_week
+        record["last_value_delta_usd"] = value_delta
+        record["updated_at_utc"] = _now_utc_iso()
+        counters[property_id] = record
+        _persist_r12_counters(counter_path, counters)
+
+    return {
+        "counter": counter,
+        "threshold": 4,
+        "halt_active": counter >= 4,
+        "state_file": str(counter_path),
+    }
+
+
+def _build_property_pnl_blocks(
+    config: dict[str, Any],
+    phase2_payload: dict[str, Any],
+    generated_at: datetime,
+) -> list[dict[str, Any]]:
+    charters = _property_charters(config)
+    if not charters:
+        return []
+
+    websites_cfg = (
+        config.get("phase2", {}).get("targets", {}).get("websites", {})
+        if isinstance(config.get("phase2", {}), dict)
+        else {}
+    )
+    websites_cfg = websites_cfg if isinstance(websites_cfg, dict) else {}
+    latency_target = _to_float(websites_cfg.get("max_latency_ms")) or 500.0
+
+    website_snapshots = _website_snapshot_by_id(phase2_payload)
+    content_drafts = _latest_content_drafts_pending(phase2_payload)
+    output: list[dict[str, Any]] = []
+
+    for property_id, raw_entry in charters.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        charter = raw_entry.get("charter", {})
+        charter = charter if isinstance(charter, dict) else {}
+
+        wedge = str(charter.get("wedge", "")).strip()
+        property_type = str(charter.get("property_type", "")).strip() or "unknown"
+        phase = str(charter.get("phase", "")).strip() or "unknown"
+        formula = str(charter.get("r12_formula_version", "")).strip() or "n/a"
+        internal_rate = _to_float(charter.get("internal_rate_usd_hr"))
+        charter_version = str(charter.get("version", "")).strip() or "n/a"
+
+        tracking = raw_entry.get("tracking", {})
+        tracking = tracking if isinstance(tracking, dict) else {}
+        audience = tracking.get("audience", {})
+        audience = audience if isinstance(audience, dict) else {}
+        revenue = tracking.get("revenue", {})
+        revenue = revenue if isinstance(revenue, dict) else {}
+        pipeline = tracking.get("pipeline", {})
+        pipeline = pipeline if isinstance(pipeline, dict) else {}
+        movers = tracking.get("movers", {})
+        movers = movers if isinstance(movers, dict) else {}
+        targets = tracking.get("targets", {})
+        targets = targets if isinstance(targets, dict) else {}
+        ops = tracking.get("ops", {})
+        ops = ops if isinstance(ops, dict) else {}
+
+        sessions_7d = _to_int(audience.get("sessions_7d"))
+        waft_7d = _to_int(audience.get("waft_7d"))
+        returning_rate_pct = _to_float(audience.get("returning_user_rate_pct"))
+        tool_completion_rate_pct = _to_float(audience.get("tool_completion_rate_pct"))
+
+        affiliate_usd_7d = _to_float(revenue.get("affiliate_usd_7d"))
+        ad_usd_7d = _to_float(revenue.get("ad_usd_7d"))
+        subscription_mrr_usd = _to_float(revenue.get("subscription_mrr_usd"))
+        total_mrr_usd = _to_float(revenue.get("total_mrr_usd"))
+        gross_margin_pct = _to_float(revenue.get("gross_margin_pct"))
+        top_partner = str(revenue.get("top_partner", "")).strip() or None
+
+        drafts_pending = _to_int(pipeline.get("drafts_pending"))
+        if drafts_pending is None and property_id == "freetraderhub":
+            drafts_pending = content_drafts
+        pages_indexed_7d = _to_int(pipeline.get("pages_indexed_7d"))
+        backlinks_dr30_7d = _to_int(pipeline.get("backlinks_dr30_7d"))
+        backlinks_dr30_total = _to_int(pipeline.get("backlinks_dr30_total"))
+        active_campaign = str(pipeline.get("active_campaign", "")).strip() or None
+
+        website_id = _resolve_property_website_id(property_id, raw_entry)
+        website_snapshot = website_snapshots.get(website_id or "", {})
+        website_latency_ms = _to_float(website_snapshot.get("latency_ms")) if isinstance(website_snapshot, dict) else None
+
+        hours_invested_7d = _to_float(ops.get("hours_invested_7d"))
+        direct_costs_usd_7d = _to_float(ops.get("direct_costs_usd_7d"))
+        quantified_value_usd_7d = _to_float(ops.get("quantified_value_usd_7d"))
+        value_delta_usd = None
+        if (
+            hours_invested_7d is not None
+            and direct_costs_usd_7d is not None
+            and quantified_value_usd_7d is not None
+            and internal_rate is not None
+        ):
+            value_delta_usd = quantified_value_usd_7d - (hours_invested_7d * internal_rate) - direct_costs_usd_7d
+
+        r12 = _update_r12_counter(
+            config=config,
+            property_id=property_id,
+            value_delta=value_delta_usd,
+            generated_at=generated_at,
+        )
+
+        status = "GREEN"
+        reasons: list[str] = []
+        if r12.get("halt_active"):
+            status = "RED"
+            reasons.append("R12 halt active")
+        elif value_delta_usd is not None and value_delta_usd < 0:
+            status = "AMBER"
+            reasons.append("net-negative weekly value delta")
+        elif all(
+            metric is None
+            for metric in [affiliate_usd_7d, ad_usd_7d, subscription_mrr_usd, total_mrr_usd]
+        ):
+            status = "AMBER"
+            reasons.append("revenue feed missing")
+
+        if website_latency_ms is not None and website_latency_ms > latency_target and status == "GREEN":
+            status = "AMBER"
+            reasons.append("website latency above target")
+
+        forecast_target_mrr_usd = _to_float(targets.get("day90_mrr_usd"))
+        pct_to_forecast = None
+        if total_mrr_usd is not None and forecast_target_mrr_usd not in (None, 0):
+            pct_to_forecast = (total_mrr_usd / forecast_target_mrr_usd) * 100.0
+
+        block = {
+            "property_id": property_id,
+            "property_name": str(raw_entry.get("name", property_id)).strip() or property_id,
+            "product_wordmark": str(raw_entry.get("product_wordmark", "")).strip() or None,
+            "phase": phase,
+            "property_type": property_type,
+            "charter_version": charter_version,
+            "wedge": wedge,
+            "formula": formula,
+            "audience": {
+                "sessions_7d": sessions_7d,
+                "waft_7d": waft_7d,
+                "returning_user_rate_pct": returning_rate_pct,
+                "tool_completion_rate_pct": tool_completion_rate_pct,
+            },
+            "revenue": {
+                "affiliate_usd_7d": affiliate_usd_7d,
+                "ad_usd_7d": ad_usd_7d,
+                "subscription_mrr_usd": subscription_mrr_usd,
+                "total_mrr_usd": total_mrr_usd,
+                "gross_margin_pct": gross_margin_pct,
+                "top_partner": top_partner,
+            },
+            "pipeline": {
+                "drafts_pending": drafts_pending,
+                "pages_indexed_7d": pages_indexed_7d,
+                "backlinks_dr30_7d": backlinks_dr30_7d,
+                "backlinks_dr30_total": backlinks_dr30_total,
+                "active_campaign": active_campaign,
+            },
+            "top_movers": {
+                "top_revenue_line": str(movers.get("top_revenue_line", "")).strip() or None,
+                "top_growth_lever": str(movers.get("top_growth_lever", "")).strip() or None,
+                "biggest_risk": str(movers.get("biggest_risk", "")).strip() or None,
+            },
+            "operations": {
+                "hours_invested_7d": hours_invested_7d,
+                "direct_costs_usd_7d": direct_costs_usd_7d,
+                "quantified_value_usd_7d": quantified_value_usd_7d,
+                "value_delta_usd": value_delta_usd,
+            },
+            "website_observability": {
+                "website_id": website_id,
+                "latency_ms": website_latency_ms,
+                "latency_target_ms": latency_target,
+            },
+            "status": {
+                "value": status,
+                "reason": "; ".join(reasons) if reasons else "on plan",
+                "pct_to_forecast_mrr": pct_to_forecast,
+                "forecast_target_mrr_usd": forecast_target_mrr_usd,
+            },
+            "r12": r12,
+        }
+        output.append(block)
+
+    return output
+
+
+def _render_property_pnl_blocks_markdown(blocks: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = ["## Property P&L Blocks"]
+    if not blocks:
+        lines.append("- No active property charter blocks available.")
+        return lines
+
+    for block in blocks:
+        name = str(block.get("property_name", "n/a"))
+        wordmark = str(block.get("product_wordmark", "")).strip()
+        phase = str(block.get("phase", "n/a"))
+        formula = str(block.get("formula", "n/a"))
+        heading = f"### {name}" + (f" ({wordmark})" if wordmark else "")
+        lines.append(heading)
+        lines.append(f"- Phase: {phase} | Formula: {formula}")
+
+        audience = block.get("audience", {})
+        audience = audience if isinstance(audience, dict) else {}
+        lines.append(
+            "- Audience: sessions_7d={sessions} | waft_7d={waft} | returning_rate={returning} | tool_completion={completion}".format(
+                sessions=audience.get("sessions_7d", "n/a"),
+                waft=audience.get("waft_7d", "n/a"),
+                returning=_fmt_optional_pct(_to_float(audience.get("returning_user_rate_pct"))),
+                completion=_fmt_optional_pct(_to_float(audience.get("tool_completion_rate_pct"))),
+            )
+        )
+
+        revenue = block.get("revenue", {})
+        revenue = revenue if isinstance(revenue, dict) else {}
+        lines.append(
+            "- Revenue: affiliate_7d={affiliate} | ad_7d={ad} | sub_mrr={sub} | total_mrr={total} | gross_margin={margin} | top_partner={partner}".format(
+                affiliate=_fmt_optional_money(_to_float(revenue.get("affiliate_usd_7d"))),
+                ad=_fmt_optional_money(_to_float(revenue.get("ad_usd_7d"))),
+                sub=_fmt_optional_money(_to_float(revenue.get("subscription_mrr_usd"))),
+                total=_fmt_optional_money(_to_float(revenue.get("total_mrr_usd"))),
+                margin=_fmt_optional_pct(_to_float(revenue.get("gross_margin_pct"))),
+                partner=(revenue.get("top_partner") or "n/a"),
+            )
+        )
+
+        pipeline = block.get("pipeline", {})
+        pipeline = pipeline if isinstance(pipeline, dict) else {}
+        lines.append(
+            "- Pipeline: drafts_pending={drafts} | pages_indexed_7d={indexed} | backlinks_dr30_7d={bl7} | backlinks_dr30_total={blt} | campaign={campaign}".format(
+                drafts=pipeline.get("drafts_pending", "n/a"),
+                indexed=pipeline.get("pages_indexed_7d", "n/a"),
+                bl7=pipeline.get("backlinks_dr30_7d", "n/a"),
+                blt=pipeline.get("backlinks_dr30_total", "n/a"),
+                campaign=(pipeline.get("active_campaign") or "n/a"),
+            )
+        )
+
+        movers = block.get("top_movers", {})
+        movers = movers if isinstance(movers, dict) else {}
+        lines.append(
+            "- Top Movers: revenue_line={rev} | growth_lever={grow} | risk={risk}".format(
+                rev=(movers.get("top_revenue_line") or "n/a"),
+                grow=(movers.get("top_growth_lever") or "n/a"),
+                risk=(movers.get("biggest_risk") or "n/a"),
+            )
+        )
+
+        operations = block.get("operations", {})
+        operations = operations if isinstance(operations, dict) else {}
+        lines.append(f"- Value Delta (7d): {_fmt_optional_money(_to_float(operations.get('value_delta_usd')))}")
+
+        status = block.get("status", {})
+        status = status if isinstance(status, dict) else {}
+        pct_to_forecast = _to_float(status.get("pct_to_forecast_mrr"))
+        lines.append(
+            "- Status: {status} ({reason}) | vs_forecast={forecast}".format(
+                status=status.get("value", "n/a"),
+                reason=status.get("reason", "n/a"),
+                forecast=f"{pct_to_forecast:.1f}%" if pct_to_forecast is not None else "n/a",
+            )
+        )
+
+        r12 = block.get("r12", {})
+        r12 = r12 if isinstance(r12, dict) else {}
+        lines.append(f"- R12 Counter: {r12.get('counter', 0)}/{r12.get('threshold', 4)}")
+
+    return lines
+
+
 def _status_worst(statuses: list[str]) -> str:
     normalized = [str(status).upper() for status in statuses]
     if "RED" in normalized:
@@ -487,7 +856,27 @@ def _is_allowlisted_tool_router_command(command: str) -> bool:
     if not (router_token == "scripts/tool_router.py" or router_token.endswith("/scripts/tool_router.py")):
         return False
 
-    subcommand = tokens[2].strip("\"'")
+    tail = tokens[2:]
+    subcommand = ""
+    arg_tokens: list[str] = []
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        if not token.startswith("--"):
+            subcommand = token.strip("\"'")
+            arg_tokens = tail[index + 1 :]
+            break
+        flag = token.split("=", 1)[0]
+        if flag != "--config":
+            return False
+        if "=" not in token:
+            if index + 1 >= len(tail):
+                return False
+            index += 2
+            continue
+        index += 1
+    if not subcommand:
+        return False
     spec = _ALLOWED_PHASE3_SUBCOMMANDS.get(subcommand)
     if spec is None:
         return False
@@ -495,7 +884,7 @@ def _is_allowlisted_tool_router_command(command: str) -> bool:
     required = set(spec.get("required", set()))
     allowed_flags = set(spec.get("allowed_flags", set()))
     seen_flags: set[str] = set()
-    for token in tokens[3:]:
+    for token in arg_tokens:
         if not token.startswith("--"):
             continue
         flag = token.split("=", 1)[0]
@@ -903,6 +1292,15 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     for action in company.get("actions", []):
         lines.append(f"- {action}")
 
+    property_blocks_raw = payload.get("property_pnl_blocks", [])
+    property_blocks = (
+        [block for block in property_blocks_raw if isinstance(block, dict)]
+        if isinstance(property_blocks_raw, list)
+        else []
+    )
+    lines.append("")
+    lines.extend(_render_property_pnl_blocks_markdown(property_blocks))
+
     lines.append("")
     lines.append("## Division Scorecards")
     for division in payload.get("divisions", []):
@@ -1030,6 +1428,12 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
     targets = _load_targets(config)
     soul_text = _load_soul(config)
     company_scorecard = _score_company(config=config, phase2_payload=phase2_payload, targets=targets)
+    generated_at = datetime.now(timezone.utc)
+    property_pnl_blocks = _build_property_pnl_blocks(
+        config=config,
+        phase2_payload=phase2_payload,
+        generated_at=generated_at,
+    )
 
     board_review: dict[str, Any] | None = None
     if mode in {"board_review", "board_pack"}:
@@ -1061,7 +1465,7 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
     payload: dict[str, Any] = {
         "ok": True,
         "company_name": str(phase2_payload.get("company_name", config.get("company", {}).get("name", "AI Holding Company"))),
-        "generated_at_utc": _now_utc_iso(),
+        "generated_at_utc": generated_at.isoformat(),
         "mode": mode,
         "source_brief_mode": phase2_payload.get("source_brief_mode"),
         "targets_file": str((_phase3_cfg(config).get("targets_file") or "config/targets.yaml")),
@@ -1070,6 +1474,7 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "base_alerts": phase2_payload.get("base_alerts", []),
         "warnings": [warning for warning in [llm_warning, ceo_result.get("warning")] if warning],
         "company_scorecard": company_scorecard,
+        "property_pnl_blocks": property_pnl_blocks,
         "divisions": divisions,
         "ceo_engine": ceo_result.get("engine"),
         "ceo_brief_markdown": ceo_result.get("brief_markdown", ""),

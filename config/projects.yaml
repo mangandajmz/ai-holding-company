@@ -137,6 +137,45 @@ projects:
     enabled: true
     notes: "Brief-driven content creation. All drafts require CEO approval before publishing (R3/R4)."
 
+property_charters:
+  freetraderhub:
+    charter:
+      version: v1
+      wedge: "Prop firm traders - pass the challenge and keep the funded account. Independent rule-aware tools for FTMO, MyFundedFX, FundedNext with rolling expansion."
+      property_type: website
+      phase: launch
+      value_readiness_date: 2026-06-17
+      internal_rate_usd_hr: 75
+      r12_formula_version: website_v1
+      charter_file: "FREETRADERHUB_CHARTER_v1.md"
+  freeghosttools:
+    charter:
+      version: v0-stub
+      wedge: "TBD"
+      property_type: website
+      phase: maintain
+      value_readiness_date: 2026-04-18
+      internal_rate_usd_hr: 75
+      r12_formula_version: website_v1
+  mt5_forex_bot:
+    charter:
+      version: v0-stub
+      wedge: "Forex momentum strategy on majors, monitored by AI Holding Co"
+      property_type: trading_bot
+      phase: maintain
+      value_readiness_date: 2026-01-01
+      internal_rate_usd_hr: 75
+      r12_formula_version: trading_bot_v1
+  polymarket_bot:
+    charter:
+      version: v0-stub
+      wedge: "Polymarket arbitrage / edge strategy, VPS-hosted"
+      property_type: trading_bot
+      phase: maintain
+      value_readiness_date: 2026-01-01
+      internal_rate_usd_hr: 75
+      r12_formula_version: trading_bot_v1
+
 kpis:
   heartbeat:
     required:
@@ -193,6 +232,7 @@ phase3:
   soul_file: "SOUL.md"
   targets_file: "config/targets.yaml"
   baseline_state_file: "state/phase3_company_baseline.json"
+  r12_counter_state_file: "state/r12_property_counters.json"
   reports:
     markdown_latest: "reports/phase3_holding_latest.md"
     json_latest: "reports/phase3_holding_latest.json"
