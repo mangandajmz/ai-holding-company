@@ -33,6 +33,17 @@ def _to_int(value: Any) -> int | None:
     return int(parsed)
 
 
+def _clean_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "n/a", "na"}:
+        return None
+    return text
+
+
 def _fmt_pct(value: Any, digits: int = 2) -> str:
     parsed = _to_float(value)
     if parsed is None:
@@ -61,6 +72,134 @@ def _fmt_optional_money(value: float | None) -> str:
 def _property_charters(config: dict[str, Any]) -> dict[str, Any]:
     value = config.get("property_charters", {})
     return value if isinstance(value, dict) else {}
+
+
+def _property_metric_feed_path(config: dict[str, Any]) -> Path:
+    phase3 = _phase3_cfg(config)
+    rel = str(phase3.get("property_metric_feed_file", "state/property_metric_feed.json")).strip()
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _property_metric_memory_path(config: dict[str, Any]) -> Path:
+    phase3 = _phase3_cfg(config)
+    rel = str(phase3.get("property_metric_memory_file", "state/property_metric_memory.json")).strip()
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _load_json_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _persist_json_mapping(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _merge_non_null(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        if value is None:
+            continue
+        prior = merged.get(key)
+        if isinstance(prior, dict) and isinstance(value, dict):
+            merged[key] = _merge_non_null(prior, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _extract_tracking_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(entry, dict):
+        return {}
+    if "tracking" in entry and isinstance(entry.get("tracking"), dict):
+        tracking = entry.get("tracking", {})
+        return tracking
+    # Allow direct payload shape in feed/memory files.
+    return entry
+
+
+def _has_meaningful_metric(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if str(key).strip().lower() in {
+                "updated_at_utc",
+                "generated_at_utc",
+                "last_updated_utc",
+                "drafts_pending",
+            }:
+                continue
+            if _has_meaningful_metric(value):
+                return True
+        return False
+    if isinstance(payload, list):
+        return any(_has_meaningful_metric(item) for item in payload)
+    if payload is None:
+        return False
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return False
+        return text.lower() not in {"none", "null", "n/a", "na"}
+    return True
+
+
+def _property_metrics_sources_dir(config: dict[str, Any]) -> Path:
+    phase3 = _phase3_cfg(config)
+    rel = str(phase3.get("property_metric_sources_dir", "state/property_metrics")).strip()
+    return ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+
+
+def _load_property_metric_sources(
+    config: dict[str, Any],
+    property_id: str,
+    raw_entry: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    merged: dict[str, Any] = {}
+    used_files: list[str] = []
+    sources: list[Path] = []
+
+    base_dir = _property_metrics_sources_dir(config) / property_id
+    for filename in ["shared.json", "finance.json", "marketing.json", "product.json", "operations.json"]:
+        sources.append(base_dir / filename)
+
+    explicit = raw_entry.get("metric_sources", [])
+    explicit = explicit if isinstance(explicit, list) else []
+    for value in explicit:
+        text = str(value).strip()
+        if not text:
+            continue
+        source_path = ROOT / text if not Path(text).is_absolute() else Path(text)
+        sources.append(source_path)
+
+    for path in sources:
+        if not path.exists():
+            continue
+        payload = _load_json_mapping(path)
+        extracted: dict[str, Any] = {}
+        properties = payload.get("properties", {})
+        properties = properties if isinstance(properties, dict) else {}
+        if property_id in properties and isinstance(properties.get(property_id), dict):
+            extracted = _extract_tracking_payload(properties[property_id])
+        elif property_id in payload and isinstance(payload.get(property_id), dict):
+            extracted = _extract_tracking_payload(payload[property_id])
+        else:
+            extracted = _extract_tracking_payload(payload)
+
+        if extracted:
+            merged = _merge_non_null(merged, extracted)
+            used_files.append(str(path))
+
+    return merged, used_files
 
 
 def _r12_counter_path(config: dict[str, Any]) -> Path:
@@ -174,12 +313,25 @@ def _build_property_pnl_blocks(
     websites_cfg = websites_cfg if isinstance(websites_cfg, dict) else {}
     latency_target = _to_float(websites_cfg.get("max_latency_ms")) or 500.0
 
+    feed_path = _property_metric_feed_path(config)
+    feed_payload = _load_json_mapping(feed_path)
+    feed_properties = feed_payload.get("properties", feed_payload)
+    feed_properties = feed_properties if isinstance(feed_properties, dict) else {}
+
+    memory_path = _property_metric_memory_path(config)
+    memory_payload = _load_json_mapping(memory_path)
+    memory_properties = memory_payload.get("properties", memory_payload)
+    memory_properties = memory_properties if isinstance(memory_properties, dict) else {}
+    updated_memory_properties: dict[str, Any] = dict(memory_properties)
+
     website_snapshots = _website_snapshot_by_id(phase2_payload)
     content_drafts = _latest_content_drafts_pending(phase2_payload)
     output: list[dict[str, Any]] = []
 
     for property_id, raw_entry in charters.items():
         if not isinstance(raw_entry, dict):
+            continue
+        if raw_entry.get("active", True) is False:
             continue
         charter = raw_entry.get("charter", {})
         charter = charter if isinstance(charter, dict) else {}
@@ -190,9 +342,24 @@ def _build_property_pnl_blocks(
         formula = str(charter.get("r12_formula_version", "")).strip() or "n/a"
         internal_rate = _to_float(charter.get("internal_rate_usd_hr"))
         charter_version = str(charter.get("version", "")).strip() or "n/a"
+        if charter_version.lower().startswith("v0-stub"):
+            continue
 
-        tracking = raw_entry.get("tracking", {})
-        tracking = tracking if isinstance(tracking, dict) else {}
+        feed_entry = feed_properties.get(property_id, {})
+        feed_entry = feed_entry if isinstance(feed_entry, dict) else {}
+        memory_entry = memory_properties.get(property_id, {})
+        memory_entry = memory_entry if isinstance(memory_entry, dict) else {}
+        source_tracking, source_files_used = _load_property_metric_sources(
+            config=config,
+            property_id=property_id,
+            raw_entry=raw_entry,
+        )
+
+        tracking = _extract_tracking_payload(raw_entry)
+        tracking = _merge_non_null(tracking, _extract_tracking_payload(memory_entry))
+        tracking = _merge_non_null(tracking, source_tracking)
+        tracking = _merge_non_null(tracking, _extract_tracking_payload(feed_entry))
+
         audience = tracking.get("audience", {})
         audience = audience if isinstance(audience, dict) else {}
         revenue = tracking.get("revenue", {})
@@ -216,7 +383,7 @@ def _build_property_pnl_blocks(
         subscription_mrr_usd = _to_float(revenue.get("subscription_mrr_usd"))
         total_mrr_usd = _to_float(revenue.get("total_mrr_usd"))
         gross_margin_pct = _to_float(revenue.get("gross_margin_pct"))
-        top_partner = str(revenue.get("top_partner", "")).strip() or None
+        top_partner = _clean_optional_text(revenue.get("top_partner"))
 
         drafts_pending = _to_int(pipeline.get("drafts_pending"))
         if drafts_pending is None and property_id == "freetraderhub":
@@ -224,7 +391,10 @@ def _build_property_pnl_blocks(
         pages_indexed_7d = _to_int(pipeline.get("pages_indexed_7d"))
         backlinks_dr30_7d = _to_int(pipeline.get("backlinks_dr30_7d"))
         backlinks_dr30_total = _to_int(pipeline.get("backlinks_dr30_total"))
-        active_campaign = str(pipeline.get("active_campaign", "")).strip() or None
+        active_campaign = _clean_optional_text(pipeline.get("active_campaign"))
+        top_revenue_line = _clean_optional_text(movers.get("top_revenue_line"))
+        top_growth_lever = _clean_optional_text(movers.get("top_growth_lever"))
+        biggest_risk = _clean_optional_text(movers.get("biggest_risk"))
 
         website_id = _resolve_property_website_id(property_id, raw_entry)
         website_snapshot = website_snapshots.get(website_id or "", {})
@@ -249,6 +419,10 @@ def _build_property_pnl_blocks(
             generated_at=generated_at,
         )
 
+        feed_present = _has_meaningful_metric(_extract_tracking_payload(feed_entry))
+        memory_present = _has_meaningful_metric(_extract_tracking_payload(memory_entry))
+        source_present = _has_meaningful_metric(source_tracking)
+
         status = "GREEN"
         reasons: list[str] = []
         if r12.get("halt_active"):
@@ -262,7 +436,14 @@ def _build_property_pnl_blocks(
             for metric in [affiliate_usd_7d, ad_usd_7d, subscription_mrr_usd, total_mrr_usd]
         ):
             status = "AMBER"
-            reasons.append("revenue feed missing")
+            if (
+                not feed_present
+                and not memory_present
+                and not source_present
+            ):
+                reasons.append("revenue feed missing (state/property_metric_feed.json or state/property_metrics/*)")
+            else:
+                reasons.append("revenue feed missing")
 
         if website_latency_ms is not None and website_latency_ms > latency_target and status == "GREEN":
             status = "AMBER"
@@ -272,6 +453,48 @@ def _build_property_pnl_blocks(
         pct_to_forecast = None
         if total_mrr_usd is not None and forecast_target_mrr_usd not in (None, 0):
             pct_to_forecast = (total_mrr_usd / forecast_target_mrr_usd) * 100.0
+
+        tracking_snapshot = {
+            "audience": {
+                "sessions_7d": sessions_7d,
+                "waft_7d": waft_7d,
+                "returning_user_rate_pct": returning_rate_pct,
+                "tool_completion_rate_pct": tool_completion_rate_pct,
+            },
+            "revenue": {
+                "affiliate_usd_7d": affiliate_usd_7d,
+                "ad_usd_7d": ad_usd_7d,
+                "subscription_mrr_usd": subscription_mrr_usd,
+                "total_mrr_usd": total_mrr_usd,
+                "gross_margin_pct": gross_margin_pct,
+                "top_partner": top_partner,
+            },
+            "pipeline": {
+                "pages_indexed_7d": pages_indexed_7d,
+                "backlinks_dr30_7d": backlinks_dr30_7d,
+                "backlinks_dr30_total": backlinks_dr30_total,
+                "active_campaign": active_campaign,
+            },
+            "movers": {
+                "top_revenue_line": top_revenue_line,
+                "top_growth_lever": top_growth_lever,
+                "biggest_risk": biggest_risk,
+            },
+            "targets": {
+                "day90_mrr_usd": forecast_target_mrr_usd,
+            },
+            "ops": {
+                "hours_invested_7d": hours_invested_7d,
+                "direct_costs_usd_7d": direct_costs_usd_7d,
+                "quantified_value_usd_7d": quantified_value_usd_7d,
+            },
+        }
+        existing_memory_tracking = _extract_tracking_payload(memory_entry)
+        merged_memory_tracking = _merge_non_null(existing_memory_tracking, tracking_snapshot)
+        updated_memory_entry = dict(memory_entry)
+        updated_memory_entry["tracking"] = merged_memory_tracking
+        updated_memory_entry["updated_at_utc"] = _now_utc_iso()
+        updated_memory_properties[property_id] = updated_memory_entry
 
         block = {
             "property_id": property_id,
@@ -304,9 +527,9 @@ def _build_property_pnl_blocks(
                 "active_campaign": active_campaign,
             },
             "top_movers": {
-                "top_revenue_line": str(movers.get("top_revenue_line", "")).strip() or None,
-                "top_growth_lever": str(movers.get("top_growth_lever", "")).strip() or None,
-                "biggest_risk": str(movers.get("biggest_risk", "")).strip() or None,
+                "top_revenue_line": top_revenue_line,
+                "top_growth_lever": top_growth_lever,
+                "biggest_risk": biggest_risk,
             },
             "operations": {
                 "hours_invested_7d": hours_invested_7d,
@@ -326,9 +549,20 @@ def _build_property_pnl_blocks(
                 "forecast_target_mrr_usd": forecast_target_mrr_usd,
             },
             "r12": r12,
+            "ingestion": {
+                "feed_file": str(feed_path),
+                "memory_file": str(memory_path),
+                "feed_present": feed_present,
+                "memory_present": _has_meaningful_metric(existing_memory_tracking),
+                "source_files_used": source_files_used,
+                "source_present": source_present,
+                "feed_updated_at_utc": str(feed_entry.get("updated_at_utc", "")) or None,
+                "memory_updated_at_utc": str(memory_entry.get("updated_at_utc", "")) or None,
+            },
         }
         output.append(block)
 
+    _persist_json_mapping(memory_path, {"properties": updated_memory_properties})
     return output
 
 
@@ -413,6 +647,436 @@ def _render_property_pnl_blocks_markdown(blocks: list[dict[str, Any]]) -> list[s
         lines.append(f"- R12 Counter: {r12.get('counter', 0)}/{r12.get('threshold', 4)}")
 
     return lines
+
+
+def _status_to_score(status: str) -> int:
+    normalized = str(status).upper()
+    if normalized == "GREEN":
+        return 100
+    if normalized == "AMBER":
+        return 60
+    return 20
+
+
+def _property_kpi_history_path(config: dict[str, Any]) -> Path:
+    phase3 = _phase3_cfg(config)
+    rel = str(phase3.get("property_kpi_history_file", "state/property_kpi_history.jsonl")).strip()
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _property_brief_targets(config: dict[str, Any]) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "finance": {
+            "forecast_green_pct": 100.0,
+            "forecast_amber_pct": 70.0,
+            "gross_margin_green_pct": 60.0,
+            "gross_margin_amber_pct": 40.0,
+        },
+        "marketing": {
+            "sessions_green_7d": 1000.0,
+            "sessions_amber_7d": 300.0,
+            "waft_green_7d": 200.0,
+            "waft_amber_7d": 75.0,
+            "returning_green_pct": 20.0,
+            "returning_amber_pct": 10.0,
+        },
+        "product": {
+            "completion_green_pct": 60.0,
+            "completion_amber_pct": 40.0,
+            "latency_green_factor": 1.0,
+            "latency_amber_factor": 1.5,
+        },
+        "operations": {
+            "drafts_green_max": 6.0,
+            "drafts_amber_max": 15.0,
+            "pages_indexed_green_7d": 5.0,
+            "pages_indexed_amber_7d": 1.0,
+        },
+    }
+    phase3 = _phase3_cfg(config)
+    overrides = phase3.get("property_brief_targets", {})
+    overrides = overrides if isinstance(overrides, dict) else {}
+    merged: dict[str, Any] = {}
+    for dept_key, base in defaults.items():
+        base_dict = base if isinstance(base, dict) else {}
+        override_value = overrides.get(dept_key, {})
+        override_dict = override_value if isinstance(override_value, dict) else {}
+        merged[dept_key] = {**base_dict, **override_dict}
+    return merged
+
+
+def _build_property_department_briefs(
+    config: dict[str, Any],
+    property_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    targets = _property_brief_targets(config)
+    output: list[dict[str, Any]] = []
+
+    for block in property_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        audience = block.get("audience", {})
+        audience = audience if isinstance(audience, dict) else {}
+        revenue = block.get("revenue", {})
+        revenue = revenue if isinstance(revenue, dict) else {}
+        pipeline = block.get("pipeline", {})
+        pipeline = pipeline if isinstance(pipeline, dict) else {}
+        operations = block.get("operations", {})
+        operations = operations if isinstance(operations, dict) else {}
+        status = block.get("status", {})
+        status = status if isinstance(status, dict) else {}
+        observability = block.get("website_observability", {})
+        observability = observability if isinstance(observability, dict) else {}
+        r12 = block.get("r12", {})
+        r12 = r12 if isinstance(r12, dict) else {}
+        ingestion = block.get("ingestion", {})
+        ingestion = ingestion if isinstance(ingestion, dict) else {}
+        feed_present = bool(ingestion.get("feed_present"))
+        memory_present = bool(ingestion.get("memory_present"))
+        source_present = bool(ingestion.get("source_present"))
+
+        value_delta = _to_float(operations.get("value_delta_usd"))
+        total_mrr = _to_float(revenue.get("total_mrr_usd"))
+        gross_margin = _to_float(revenue.get("gross_margin_pct"))
+        forecast_pct = _to_float(status.get("pct_to_forecast_mrr"))
+        sessions_7d = _to_float(audience.get("sessions_7d"))
+        waft_7d = _to_float(audience.get("waft_7d"))
+        returning_rate = _to_float(audience.get("returning_user_rate_pct"))
+        completion_rate = _to_float(audience.get("tool_completion_rate_pct"))
+        backlinks_7d = _to_float(pipeline.get("backlinks_dr30_7d"))
+        drafts_pending = _to_float(pipeline.get("drafts_pending"))
+        pages_indexed = _to_float(pipeline.get("pages_indexed_7d"))
+        latency_ms = _to_float(observability.get("latency_ms"))
+        latency_target = _to_float(observability.get("latency_target_ms"))
+        r12_counter = _to_int(r12.get("counter")) or 0
+        r12_halt = bool(r12.get("halt_active"))
+
+        finance_cfg = targets.get("finance", {})
+        finance_cfg = finance_cfg if isinstance(finance_cfg, dict) else {}
+        finance_status = "GREEN"
+        finance_signals: list[str] = []
+        if r12_halt:
+            finance_status = _status_worst([finance_status, "RED"])
+            finance_signals.append("R12 halt active")
+        if value_delta is None:
+            finance_status = _status_worst([finance_status, "AMBER"])
+            finance_signals.append("value delta missing")
+        elif value_delta < 0:
+            finance_status = _status_worst([finance_status, "AMBER"])
+            finance_signals.append("negative value delta")
+        if forecast_pct is None:
+            finance_status = _status_worst([finance_status, "AMBER"])
+            finance_signals.append("forecast attainment missing")
+        else:
+            if forecast_pct < (_to_float(finance_cfg.get("forecast_amber_pct")) or 70.0):
+                finance_status = _status_worst([finance_status, "RED"])
+                finance_signals.append("forecast attainment below amber floor")
+            elif forecast_pct < (_to_float(finance_cfg.get("forecast_green_pct")) or 100.0):
+                finance_status = _status_worst([finance_status, "AMBER"])
+                finance_signals.append("forecast attainment below green target")
+        if gross_margin is not None:
+            if gross_margin < (_to_float(finance_cfg.get("gross_margin_amber_pct")) or 40.0):
+                finance_status = _status_worst([finance_status, "RED"])
+                finance_signals.append("gross margin below amber floor")
+            elif gross_margin < (_to_float(finance_cfg.get("gross_margin_green_pct")) or 60.0):
+                finance_status = _status_worst([finance_status, "AMBER"])
+                finance_signals.append("gross margin below green target")
+        if not feed_present and not memory_present and not source_present:
+            finance_signals.append("automated metric feed not populated yet")
+        finance_proposal = (
+            "Freeze non-core spend and run a 7-day monetization recovery plan tied to the strongest revenue line."
+            if finance_status == "RED"
+            else "Shift effort toward highest-yield revenue channels and improve forecast attainment."
+            if finance_status == "AMBER"
+            else "Reinvest incremental margin into the top-performing growth channel while protecting unit economics."
+        )
+
+        marketing_cfg = targets.get("marketing", {})
+        marketing_cfg = marketing_cfg if isinstance(marketing_cfg, dict) else {}
+        marketing_status = "GREEN"
+        marketing_signals: list[str] = []
+        if sessions_7d is None or waft_7d is None:
+            marketing_status = _status_worst([marketing_status, "AMBER"])
+            marketing_signals.append("traffic quality inputs missing")
+        else:
+            if sessions_7d < (_to_float(marketing_cfg.get("sessions_amber_7d")) or 300.0):
+                marketing_status = _status_worst([marketing_status, "RED"])
+                marketing_signals.append("sessions below amber floor")
+            elif sessions_7d < (_to_float(marketing_cfg.get("sessions_green_7d")) or 1000.0):
+                marketing_status = _status_worst([marketing_status, "AMBER"])
+                marketing_signals.append("sessions below green target")
+            if waft_7d < (_to_float(marketing_cfg.get("waft_amber_7d")) or 75.0):
+                marketing_status = _status_worst([marketing_status, "RED"])
+                marketing_signals.append("WAFT below amber floor")
+            elif waft_7d < (_to_float(marketing_cfg.get("waft_green_7d")) or 200.0):
+                marketing_status = _status_worst([marketing_status, "AMBER"])
+                marketing_signals.append("WAFT below green target")
+        if returning_rate is not None:
+            if returning_rate < (_to_float(marketing_cfg.get("returning_amber_pct")) or 10.0):
+                marketing_status = _status_worst([marketing_status, "RED"])
+                marketing_signals.append("returning rate below amber floor")
+            elif returning_rate < (_to_float(marketing_cfg.get("returning_green_pct")) or 20.0):
+                marketing_status = _status_worst([marketing_status, "AMBER"])
+                marketing_signals.append("returning rate below green target")
+        if backlinks_7d is not None and backlinks_7d <= 0:
+            marketing_status = _status_worst([marketing_status, "AMBER"])
+            marketing_signals.append("no new backlinks this cycle")
+        if not feed_present and not memory_present and not source_present:
+            marketing_signals.append("automated metric feed not populated yet")
+        marketing_proposal = (
+            "Launch a focused acquisition sprint for the top-converting tool and pause low-intent channels."
+            if marketing_status == "RED"
+            else "Tighten campaign targeting around high-intent cohorts and improve returning-user loops."
+            if marketing_status == "AMBER"
+            else "Scale proven campaigns and expand partner distribution tied to best-performing pages."
+        )
+
+        product_cfg = targets.get("product", {})
+        product_cfg = product_cfg if isinstance(product_cfg, dict) else {}
+        product_status = "GREEN"
+        product_signals: list[str] = []
+        if completion_rate is None:
+            product_status = _status_worst([product_status, "AMBER"])
+            product_signals.append("tool completion missing")
+        else:
+            if completion_rate < (_to_float(product_cfg.get("completion_amber_pct")) or 40.0):
+                product_status = _status_worst([product_status, "RED"])
+                product_signals.append("tool completion below amber floor")
+            elif completion_rate < (_to_float(product_cfg.get("completion_green_pct")) or 60.0):
+                product_status = _status_worst([product_status, "AMBER"])
+                product_signals.append("tool completion below green target")
+        if latency_ms is not None and latency_target is not None:
+            if latency_ms > latency_target * (_to_float(product_cfg.get("latency_amber_factor")) or 1.5):
+                product_status = _status_worst([product_status, "RED"])
+                product_signals.append("latency materially above target")
+            elif latency_ms > latency_target * (_to_float(product_cfg.get("latency_green_factor")) or 1.0):
+                product_status = _status_worst([product_status, "AMBER"])
+                product_signals.append("latency above target")
+        if not feed_present and not memory_present and not source_present:
+            product_signals.append("automated metric feed not populated yet")
+        product_proposal = (
+            "Prioritize core tool UX fixes and performance remediation before shipping new features."
+            if product_status == "RED"
+            else "Run focused experiments on onboarding/friction points to raise completion and retention."
+            if product_status == "AMBER"
+            else "Expand high-performing workflows and test adjacent wedge features with strict KPI gates."
+        )
+
+        operations_cfg = targets.get("operations", {})
+        operations_cfg = operations_cfg if isinstance(operations_cfg, dict) else {}
+        operations_status = "GREEN"
+        operations_signals: list[str] = []
+        if drafts_pending is not None:
+            if drafts_pending > (_to_float(operations_cfg.get("drafts_amber_max")) or 15.0):
+                operations_status = _status_worst([operations_status, "RED"])
+                operations_signals.append("content backlog above amber limit")
+            elif drafts_pending > (_to_float(operations_cfg.get("drafts_green_max")) or 6.0):
+                operations_status = _status_worst([operations_status, "AMBER"])
+                operations_signals.append("content backlog above green limit")
+        if pages_indexed is not None:
+            if pages_indexed < (_to_float(operations_cfg.get("pages_indexed_amber_7d")) or 1.0):
+                operations_status = _status_worst([operations_status, "RED"])
+                operations_signals.append("pages indexed below amber floor")
+            elif pages_indexed < (_to_float(operations_cfg.get("pages_indexed_green_7d")) or 5.0):
+                operations_status = _status_worst([operations_status, "AMBER"])
+                operations_signals.append("pages indexed below green target")
+        if value_delta is not None and value_delta < 0:
+            operations_status = _status_worst([operations_status, "AMBER"])
+            operations_signals.append("execution cost/value mix under target")
+        operations_proposal = (
+            "Re-sequence weekly workload to clear bottlenecks and align output strictly to wedge-critical deliverables."
+            if operations_status == "RED"
+            else "Tighten weekly capacity allocation to close backlog and indexing gaps."
+            if operations_status == "AMBER"
+            else "Maintain cadence and increase throughput only where value delta remains positive."
+        )
+
+        departments = {
+            "finance": {
+                "audience": "Finance + Commercial",
+                "status": finance_status,
+                "score": _status_to_score(finance_status),
+                "headline": (
+                    f"value_delta={_fmt_optional_money(value_delta)} | total_mrr={_fmt_optional_money(total_mrr)} "
+                    f"| forecast={_fmt_optional_pct(forecast_pct)}"
+                ),
+                "signals": finance_signals or ["on plan"],
+                "proposal": finance_proposal,
+            },
+            "marketing": {
+                "audience": "Marketing + Growth",
+                "status": marketing_status,
+                "score": _status_to_score(marketing_status),
+                "headline": (
+                    f"sessions_7d={sessions_7d if sessions_7d is not None else 'n/a'} | "
+                    f"waft_7d={waft_7d if waft_7d is not None else 'n/a'} | "
+                    f"returning_rate={_fmt_optional_pct(returning_rate)}"
+                ),
+                "signals": marketing_signals or ["on plan"],
+                "proposal": marketing_proposal,
+            },
+            "product": {
+                "audience": "Product + UX",
+                "status": product_status,
+                "score": _status_to_score(product_status),
+                "headline": (
+                    f"completion={_fmt_optional_pct(completion_rate)} | "
+                    f"latency_ms={latency_ms if latency_ms is not None else 'n/a'}"
+                ),
+                "signals": product_signals or ["on plan"],
+                "proposal": product_proposal,
+            },
+            "operations": {
+                "audience": "Operations + Content Studio",
+                "status": operations_status,
+                "score": _status_to_score(operations_status),
+                "headline": (
+                    f"drafts_pending={drafts_pending if drafts_pending is not None else 'n/a'} | "
+                    f"pages_indexed_7d={pages_indexed if pages_indexed is not None else 'n/a'}"
+                ),
+                "signals": operations_signals or ["on plan"],
+                "proposal": operations_proposal,
+            },
+        }
+
+        dept_statuses = [str(entry.get("status", "")).upper() for entry in departments.values()]
+        md_status = _status_worst(dept_statuses)
+        md_score = int(round(sum(int(entry.get("score", 0)) for entry in departments.values()) / max(len(departments), 1)))
+        md_focus: list[str] = []
+        for dept_name, entry in departments.items():
+            if str(entry.get("status", "")).upper() == "GREEN":
+                continue
+            md_focus.append(f"{dept_name.title()}: {entry.get('proposal')}")
+        if not md_focus:
+            md_focus.append("Keep current execution model and scale only proven growth levers.")
+        md_direction = (
+            "Stabilize weak functions first; no expansion until core KPI floors recover."
+            if md_status == "RED"
+            else "Resolve amber bottlenecks and concentrate resources on highest-yield levers."
+            if md_status == "AMBER"
+            else "Scale validated channels and compound value while guarding wedge discipline."
+        )
+
+        output.append(
+            {
+                "property_id": block.get("property_id"),
+                "property_name": block.get("property_name"),
+                "product_wordmark": block.get("product_wordmark"),
+                "departments": departments,
+                "md_overall": {
+                    "audience": "Managing Director / Holding Board",
+                    "status": md_status,
+                    "score": md_score,
+                    "headline": f"cross-functional status={md_status} | weighted_score={md_score}/100",
+                    "strategic_direction": md_direction,
+                    "focus_next_7d": md_focus[:4],
+                },
+                "metrics": {
+                    "value_delta_usd": value_delta,
+                    "forecast_attainment_pct": forecast_pct,
+                    "total_mrr_usd": total_mrr,
+                    "r12_counter": r12_counter,
+                    "r12_halt_active": r12_halt,
+                },
+            }
+        )
+
+    return output
+
+
+def _render_property_department_briefs_markdown(briefs: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = ["## Property Department Briefs"]
+    if not briefs:
+        lines.append("- No departmental property briefs available.")
+        return lines
+
+    for brief in briefs:
+        if not isinstance(brief, dict):
+            continue
+        name = str(brief.get("property_name", "n/a"))
+        wordmark = str(brief.get("product_wordmark", "")).strip()
+        lines.append(f"### {name}" + (f" ({wordmark})" if wordmark else ""))
+        departments = brief.get("departments", {})
+        departments = departments if isinstance(departments, dict) else {}
+        for dept_name in ["finance", "marketing", "product", "operations"]:
+            entry = departments.get(dept_name, {})
+            entry = entry if isinstance(entry, dict) else {}
+            signals = entry.get("signals", [])
+            signals = signals if isinstance(signals, list) else []
+            signal_text = "; ".join(str(item).strip() for item in signals if str(item).strip()) or "n/a"
+            lines.append(
+                "- {dept}: [{status}] score={score}/100 | audience={audience} | {headline} | signals={signals} | proposal={proposal}".format(
+                    dept=dept_name.title(),
+                    status=entry.get("status", "n/a"),
+                    score=entry.get("score", "n/a"),
+                    audience=entry.get("audience", "n/a"),
+                    headline=entry.get("headline", "n/a"),
+                    signals=signal_text,
+                    proposal=entry.get("proposal", "n/a"),
+                )
+            )
+
+        md = brief.get("md_overall", {})
+        md = md if isinstance(md, dict) else {}
+        focus = md.get("focus_next_7d", [])
+        focus = focus if isinstance(focus, list) else []
+        focus_text = "; ".join(str(item).strip() for item in focus if str(item).strip()) or "n/a"
+        lines.append(
+            "- MD Overall: [{status}] score={score}/100 | audience={audience} | direction={direction} | focus_next_7d={focus}".format(
+                status=md.get("status", "n/a"),
+                score=md.get("score", "n/a"),
+                audience=md.get("audience", "n/a"),
+                direction=md.get("strategic_direction", "n/a"),
+                focus=focus_text,
+            )
+        )
+
+    return lines
+
+
+def _append_property_kpi_history(
+    config: dict[str, Any],
+    generated_at: datetime,
+    briefs: list[dict[str, Any]],
+) -> str:
+    history_path = _property_kpi_history_path(config)
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as handle:
+        for brief in briefs:
+            if not isinstance(brief, dict):
+                continue
+            departments = brief.get("departments", {})
+            departments = departments if isinstance(departments, dict) else {}
+            metrics = brief.get("metrics", {})
+            metrics = metrics if isinstance(metrics, dict) else {}
+            md = brief.get("md_overall", {})
+            md = md if isinstance(md, dict) else {}
+
+            record = {
+                "generated_at_utc": generated_at.isoformat(),
+                "property_id": brief.get("property_id"),
+                "property_name": brief.get("property_name"),
+                "md_status": md.get("status"),
+                "md_score": md.get("score"),
+                "department_statuses": {
+                    "finance": departments.get("finance", {}).get("status") if isinstance(departments.get("finance"), dict) else None,
+                    "marketing": departments.get("marketing", {}).get("status") if isinstance(departments.get("marketing"), dict) else None,
+                    "product": departments.get("product", {}).get("status") if isinstance(departments.get("product"), dict) else None,
+                    "operations": departments.get("operations", {}).get("status") if isinstance(departments.get("operations"), dict) else None,
+                },
+                "department_scores": {
+                    "finance": departments.get("finance", {}).get("score") if isinstance(departments.get("finance"), dict) else None,
+                    "marketing": departments.get("marketing", {}).get("score") if isinstance(departments.get("marketing"), dict) else None,
+                    "product": departments.get("product", {}).get("score") if isinstance(departments.get("product"), dict) else None,
+                    "operations": departments.get("operations", {}).get("score") if isinstance(departments.get("operations"), dict) else None,
+                },
+                "metrics": metrics,
+            }
+            handle.write(json.dumps(record, ensure_ascii=True) + "\n")
+    return str(history_path)
 
 
 def _status_worst(statuses: list[str]) -> str:
@@ -563,6 +1227,7 @@ def _score_company(
     config: dict[str, Any],
     phase2_payload: dict[str, Any],
     targets: dict[str, Any],
+    property_pnl_blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     company_targets = targets.get("company", {})
     company_targets = company_targets if isinstance(company_targets, dict) else {}
@@ -582,30 +1247,14 @@ def _score_company(
     else:
         generated = generated.astimezone(timezone.utc)
 
-    pnl_total = _to_float(summary.get("pnl_total"))
-    monthly_growth_meta = _compute_monthly_growth(config=config, generated_at=generated, pnl_total=pnl_total)
-    growth_cfg = company_targets.get("monthly_pnl_growth_pct", {})
-    growth_cfg = growth_cfg if isinstance(growth_cfg, dict) else {}
-    growth_target = _to_float(growth_cfg.get("target_min")) or 10.0
-    growth_amber = _to_float(growth_cfg.get("amber_min")) or 0.0
-    growth_actual = _to_float(monthly_growth_meta.get("growth_pct"))
-    growth_status, growth_variance = _status_from_min(growth_actual, growth_target, growth_amber)
-
-    drawdown_cfg = company_targets.get("max_drawdown_pct", {})
-    drawdown_cfg = drawdown_cfg if isinstance(drawdown_cfg, dict) else {}
-    dd_target = _to_float(drawdown_cfg.get("target_max")) or 3.0
-    dd_amber = _to_float(drawdown_cfg.get("amber_max")) or 5.0
-    drawdown_actual = _collect_drawdown_pct(phase2_payload)
-    dd_status, dd_variance = _status_from_max(drawdown_actual, dd_target, dd_amber)
-
-    websites_total = max(_to_int(summary.get("websites_total")) or 0, 0)
-    websites_up = max(_to_int(summary.get("websites_up")) or 0, 0)
-    uptime_ratio = (websites_up / websites_total) if websites_total else None
-    uptime_cfg = company_targets.get("website_uptime_ratio", {})
-    uptime_cfg = uptime_cfg if isinstance(uptime_cfg, dict) else {}
-    uptime_target = _to_float(uptime_cfg.get("target_min")) or 0.999
-    uptime_amber = _to_float(uptime_cfg.get("amber_min")) or 0.99
-    uptime_status, uptime_variance = _status_from_min(uptime_ratio, uptime_target, uptime_amber)
+    property_blocks = property_pnl_blocks if isinstance(property_pnl_blocks, list) else []
+    property_types = {
+        str(block.get("property_type", "")).strip().lower()
+        for block in property_blocks
+        if isinstance(block, dict)
+    }
+    property_types.discard("")
+    use_legacy_scope = not property_types
 
     green_divisions = 0
     commercial_status: str | None = None
@@ -634,31 +1283,143 @@ def _score_company(
     alert_actual = float(len(alerts) + len(warnings))
     alert_status, alert_variance = _status_from_max(alert_actual, alert_target, alert_amber)
 
-    items = [
-        {
-            "metric": "Monthly PnL growth",
-            "target": f">= {growth_target:.1f}%",
-            "actual": _fmt_pct(growth_actual, 2),
-            "variance": growth_variance if growth_actual is not None else "baseline collecting",
-            "status": growth_status,
-            "action": "Review monthly PnL trajectory and adjust risk/strategy allocation if growth is off target.",
-        },
-        {
-            "metric": "Max drawdown",
-            "target": f"<= {dd_target:.1f}%",
-            "actual": _fmt_pct(drawdown_actual, 2),
-            "variance": dd_variance,
-            "status": dd_status,
-            "action": "If drawdown exceeds tolerance, reduce exposure and tighten per-trade risk limits.",
-        },
-        {
-            "metric": "Website uptime ratio (snapshot)",
-            "target": f">= {uptime_target*100:.2f}%",
-            "actual": _fmt_ratio(uptime_ratio),
-            "variance": uptime_variance,
-            "status": uptime_status,
-            "action": "Escalate any downtime before non-critical roadmap work.",
-        },
+    items: list[dict[str, Any]] = []
+
+    if use_legacy_scope or "trading_bot" in property_types:
+        pnl_total = _to_float(summary.get("pnl_total"))
+        monthly_growth_meta = _compute_monthly_growth(config=config, generated_at=generated, pnl_total=pnl_total)
+        growth_cfg = company_targets.get("monthly_pnl_growth_pct", {})
+        growth_cfg = growth_cfg if isinstance(growth_cfg, dict) else {}
+        growth_target = _to_float(growth_cfg.get("target_min")) or 10.0
+        growth_amber = _to_float(growth_cfg.get("amber_min")) or 0.0
+        growth_actual = _to_float(monthly_growth_meta.get("growth_pct"))
+        growth_status, growth_variance = _status_from_min(growth_actual, growth_target, growth_amber)
+
+        drawdown_cfg = company_targets.get("max_drawdown_pct", {})
+        drawdown_cfg = drawdown_cfg if isinstance(drawdown_cfg, dict) else {}
+        dd_target = _to_float(drawdown_cfg.get("target_max")) or 3.0
+        dd_amber = _to_float(drawdown_cfg.get("amber_max")) or 5.0
+        drawdown_actual = _collect_drawdown_pct(phase2_payload)
+        dd_status, dd_variance = _status_from_max(drawdown_actual, dd_target, dd_amber)
+
+        items.append(
+            {
+                "metric": "Monthly PnL growth",
+                "target": f">= {growth_target:.1f}%",
+                "actual": _fmt_pct(growth_actual, 2),
+                "variance": growth_variance if growth_actual is not None else "baseline collecting",
+                "status": growth_status,
+                "action": "Review monthly PnL trajectory and adjust risk/strategy allocation if growth is off target.",
+            }
+        )
+        items.append(
+            {
+                "metric": "Max drawdown",
+                "target": f"<= {dd_target:.1f}%",
+                "actual": _fmt_pct(drawdown_actual, 2),
+                "variance": dd_variance,
+                "status": dd_status,
+                "action": "If drawdown exceeds tolerance, reduce exposure and tighten per-trade risk limits.",
+            }
+        )
+    else:
+        monthly_growth_meta = {"mode": "skipped_non_trading_scope"}
+
+    if use_legacy_scope or "website" in property_types:
+        websites_total = max(_to_int(summary.get("websites_total")) or 0, 0)
+        websites_up = max(_to_int(summary.get("websites_up")) or 0, 0)
+        uptime_ratio = (websites_up / websites_total) if websites_total else None
+        uptime_cfg = company_targets.get("website_uptime_ratio", {})
+        uptime_cfg = uptime_cfg if isinstance(uptime_cfg, dict) else {}
+        uptime_target = _to_float(uptime_cfg.get("target_min")) or 0.999
+        uptime_amber = _to_float(uptime_cfg.get("amber_min")) or 0.99
+        uptime_status, uptime_variance = _status_from_min(uptime_ratio, uptime_target, uptime_amber)
+        items.append(
+            {
+                "metric": "Website uptime ratio (snapshot)",
+                "target": f">= {uptime_target*100:.2f}%",
+                "actual": _fmt_ratio(uptime_ratio),
+                "variance": uptime_variance,
+                "status": uptime_status,
+                "action": "Escalate any downtime before non-critical roadmap work.",
+            }
+        )
+
+    if property_blocks:
+        blocks_green = 0
+        forecast_pct_values: list[float] = []
+        value_deltas: list[float] = []
+
+        for block in property_blocks:
+            if not isinstance(block, dict):
+                continue
+            status_payload = block.get("status", {})
+            status_payload = status_payload if isinstance(status_payload, dict) else {}
+            if str(status_payload.get("value", "")).upper() == "GREEN":
+                blocks_green += 1
+
+            forecast_pct = _to_float(status_payload.get("pct_to_forecast_mrr"))
+            if forecast_pct is not None:
+                forecast_pct_values.append(forecast_pct)
+
+            operations = block.get("operations", {})
+            operations = operations if isinstance(operations, dict) else {}
+            value_delta = _to_float(operations.get("value_delta_usd"))
+            if value_delta is not None:
+                value_deltas.append(value_delta)
+
+        block_ratio = (blocks_green / len(property_blocks)) if property_blocks else None
+        block_ratio_cfg = company_targets.get("property_blocks_green_ratio", {})
+        block_ratio_cfg = block_ratio_cfg if isinstance(block_ratio_cfg, dict) else {}
+        block_ratio_target = _to_float(block_ratio_cfg.get("target_min")) or 1.0
+        block_ratio_amber = _to_float(block_ratio_cfg.get("amber_min")) or 0.67
+        block_ratio_status, block_ratio_variance = _status_from_min(block_ratio, block_ratio_target, block_ratio_amber)
+        items.append(
+            {
+                "metric": "Property blocks on-plan ratio",
+                "target": f">= {block_ratio_target*100:.0f}%",
+                "actual": _fmt_ratio(block_ratio),
+                "variance": block_ratio_variance,
+                "status": block_ratio_status,
+                "action": "Focus execution on RED/AMBER properties before adding new initiatives.",
+            }
+        )
+
+        forecast_avg = (sum(forecast_pct_values) / len(forecast_pct_values)) if forecast_pct_values else None
+        forecast_cfg = company_targets.get("property_forecast_attainment_pct", {})
+        forecast_cfg = forecast_cfg if isinstance(forecast_cfg, dict) else {}
+        forecast_target = _to_float(forecast_cfg.get("target_min")) or 100.0
+        forecast_amber = _to_float(forecast_cfg.get("amber_min")) or 70.0
+        forecast_status, forecast_variance = _status_from_min(forecast_avg, forecast_target, forecast_amber)
+        items.append(
+            {
+                "metric": "Property forecast attainment",
+                "target": f">= {forecast_target:.0f}%",
+                "actual": _fmt_pct(forecast_avg, 1),
+                "variance": forecast_variance,
+                "status": forecast_status,
+                "action": "Prioritize monetization levers that increase MRR progress to 90-day targets.",
+            }
+        )
+
+        value_delta_total = sum(value_deltas) if value_deltas else None
+        value_delta_cfg = company_targets.get("property_value_delta_usd_7d", {})
+        value_delta_cfg = value_delta_cfg if isinstance(value_delta_cfg, dict) else {}
+        value_delta_target = _to_float(value_delta_cfg.get("target_min")) or 0.0
+        value_delta_amber = _to_float(value_delta_cfg.get("amber_min")) or -500.0
+        value_delta_status, value_delta_variance = _status_from_min(value_delta_total, value_delta_target, value_delta_amber)
+        items.append(
+            {
+                "metric": "Property value delta (7d)",
+                "target": f">= {_fmt_money(value_delta_target)}",
+                "actual": _fmt_optional_money(value_delta_total),
+                "variance": value_delta_variance,
+                "status": value_delta_status,
+                "action": "If net-negative, rebalance effort/cost against proven revenue and value drivers immediately.",
+            }
+        )
+
+    items.append(
         {
             "metric": "Division GREEN ratio",
             "target": f">= {div_target*100:.0f}%",
@@ -666,7 +1427,9 @@ def _score_company(
             "variance": div_variance,
             "status": div_status,
             "action": "Address weakest division scorecards first to restore portfolio-wide health.",
-        },
+        }
+    )
+    items.append(
         {
             "metric": "Alert count per heartbeat",
             "target": f"<= {int(alert_target)}",
@@ -674,8 +1437,8 @@ def _score_company(
             "variance": alert_variance,
             "status": alert_status,
             "action": "Reduce recurrent alerts by fixing root causes, not by suppressing checks.",
-        },
-    ]
+        }
+    )
     if commercial_status in {"RED", "AMBER"}:
         commercial_variance = "-2 levels from GREEN" if commercial_status == "RED" else "-1 level from GREEN"
         items.append(
@@ -1300,6 +2063,14 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
     lines.extend(_render_property_pnl_blocks_markdown(property_blocks))
+    department_briefs_raw = payload.get("property_department_briefs", [])
+    department_briefs = (
+        [brief for brief in department_briefs_raw if isinstance(brief, dict)]
+        if isinstance(department_briefs_raw, list)
+        else []
+    )
+    lines.append("")
+    lines.extend(_render_property_department_briefs_markdown(department_briefs))
 
     lines.append("")
     lines.append("## Division Scorecards")
@@ -1427,12 +2198,31 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
 
     targets = _load_targets(config)
     soul_text = _load_soul(config)
-    company_scorecard = _score_company(config=config, phase2_payload=phase2_payload, targets=targets)
     generated_at = datetime.now(timezone.utc)
     property_pnl_blocks = _build_property_pnl_blocks(
         config=config,
         phase2_payload=phase2_payload,
         generated_at=generated_at,
+    )
+    property_department_briefs = _build_property_department_briefs(
+        config=config,
+        property_blocks=property_pnl_blocks,
+    )
+    kpi_history_file = ""
+    history_warning: str | None = None
+    try:
+        kpi_history_file = _append_property_kpi_history(
+            config=config,
+            generated_at=generated_at,
+            briefs=property_department_briefs,
+        )
+    except OSError as exc:
+        history_warning = f"Property KPI history write failed: {exc}"
+    company_scorecard = _score_company(
+        config=config,
+        phase2_payload=phase2_payload,
+        targets=targets,
+        property_pnl_blocks=property_pnl_blocks,
     )
 
     board_review: dict[str, Any] | None = None
@@ -1472,9 +2262,11 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "soul_file": str((_phase3_cfg(config).get("soul_file") or "SOUL.md")),
         "base_summary": phase2_payload.get("base_summary", {}),
         "base_alerts": phase2_payload.get("base_alerts", []),
-        "warnings": [warning for warning in [llm_warning, ceo_result.get("warning")] if warning],
+        "warnings": [warning for warning in [llm_warning, ceo_result.get("warning"), history_warning] if warning],
         "company_scorecard": company_scorecard,
         "property_pnl_blocks": property_pnl_blocks,
+        "property_department_briefs": property_department_briefs,
+        "property_kpi_history_file": kpi_history_file,
         "divisions": divisions,
         "ceo_engine": ceo_result.get("engine"),
         "ceo_brief_markdown": ceo_result.get("brief_markdown", ""),

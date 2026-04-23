@@ -233,6 +233,10 @@ phase3:
   targets_file: "config/targets.yaml"
   baseline_state_file: "state/phase3_company_baseline.json"
   r12_counter_state_file: "state/r12_property_counters.json"
+  property_metric_feed_file: "state/property_metric_feed.json"
+  property_metric_sources_dir: "state/property_metrics"
+  property_metric_memory_file: "state/property_metric_memory.json"
+  property_kpi_history_file: "state/property_kpi_history.jsonl"
   reports:
     markdown_latest: "reports/phase3_holding_latest.md"
     json_latest: "reports/phase3_holding_latest.json"
