@@ -10,6 +10,7 @@ import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from monitoring import ROOT
 from phase2_crews import run_phase2_divisions
@@ -1672,6 +1673,14 @@ def _build_llm(config: dict[str, Any]) -> tuple[Any | None, str | None]:
     if temperature is None:
         temperature = 0.1
 
+    if not model.strip().lower().startswith("ollama/"):
+        return None, f"Non-local LLM model blocked by R1: {model}"
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "host.docker.internal"}:
+        return None, f"Non-local Ollama base URL blocked by R1: {base_url}"
+    openai_base = f"{base_url.rstrip('/')}/v1"
+
     storage_dir = ROOT / "state" / "crewai"
     storage_dir.mkdir(parents=True, exist_ok=True)
     os.environ["CREWAI_STORAGE_DIR"] = str(storage_dir)
@@ -1679,6 +1688,13 @@ def _build_llm(config: dict[str, Any]) -> tuple[Any | None, str | None]:
     os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
     os.environ["CREWAI_TRACING_ENABLED"] = "false"
     os.environ["OTEL_SDK_DISABLED"] = "true"
+    # Force OpenAI-compatible clients to local Ollama endpoint (R1).
+    os.environ["OPENAI_API_KEY"] = "ollama-local"
+    os.environ["OPENAI_BASE_URL"] = openai_base
+    os.environ["OPENAI_API_BASE"] = openai_base
+    os.environ["OLLAMA_BASE_URL"] = base_url
+    for cloud_env in ["ANTHROPIC_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY"]:
+        os.environ.pop(cloud_env, None)
 
     try:
         from crewai import LLM  # pylint: disable=import-outside-toplevel
@@ -1992,7 +2008,15 @@ def _run_ceo_brief(
         verbose=bool(spec.get("verbose", False)),
     )
 
-    kickoff = str(crew.kickoff()).strip()
+    try:
+        kickoff = str(crew.kickoff()).strip()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": True,
+            "engine": "fallback_local_rules",
+            "brief_markdown": _fallback_ceo_brief(mode=mode, company_scorecard=company_scorecard, divisions=divisions),
+            "warning": f"CEO Crew execution failed ({exc}); using deterministic fallback.",
+        }
     if "delegate_work_to_coworker" in kickoff or "ask_question_to_coworker" in kickoff:
         return {
             "ok": True,
