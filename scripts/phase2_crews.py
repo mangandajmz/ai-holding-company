@@ -57,6 +57,60 @@ def _reports_dir(config: dict[str, Any]) -> Path:
     return _reports_dir_util(config)
 
 
+def _property_charters(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("property_charters", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_property_website_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    website_id = str(tracking.get("website_id", "")).strip()
+    if website_id:
+        return website_id
+    defaults = {
+        "freetraderhub": "freetraderhub_website",
+        "freeghosttools": "freeghosttools",
+    }
+    return defaults.get(property_id)
+
+
+def _resolve_property_research_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    research_id = str(tracking.get("research_website_id", "")).strip()
+    if research_id:
+        return research_id
+    defaults = {
+        "freetraderhub": "freetraderhub_research",
+    }
+    return defaults.get(property_id)
+
+
+def _operating_website_ids(config: dict[str, Any]) -> set[str]:
+    website_ids: set[str] = set()
+    for property_id, entry in _property_charters(config).items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("active", True) is False:
+            continue
+        charter = entry.get("charter", {})
+        charter = charter if isinstance(charter, dict) else {}
+        version = str(charter.get("version", "")).strip().lower()
+        if version.startswith("v0-stub"):
+            continue
+        property_type = str(charter.get("property_type", "")).strip().lower()
+        if property_type != "website":
+            continue
+        website_id = _resolve_property_website_id(property_id, entry)
+        if website_id:
+            website_ids.add(website_id)
+        research_id = _resolve_property_research_id(property_id, entry)
+        if research_id:
+            website_ids.add(research_id)
+    return website_ids
+
+
 def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
     latest = _reports_dir(config) / "daily_brief_latest.json"
     if not latest.exists():
@@ -609,12 +663,22 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
     generated_at = _parse_iso_utc(brief_payload.get("generated_at_utc")) or datetime.now(timezone.utc)
     websites = brief_payload.get("websites", [])
     websites = websites if isinstance(websites, list) else []
+    operating_ids = _operating_website_ids(config)
+    scored_websites = websites
+    if operating_ids:
+        filtered = [
+            site
+            for site in websites
+            if isinstance(site, dict) and str(site.get("id", "")).strip() in operating_ids
+        ]
+        if filtered:
+            scored_websites = filtered
     items: list[dict[str, str]] = []
     risks: list[str] = []
     actions: list[str] = []
 
-    total = len([w for w in websites if isinstance(w, dict)])
-    up = len([w for w in websites if isinstance(w, dict) and bool(w.get("ok"))])
+    total = len([w for w in scored_websites if isinstance(w, dict)])
+    up = len([w for w in scored_websites if isinstance(w, dict) and bool(w.get("ok"))])
     ratio = (up / total) if total else None
     if ratio is None:
         uptime_status = "RED"
@@ -642,7 +706,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("One or more managed websites are down in the current snapshot.")
         actions.append("Prioritize incident triage for down sites before content/feature work.")
 
-    latencies = [_to_float(w.get("latency_ms")) for w in websites if isinstance(w, dict)]
+    latencies = [_to_float(w.get("latency_ms")) for w in scored_websites if isinstance(w, dict)]
     latencies = [v for v in latencies if v is not None]
     max_latency = max(latencies) if latencies else None
     if max_latency is None:
@@ -671,7 +735,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("Website latency is materially above target.")
 
     dns_tcp_all = True
-    for site in websites:
+    for site in scored_websites:
         if not isinstance(site, dict):
             continue
         network = site.get("network_diag", {})
@@ -694,78 +758,91 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("Network reachability issue detected for at least one website.")
         actions.append("Escalate DNS/TCP remediation for impacted domain.")
 
-    freeghost = next((w for w in websites if isinstance(w, dict) and str(w.get("id")) == "freeghosttools"), None)
-    freeghost_age_days = None
-    if isinstance(freeghost, dict):
-        lastmod = freeghost.get("local_diag", {})
-        lastmod = lastmod if isinstance(lastmod, dict) else {}
-        lastmod_text = lastmod.get("sitemap_latest_lastmod")
-        parsed = _parse_iso_utc(lastmod_text)
-        if parsed is None and lastmod_text:
-            try:
-                parsed = datetime.strptime(str(lastmod_text), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except ValueError:
-                parsed = None
-        if parsed is not None:
-            freeghost_age_days = (generated_at - parsed).total_seconds() / 86400.0
-    if freeghost_age_days is None:
-        ghost_status = "AMBER"
-        ghost_variance = "missing"
-    elif freeghost_age_days <= max_sitemap_age_days:
-        ghost_status = "GREEN"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    elif freeghost_age_days <= max_sitemap_age_days * 1.5:
-        ghost_status = "AMBER"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    else:
-        ghost_status = "RED"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    items.append(
-        _as_status_line(
-            metric="FreeGhostTools sitemap freshness",
-            target=f"latest sitemap lastmod age <= {max_sitemap_age_days:.0f}d",
-            actual=_fmt_age_minutes((freeghost_age_days * 24 * 60) if freeghost_age_days is not None else None),
-            variance=ghost_variance,
-            status=ghost_status,
-            action="If stale, refresh sitemap/deploy pipeline so content updates are indexed promptly.",
-        )
+    include_freeghost = any(
+        isinstance(site, dict) and str(site.get("id", "")).strip() == "freeghosttools"
+        for site in scored_websites
     )
-    if ghost_status == "RED":
-        risks.append("FreeGhostTools sitemap metadata is stale.")
+    if include_freeghost:
+        freeghost = next((w for w in scored_websites if isinstance(w, dict) and str(w.get("id")) == "freeghosttools"), None)
+        freeghost_age_days = None
+        if isinstance(freeghost, dict):
+            lastmod = freeghost.get("local_diag", {})
+            lastmod = lastmod if isinstance(lastmod, dict) else {}
+            lastmod_text = lastmod.get("sitemap_latest_lastmod")
+            parsed = _parse_iso_utc(lastmod_text)
+            if parsed is None and lastmod_text:
+                try:
+                    parsed = datetime.strptime(str(lastmod_text), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    parsed = None
+            if parsed is not None:
+                freeghost_age_days = (generated_at - parsed).total_seconds() / 86400.0
+        if freeghost_age_days is None:
+            ghost_status = "AMBER"
+            ghost_variance = "missing"
+        elif freeghost_age_days <= max_sitemap_age_days:
+            ghost_status = "GREEN"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        elif freeghost_age_days <= max_sitemap_age_days * 1.5:
+            ghost_status = "AMBER"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        else:
+            ghost_status = "RED"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        items.append(
+            _as_status_line(
+                metric="FreeGhostTools sitemap freshness",
+                target=f"latest sitemap lastmod age <= {max_sitemap_age_days:.0f}d",
+                actual=_fmt_age_minutes((freeghost_age_days * 24 * 60) if freeghost_age_days is not None else None),
+                variance=ghost_variance,
+                status=ghost_status,
+                action="If stale, refresh sitemap/deploy pipeline so content updates are indexed promptly.",
+            )
+        )
+        if ghost_status == "RED":
+            risks.append("FreeGhostTools sitemap metadata is stale.")
 
-    fth = next((w for w in websites if isinstance(w, dict) and str(w.get("id")) == "freetraderhub"), None)
-    report_age_days = None
-    if isinstance(fth, dict):
-        diag = fth.get("local_diag", {})
+    freetraderhub_research = next(
+        (
+            w
+            for w in scored_websites
+            if isinstance(w, dict)
+            and str(w.get("id", "")).strip() in {"freetraderhub_research", "freetraderhub"}
+        ),
+        None,
+    )
+    if isinstance(freetraderhub_research, dict):
+        report_age_days = None
+        diag = freetraderhub_research.get("local_diag", {})
         diag = diag if isinstance(diag, dict) else {}
         latest_mtime = _parse_iso_utc(diag.get("local_reports_latest_mtime_utc"))
         if latest_mtime is not None:
             report_age_days = (generated_at - latest_mtime).total_seconds() / 86400.0
-    if report_age_days is None:
-        report_status = "AMBER"
-        report_variance = "missing"
-    elif report_age_days <= max_research_age_days:
-        report_status = "GREEN"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    elif report_age_days <= max_research_age_days * 2:
-        report_status = "AMBER"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    else:
-        report_status = "RED"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    items.append(
-        _as_status_line(
-            metric="FreeTraderHub research brief freshness",
-            target=f"latest executive brief age <= {max_research_age_days:.0f}d (weekly cadence)",
-            actual=_fmt_age_minutes((report_age_days * 24 * 60) if report_age_days is not None else None),
-            variance=report_variance,
-            status=report_status,
-            action="If stale, run free-traderhub weekly crew and publish fresh brief/output package.",
+        if report_age_days is None:
+            report_status = "AMBER"
+            report_variance = "missing"
+        elif report_age_days <= max_research_age_days:
+            report_status = "GREEN"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        elif report_age_days <= max_research_age_days * 2:
+            report_status = "AMBER"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        else:
+            report_status = "RED"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        items.append(
+            _as_status_line(
+                metric="FreeTraderHub research brief freshness",
+                target=f"latest executive brief age <= {max_research_age_days:.0f}d (weekly cadence)",
+                actual=_fmt_age_minutes((report_age_days * 24 * 60) if report_age_days is not None else None),
+                variance=report_variance,
+                status=report_status,
+                action="If stale, run free-traderhub weekly crew and publish fresh brief/output package.",
+            )
         )
-    )
-    if report_status != "GREEN":
-        risks.append("FreeTraderHub research reports are stale relative to weekly operating cadence.")
-        actions.append("Run `free-traderhub-research-team` weekly pipeline to refresh strategy/content signals.")
+        if report_status != "GREEN":
+            risks.append("FreeTraderHub research reports are stale relative to weekly operating cadence.")
+            actions.append("Run `free-traderhub-research-team` weekly pipeline to refresh strategy/content signals.")
 
     statuses = [item["status"] for item in items]
     summary_status = _status_worst(statuses)

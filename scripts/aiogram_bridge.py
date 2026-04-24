@@ -30,6 +30,7 @@ DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
 CONVERSATION_HISTORY_FILE = ROOT / "state" / "conversation_history.jsonl"
 LOG_FILE = ROOT / "logs" / "aiogram_bridge.log"
 REPORTS_DIR = ROOT / "reports"
+BOARD_APPROVAL_STATE_FILE = ROOT / "state" / "board_approval_decisions.json"
 DEFAULT_FALLBACK_REPLY = (
     "I can still answer at a high level, but my local language model is offline right now. "
     "The latest reports show attention is needed in trading, while websites are up and reachable."
@@ -55,6 +56,38 @@ def _setup_logging() -> None:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _snapshot_freshness_label(generated_at: Any) -> str:
+    generated = _parse_iso_datetime(generated_at)
+    if generated is None:
+        return "unknown"
+    age_seconds = int((datetime.now(timezone.utc) - generated).total_seconds())
+    if age_seconds <= 59:
+        return "just now"
+    minutes = age_seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    rem_minutes = minutes % 60
+    if hours < 24:
+        return f"{hours}h ago" if rem_minutes == 0 else f"{hours}h {rem_minutes}m ago"
+    days = hours // 24
+    rem_hours = hours % 24
+    return f"{days}d ago" if rem_hours == 0 else f"{days}d {rem_hours}h ago"
 
 
 def _normalize_topic(token: str) -> str:
@@ -130,6 +163,85 @@ def _safe_json_load(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _safe_json_dump(path: Path, payload: dict[str, Any]) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _load_board_approval_state() -> dict[str, Any]:
+    payload = _safe_json_load(BOARD_APPROVAL_STATE_FILE)
+    if not isinstance(payload, dict):
+        return {"decisions": {}, "board_snapshot": {}, "selection_by_user": {}}
+    decisions = payload.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    board_snapshot = payload.get("board_snapshot", {})
+    board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
+    approvals = board_snapshot.get("approvals", [])
+    approvals = [item for item in approvals if isinstance(item, dict)] if isinstance(approvals, list) else []
+    raw_selection = payload.get("selection_by_user", {})
+    raw_selection = raw_selection if isinstance(raw_selection, dict) else {}
+    selection_by_user: dict[str, list[str]] = {}
+    for raw_user_id, raw_ids in raw_selection.items():
+        user_id = str(raw_user_id).strip()
+        if not user_id or not isinstance(raw_ids, list):
+            continue
+        cleaned_ids: list[str] = []
+        for raw_id in raw_ids:
+            normalized = _normalize_approval_id(str(raw_id))
+            if normalized and normalized not in cleaned_ids:
+                cleaned_ids.append(normalized)
+        if cleaned_ids:
+            selection_by_user[user_id] = cleaned_ids
+    return {
+        "decisions": decisions,
+        "board_snapshot": {
+            "generated_at_utc": str(board_snapshot.get("generated_at_utc", "")).strip(),
+            "fetched_at_utc": str(board_snapshot.get("fetched_at_utc", "")).strip(),
+            "approvals": approvals,
+            "source": str(board_snapshot.get("source", "")).strip(),
+        },
+        "selection_by_user": selection_by_user,
+    }
+
+
+def _persist_board_approval_state(state: dict[str, Any]) -> bool:
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    board_snapshot = state.get("board_snapshot", {})
+    board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
+    approvals = board_snapshot.get("approvals", [])
+    approvals = [item for item in approvals if isinstance(item, dict)] if isinstance(approvals, list) else []
+    raw_selection = state.get("selection_by_user", {})
+    raw_selection = raw_selection if isinstance(raw_selection, dict) else {}
+    selection_by_user: dict[str, list[str]] = {}
+    for raw_user_id, raw_ids in raw_selection.items():
+        user_id = str(raw_user_id).strip()
+        if not user_id or not isinstance(raw_ids, list):
+            continue
+        cleaned_ids: list[str] = []
+        for raw_id in raw_ids:
+            normalized = _normalize_approval_id(str(raw_id))
+            if normalized and normalized not in cleaned_ids:
+                cleaned_ids.append(normalized)
+        if cleaned_ids:
+            selection_by_user[user_id] = cleaned_ids
+    payload = {
+        "decisions": decisions,
+        "board_snapshot": {
+            "generated_at_utc": str(board_snapshot.get("generated_at_utc", "")).strip(),
+            "fetched_at_utc": str(board_snapshot.get("fetched_at_utc", "")).strip(),
+            "approvals": approvals,
+            "source": str(board_snapshot.get("source", "")).strip(),
+        },
+        "selection_by_user": selection_by_user,
+    }
+    return _safe_json_dump(BOARD_APPROVAL_STATE_FILE, payload)
+
+
 class AiogramBridgeRuntime:
     """Holds config, allowlists, and report helpers for the bridge."""
 
@@ -140,6 +252,8 @@ class AiogramBridgeRuntime:
         bridge_cfg = self.config.get("bridge", {}) if isinstance(self.config, dict) else {}
         telegram_cfg = bridge_cfg.get("telegram", {}) if isinstance(bridge_cfg, dict) else {}
         memory_cfg = self.config.get("memory", {}) if isinstance(self.config, dict) else {}
+        hermes_cfg = self.config.get("hermes", {}) if isinstance(self.config, dict) else {}
+        hermes_cfg = hermes_cfg if isinstance(hermes_cfg, dict) else {}
 
         self.bot_token = os.getenv(str(telegram_cfg.get("bot_token_env", "TELEGRAM_BOT_TOKEN")), "").strip()
         self.owner_chat_id = self._parse_optional_int(
@@ -164,6 +278,13 @@ class AiogramBridgeRuntime:
         self.ollama_base_url = str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")).rstrip("/")
         self.embedding_model = str(memory_cfg.get("embedding_model", "nomic-embed-text"))
         self.chat_model = "llama3.1:8b"
+        self.hermes_enabled = bool(hermes_cfg.get("enabled", False))
+        self.hermes_base_url = str(hermes_cfg.get("base_url", "http://127.0.0.1:9000")).rstrip("/")
+        self.hermes_health_path = str(hermes_cfg.get("health_path", "/health")).strip() or "/health"
+        self.hermes_chat_path = str(hermes_cfg.get("chat_path", "/chat")).strip() or "/chat"
+        self.hermes_timeout_sec = int(hermes_cfg.get("timeout_sec", 30) or 30)
+        self.hermes_use_for_general_chat = bool(hermes_cfg.get("use_for_general_chat", False))
+        self.hermes_api_key = os.getenv(str(hermes_cfg.get("api_key_env", "HERMES_API_KEY")), "").strip()
 
         self.bot_ids = {
             str(item.get("id", "")).strip()
@@ -370,6 +491,83 @@ async def _call_ollama(prompt: str, model: str = "llama3.1:8b") -> str:
     return str(payload.get("response", "")).strip()
 
 
+def _hermes_url(base_url: str, path: str) -> str:
+    clean_path = path if path.startswith("/") else f"/{path}"
+    return f"{base_url}{clean_path}"
+
+
+def _hermes_headers() -> dict[str, str]:
+    runtime = _runtime()
+    headers = {"Content-Type": "application/json"}
+    if runtime.hermes_api_key:
+        headers["Authorization"] = f"Bearer {runtime.hermes_api_key}"
+    return headers
+
+
+async def _check_hermes_health() -> tuple[bool, str]:
+    runtime = _runtime()
+    if not runtime.hermes_enabled:
+        return False, "disabled"
+    url = _hermes_url(runtime.hermes_base_url, runtime.hermes_health_path)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers=_hermes_headers(),
+                timeout=aiohttp.ClientTimeout(total=runtime.hermes_timeout_sec),
+            ) as response:
+                status_ok = response.status < 400
+                detail = await response.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        return False, str(exc)
+    return status_ok, (detail[:160] if detail else f"http_{'ok' if status_ok else 'error'}")
+
+
+async def _call_hermes_chat(
+    user_msg: str,
+    context: dict[str, Any],
+    division_data: dict[str, Any],
+) -> str:
+    runtime = _runtime()
+    if not runtime.hermes_enabled:
+        return ""
+    url = _hermes_url(runtime.hermes_base_url, runtime.hermes_chat_path)
+    payload = {
+        "message": user_msg,
+        "context": {
+            "recent_history": context.get("recent_history", []),
+            "semantic_history": context.get("semantic_history", []),
+        },
+        "company_snapshot": division_data.get("context_lines", []),
+        "mode": "executive_conversation",
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                headers=_hermes_headers(),
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=runtime.hermes_timeout_sec),
+            ) as response:
+                if response.status >= 400:
+                    return ""
+                try:
+                    data = await response.json()
+                except (aiohttp.ContentTypeError, json.JSONDecodeError):
+                    text_reply = await response.text()
+                    return text_reply.strip()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return ""
+
+    if not isinstance(data, dict):
+        return ""
+    for key in ("response", "reply", "text", "message"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _find_division(payload: dict[str, Any] | None, division_name: str) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
@@ -519,6 +717,12 @@ async def _generate_conversational_response(
     context: dict[str, Any],
     division_data: dict[str, Any],
 ) -> str:
+    runtime = _runtime()
+    if runtime.hermes_enabled and runtime.hermes_use_for_general_chat:
+        hermes_reply = await _call_hermes_chat(user_msg=user_msg, context=context, division_data=division_data)
+        if hermes_reply:
+            return hermes_reply
+
     context_text = _context_to_text(context)
     division_text = "\n".join(division_data.get("context_lines", [])) or "No division metrics available."
     prompt = (
@@ -534,7 +738,7 @@ async def _generate_conversational_response(
         f"Recent and relevant conversation context:\n{context_text}\n\n"
         f"Division data:\n{division_text}\n"
     )
-    reply = await _call_ollama(prompt, model=_runtime().chat_model)
+    reply = await _call_ollama(prompt, model=runtime.chat_model)
     if reply:
         return reply
     return _fallback_response(user_msg=user_msg, context=context, division_data=division_data)
@@ -646,6 +850,12 @@ def _format_help() -> str:
         "AI Holding Company bridge commands:\n"
         "- /help\n"
         "- /status\n"
+        "- /approvals [refresh]\n"
+        "- /approve <board_approval_id>\n"
+        "- /deny <board_approval_id>\n"
+        "- /approve_selected | /deny_selected\n"
+        "- /approve_all | /deny_all\n"
+        "- /hermes_status\n"
         "- /content <brief text>\n"
         "- /content_status\n"
         "- /develop <task description>\n"
@@ -746,6 +956,618 @@ async def _handle_develop_status() -> str:
     return "Pending Developer Tool approvals: " + "; ".join(snippets)
 
 
+async def _handle_hermes_status_command() -> str:
+    runtime = _runtime()
+    if not runtime.hermes_enabled:
+        return (
+            "Hermes integration is currently disabled. "
+            "Set `hermes.enabled: true` in config/projects.yaml to enable it."
+        )
+    ok, detail = await _check_hermes_health()
+    return (
+        "Hermes runtime status\n"
+        f"- Enabled: yes\n"
+        f"- Base URL: {runtime.hermes_base_url}\n"
+        f"- Health: {'UP' if ok else 'DOWN'}\n"
+        f"- Chat routing for general questions: {'ON' if runtime.hermes_use_for_general_chat else 'OFF'}\n"
+        f"- Detail: {detail}"
+    )
+
+
+def _normalize_approval_id(raw_value: str) -> str:
+    clean = str(raw_value or "").strip().strip("`")
+    return re.sub(r"[^a-zA-Z0-9_-]+", "", clean)
+
+
+def _extract_board_approvals_from_payload(payload: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(payload, dict):
+        return [], ""
+    board_review = payload.get("board_review", {})
+    board_review = board_review if isinstance(board_review, dict) else {}
+    raw_approvals = board_review.get("approvals", [])
+    raw_approvals = raw_approvals if isinstance(raw_approvals, list) else []
+    approvals = [item for item in raw_approvals if isinstance(item, dict)]
+    generated = str(payload.get("generated_at_utc", "")).strip()
+    return approvals, generated
+
+
+def _synthesize_board_approvals_from_phase3(payload: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(payload, dict):
+        return [], ""
+    company = payload.get("company_scorecard", {})
+    company = company if isinstance(company, dict) else {}
+    items = company.get("items", [])
+    items = [item for item in items if isinstance(item, dict)]
+    rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+    rows: list[dict[str, Any]] = []
+    for item in sorted(items, key=lambda row: rank.get(str(row.get("status", "")).upper(), 3)):
+        status = str(item.get("status", "")).upper()
+        if status == "GREEN":
+            continue
+        metric = str(item.get("metric", "Company KPI")).strip() or "Company KPI"
+        metric_slug = re.sub(r"[^a-z0-9]+", "-", metric.lower()).strip("-")
+        decision = str(item.get("action", "")).strip()
+        if not decision:
+            decision = "Review item and approve the recovery plan."
+        rows.append(
+            {
+                "approval_id": f"board_company-kpi-{metric_slug[:24]}",
+                "priority": status or "AMBER",
+                "topic": f"Company KPI: {metric}",
+                "decision": decision,
+                "owner": "holding",
+            }
+        )
+    generated = str(payload.get("generated_at_utc", "")).strip()
+    return rows[:10], generated
+
+
+def _resolve_board_decision_text(item: dict[str, Any]) -> str:
+    decision = str(item.get("decision", "")).strip()
+    if not decision or decision.lower() in {"none", "null", "n/a", "na"}:
+        decision = str(item.get("action", "")).strip()
+    if not decision or decision.lower() in {"none", "null", "n/a", "na"}:
+        decision = "Review item and approve the recovery plan."
+    return decision
+
+
+def _approval_topic_meaning(topic: str) -> str:
+    clean = str(topic).strip().lower()
+    if "on-plan ratio" in clean:
+        return "enforce recovery focus before any expansion."
+    if "alert count" in clean:
+        return "fix root causes and reduce repeat issues, not mute alerts."
+    if "forecast attainment" in clean:
+        return "prioritize monetization actions to improve forecast attainment."
+    if "value delta" in clean:
+        return "rebalance effort/cost toward highest-yield work."
+    if "division green ratio" in clean:
+        return "restore weakest division performance first."
+    return "execute the corrective action to bring this KPI back on target."
+
+
+def _approval_compact_phrase(topic: str) -> str:
+    clean = str(topic).strip().lower()
+    if "on-plan ratio" in clean:
+        return "We’re off plan on promoted-property execution (0/1 on-plan)."
+    if "alert count" in clean:
+        return "Too many recurring alerts per cycle."
+    if "forecast attainment" in clean:
+        return "Revenue/forecast visibility is weak."
+    if "value delta" in clean:
+        return "7-day net value signal is not strong enough."
+    if "division green ratio" in clean:
+        return "Not enough operating divisions are green."
+    if "research" in clean:
+        return "Core research signal is stale for this property."
+    return "This KPI is below target and needs correction."
+
+
+def _delivery_owner_directory() -> dict[str, str]:
+    config = _runtime().config if isinstance(_runtime().config, dict) else {}
+    company = config.get("company", {})
+    company = company if isinstance(company, dict) else {}
+    owner_role = str(company.get("owner_role", "Owner/CEO")).strip() or "Owner/CEO"
+    mapping: dict[str, str] = {
+        "holding": owner_role,
+        "operations": "Operations Lead",
+        "finance": "Finance Lead",
+        "marketing": "Marketing Lead",
+        "product": "Product Lead",
+        "commercial": "Commercial Lead",
+        "trading": "Trading Lead",
+        "websites": "Websites Lead",
+    }
+    configured = company.get("delivery_owners", {})
+    configured = configured if isinstance(configured, dict) else {}
+    for raw_key, raw_value in configured.items():
+        key = str(raw_key).strip().lower()
+        value = str(raw_value).strip()
+        if key and value:
+            mapping[key] = value
+    return mapping
+
+
+def _resolve_delivery_owner(owner: Any) -> str:
+    raw = str(owner or "").strip()
+    if not raw:
+        return "Unassigned"
+    mapping = _delivery_owner_directory()
+    normalized = raw.lower()
+    if normalized in mapping:
+        resolved = str(mapping.get(normalized, "")).strip()
+        if resolved:
+            return resolved
+    if normalized.islower():
+        return normalized.replace("_", " ").replace("-", " ").title()
+    return raw
+
+
+def _cache_board_snapshot(
+    approvals: list[dict[str, Any]],
+    generated_at_utc: str,
+    source: str,
+) -> None:
+    state = _load_board_approval_state()
+    state["board_snapshot"] = {
+        "generated_at_utc": generated_at_utc,
+        "fetched_at_utc": _utc_now_iso(),
+        "approvals": approvals,
+        "source": source,
+    }
+    _persist_board_approval_state(state)
+
+
+def _cached_board_snapshot_from_state(state: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    snapshot = state.get("board_snapshot", {})
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    approvals = snapshot.get("approvals", [])
+    approvals = [item for item in approvals if isinstance(item, dict)] if isinstance(approvals, list) else []
+    generated = str(snapshot.get("generated_at_utc", "")).strip()
+    return approvals, generated
+
+
+def _board_selection_user_key(user_id: int | None) -> str:
+    if user_id is None:
+        return ""
+    return str(user_id).strip()
+
+
+def _get_board_selected_ids(user_id: int | None) -> list[str]:
+    user_key = _board_selection_user_key(user_id)
+    if not user_key:
+        return []
+    state = _load_board_approval_state()
+    selection = state.get("selection_by_user", {})
+    selection = selection if isinstance(selection, dict) else {}
+    raw_ids = selection.get(user_key, [])
+    if not isinstance(raw_ids, list):
+        return []
+    cleaned: list[str] = []
+    for raw_id in raw_ids:
+        normalized = _normalize_approval_id(str(raw_id))
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned
+
+
+def _set_board_selected_ids(user_id: int | None, approval_ids: list[str]) -> bool:
+    user_key = _board_selection_user_key(user_id)
+    if not user_key:
+        return False
+    cleaned: list[str] = []
+    for raw_id in approval_ids:
+        normalized = _normalize_approval_id(str(raw_id))
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
+
+    state = _load_board_approval_state()
+    selection = state.get("selection_by_user", {})
+    selection = selection if isinstance(selection, dict) else {}
+    if cleaned:
+        selection[user_key] = cleaned
+    else:
+        selection.pop(user_key, None)
+    state["selection_by_user"] = selection
+    return _persist_board_approval_state(state)
+
+
+def _toggle_board_selected_id(user_id: int | None, approval_id: str) -> tuple[bool, list[str]]:
+    normalized = _normalize_approval_id(approval_id)
+    if not normalized:
+        return False, _get_board_selected_ids(user_id)
+    selected = _get_board_selected_ids(user_id)
+    if normalized in selected:
+        selected = [item for item in selected if item != normalized]
+    else:
+        selected.append(normalized)
+    _set_board_selected_ids(user_id, selected)
+    return normalized in selected, selected
+
+
+def _prune_board_selected_ids(user_id: int | None, allowed_ids: list[str]) -> list[str]:
+    allowed = {_normalize_approval_id(item) for item in allowed_ids if _normalize_approval_id(item)}
+    selected = _get_board_selected_ids(user_id)
+    pruned = [item for item in selected if item in allowed]
+    if pruned != selected:
+        _set_board_selected_ids(user_id, pruned)
+    return pruned
+
+
+async def _resolve_board_approvals_snapshot(refresh: bool = False) -> tuple[list[dict[str, Any]], str]:
+    state = _load_board_approval_state()
+    phase3_payload = _runtime().latest_phase3()
+
+    if not refresh:
+        phase3_approvals, phase3_generated = _extract_board_approvals_from_payload(
+            phase3_payload if isinstance(phase3_payload, dict) else None
+        )
+        if phase3_approvals:
+            _cache_board_snapshot(phase3_approvals, phase3_generated, source="phase3_latest")
+            return phase3_approvals, phase3_generated
+
+        synthesized, synthesized_generated = _synthesize_board_approvals_from_phase3(
+            phase3_payload if isinstance(phase3_payload, dict) else None
+        )
+        if synthesized:
+            _cache_board_snapshot(synthesized, synthesized_generated, source="phase3_synthesized")
+            return synthesized, synthesized_generated
+
+        cached_approvals, cached_generated = _cached_board_snapshot_from_state(state)
+        if cached_approvals:
+            return cached_approvals, cached_generated
+
+    board_result = await _run_tool_router(["run_holding", "--mode", "board_review"], timeout_sec=1200)
+    payload = board_result.get("payload")
+    live_approvals, live_generated = _extract_board_approvals_from_payload(payload if isinstance(payload, dict) else None)
+    if live_approvals:
+        _cache_board_snapshot(live_approvals, live_generated, source="board_review")
+        return live_approvals, live_generated
+
+    cached_approvals, cached_generated = _cached_board_snapshot_from_state(state)
+    if cached_approvals:
+        return cached_approvals, cached_generated
+    return [], ""
+
+
+async def _collect_board_approval_rows(refresh: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    approvals, generated = await _resolve_board_approvals_snapshot(refresh=refresh)
+    decorated = _decorate_board_approvals_with_decisions(approvals)
+    pending: list[dict[str, Any]] = []
+    decided: list[dict[str, Any]] = []
+    for item in decorated:
+        state = item.get("decision_state", {})
+        state = state if isinstance(state, dict) else {}
+        status = str(state.get("status", "")).upper()
+        if status in {"APPROVED", "DENIED"}:
+            decided.append(item)
+        else:
+            pending.append(item)
+    return pending, decided, generated
+
+
+def _build_board_approvals_keyboard(
+    pending: list[dict[str, Any]],
+    selected_ids: list[str] | None = None,
+) -> Any | None:
+    if not pending:
+        return None
+    try:
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None
+
+    selected_set = {_normalize_approval_id(item) for item in (selected_ids or []) if _normalize_approval_id(item)}
+    rows: list[list[Any]] = []
+    for item in pending[:5]:
+        approval_id = str(item.get("approval_id", "")).strip()
+        if not approval_id:
+            continue
+        short_id = approval_id if len(approval_id) <= 26 else f"{approval_id[:26]}..."
+        selected_icon = "☑" if approval_id in selected_set else "☐"
+        rows.append(
+            [
+                InlineKeyboardButton(text=f"{selected_icon} Select {short_id}", callback_data=f"board_toggle:{approval_id}"),
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(text="Approve", callback_data=f"board_approve:{approval_id}"),
+                InlineKeyboardButton(text="Reject", callback_data=f"board_deny:{approval_id}"),
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Approve Selected", callback_data="board_approve_selected"),
+            InlineKeyboardButton(text="Reject Selected", callback_data="board_deny_selected"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(text="Approve All", callback_data="board_approve_all"),
+            InlineKeyboardButton(text="Reject All", callback_data="board_deny_all"),
+        ]
+    )
+    if selected_set:
+        rows.append([InlineKeyboardButton(text="Clear Selected", callback_data="board_clear_selected")])
+    if not rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _build_approvals_reply(refresh: bool = False, user_id: int | None = None) -> tuple[str, Any | None]:
+    lines = ["Owner approvals snapshot"]
+    keyboard: Any | None = None
+    if _runtime().phase3_enabled:
+        pending, decided, generated = await _collect_board_approval_rows(refresh=refresh)
+        if generated:
+            lines.append(f"Snapshot freshness: {_snapshot_freshness_label(generated)} ({generated} UTC)")
+
+        if pending:
+            pending_ids = [
+                _normalize_approval_id(str(item.get("approval_id", "")))
+                for item in pending
+                if _normalize_approval_id(str(item.get("approval_id", "")))
+            ]
+            selected_ids = _prune_board_selected_ids(user_id, pending_ids) if user_id is not None else []
+            selected_set = set(selected_ids)
+            lines.append("Board approvals pending:")
+            for item in pending[:5]:
+                approval_id = str(item.get("approval_id", "")).strip() or "board_id_missing"
+                topic = str(item.get("topic", "")).strip()
+                summary = _approval_compact_phrase(topic)
+                meaning = _approval_topic_meaning(topic)
+                selected_marker = " [SELECTED]" if approval_id in selected_set else ""
+                lines.append(f"{approval_id}: {summary} Approval means {meaning.lower()}{selected_marker}")
+                lines.append(f"Owner: {_resolve_delivery_owner(item.get('owner'))}")
+                lines.append(f"Approve: /approve {approval_id} | Reject: /deny {approval_id}")
+            lines.append(
+                f"Selection: {len(selected_set)} selected. Tap Select to tick items, then use Approve Selected/Reject Selected."
+            )
+            lines.append("Batch commands: /approve_selected | /deny_selected | /approve_all | /deny_all")
+            lines.append(
+                "Tap the Approve/Reject buttons below each item, or use `/approve <board_id>` and `/deny <board_id>`."
+            )
+            keyboard = _build_board_approvals_keyboard(pending, selected_ids=selected_ids)
+        else:
+            lines.append("Board approvals pending: none.")
+
+        if decided:
+            lines.append("Board decisions logged:")
+            for item in decided[:5]:
+                state = item.get("decision_state", {})
+                state = state if isinstance(state, dict) else {}
+                lines.append(
+                    f"- {item.get('approval_id')} [{state.get('status')}] {item.get('topic')} at {state.get('decided_at_utc')}"
+                )
+    else:
+        lines.append("Board approvals: phase3 is disabled.")
+
+    from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+    dev_result = await asyncio.to_thread(run_developer_tool, _runtime().config, "", "", "status")
+    dev_pending = dev_result.get("pending", [])
+    dev_pending = dev_pending if isinstance(dev_pending, list) else []
+    if not dev_pending:
+        lines.append("Developer approvals: none pending.")
+    else:
+        lines.append(f"Developer approvals ({len(dev_pending)}):")
+        for item in dev_pending[:5]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"- {item.get('approval_id')}: {_brief_preview(str(item.get('task', '')), limit=70)}")
+        lines.append("To approve code: /develop_approve <approval_id>")
+
+    return "\n".join(lines).strip(), keyboard
+
+
+async def _format_missing_board_approval_id_message(command: str) -> str:
+    pending, _, _ = await _collect_board_approval_rows(refresh=False)
+    if not pending:
+        return f"Approval ID required. Use `/{command} <board_approval_id>`. No pending board approvals are currently listed."
+    lines = [f"Approval ID required. Use `/{command} <board_approval_id>`.", "Top pending board IDs:"]
+    for item in pending[:3]:
+        lines.append(f"- {item.get('approval_id')}: {item.get('topic')}")
+    return "\n".join(lines)
+
+
+def _decorate_board_approvals_with_decisions(approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    state = _load_board_approval_state()
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    rows: list[dict[str, Any]] = []
+    for item in approvals:
+        approval_id = _normalize_approval_id(str(item.get("approval_id", "")))
+        decision_state = decisions.get(approval_id, {}) if approval_id else {}
+        decision_state = decision_state if isinstance(decision_state, dict) else {}
+        row = dict(item)
+        row["approval_id"] = approval_id
+        row["decision"] = _resolve_board_decision_text(item)
+        row["decision_state"] = decision_state
+        rows.append(row)
+    return rows
+
+
+async def _apply_board_approval_outcome(
+    approval_ids: list[str],
+    command: str,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    normalized_ids: list[str] = []
+    for raw_id in approval_ids:
+        normalized = _normalize_approval_id(str(raw_id))
+        if normalized and normalized not in normalized_ids:
+            normalized_ids.append(normalized)
+
+    outcome = "APPROVED" if command == "approve" else "DENIED"
+    if not normalized_ids:
+        return {"ok": True, "outcome": outcome, "requested": 0, "matched": 0, "updated": 0, "already": 0, "missing": []}
+    if not _runtime().phase3_enabled:
+        return {"ok": False, "error": "Board approvals are unavailable because phase3 is disabled."}
+
+    approvals, generated = await _resolve_board_approvals_snapshot(refresh=False)
+    by_id = {
+        _normalize_approval_id(str(item.get("approval_id", ""))): item
+        for item in approvals
+        if _normalize_approval_id(str(item.get("approval_id", "")))
+    }
+    missing = [approval_id for approval_id in normalized_ids if approval_id not in by_id]
+    if missing:
+        approvals, generated = await _resolve_board_approvals_snapshot(refresh=True)
+        by_id = {
+            _normalize_approval_id(str(item.get("approval_id", ""))): item
+            for item in approvals
+            if _normalize_approval_id(str(item.get("approval_id", "")))
+        }
+        missing = [approval_id for approval_id in normalized_ids if approval_id not in by_id]
+
+    matched_ids = [approval_id for approval_id in normalized_ids if approval_id in by_id]
+    if not matched_ids:
+        return {
+            "ok": False,
+            "error": "No matching board approvals were found for that request.",
+            "outcome": outcome,
+            "missing": missing,
+        }
+
+    state = _load_board_approval_state()
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    updated = 0
+    already = 0
+    for approval_id in matched_ids:
+        matched = by_id.get(approval_id, {})
+        matched = matched if isinstance(matched, dict) else {}
+        prior = decisions.get(approval_id, {})
+        prior = prior if isinstance(prior, dict) else {}
+        if str(prior.get("status", "")).upper() == outcome:
+            already += 1
+            continue
+        decisions[approval_id] = {
+            "status": outcome,
+            "decided_at_utc": _utc_now_iso(),
+            "decided_by_user_id": user_id,
+            "topic": str(matched.get("topic", "")).strip(),
+            "owner": str(matched.get("owner", "")).strip(),
+            "decision": _resolve_board_decision_text(matched),
+            "source_snapshot_utc": generated,
+        }
+        updated += 1
+    state["decisions"] = decisions
+    if updated > 0 and not _persist_board_approval_state(state):
+        return {"ok": False, "error": "I could not persist that board decision update."}
+
+    return {
+        "ok": True,
+        "outcome": outcome,
+        "requested": len(normalized_ids),
+        "matched": len(matched_ids),
+        "updated": updated,
+        "already": already,
+        "missing": missing,
+    }
+
+
+async def _handle_board_bulk_decision(command: str, scope: str, user_id: int | None = None) -> str:
+    pending, _, _ = await _collect_board_approval_rows(refresh=False)
+    pending_ids = [
+        _normalize_approval_id(str(item.get("approval_id", "")))
+        for item in pending
+        if _normalize_approval_id(str(item.get("approval_id", "")))
+    ]
+    if not pending_ids:
+        return "No pending board approvals are currently listed."
+
+    selected_ids = _prune_board_selected_ids(user_id, pending_ids)
+    if scope == "selected":
+        target_ids = selected_ids
+    else:
+        target_ids = pending_ids
+
+    if not target_ids:
+        if scope == "selected":
+            return "No selected board approvals found. Tick items first, then run approve/reject selected."
+        return "No pending board approvals are currently listed."
+
+    outcome = "APPROVED" if command == "approve" else "DENIED"
+    result = await _apply_board_approval_outcome(target_ids, command=command, user_id=user_id)
+    if not result.get("ok"):
+        return str(result.get("error") or "I could not complete that board decision batch.")
+
+    remaining_selection = [item for item in selected_ids if item not in target_ids]
+    _set_board_selected_ids(user_id, remaining_selection)
+    missing = result.get("missing", [])
+    missing = missing if isinstance(missing, list) else []
+    suffix = f" Missing IDs: {', '.join(missing[:3])}." if missing else ""
+    return (
+        f"Batch {outcome}: requested {result.get('requested', 0)}, matched {result.get('matched', 0)}, "
+        f"updated {result.get('updated', 0)}, already {result.get('already', 0)}.{suffix}"
+    )
+
+
+async def _handle_board_approval_decision(
+    approval_id: str,
+    command: str,
+    user_id: int | None = None,
+) -> str:
+    normalized = _normalize_approval_id(approval_id)
+    if not normalized:
+        return await _format_missing_board_approval_id_message(command)
+    if not _runtime().phase3_enabled:
+        return "Board approvals are unavailable because phase3 is disabled."
+
+    approvals, generated = await _resolve_board_approvals_snapshot(refresh=False)
+    if not approvals:
+        return "No active board approvals were found. Run `/approvals` to refresh."
+
+    matched = next(
+        (
+            item
+            for item in approvals
+            if _normalize_approval_id(str(item.get("approval_id", ""))) == normalized
+        ),
+        None,
+    )
+    if not isinstance(matched, dict):
+        approvals, generated = await _resolve_board_approvals_snapshot(refresh=True)
+        matched = next(
+            (
+                item
+                for item in approvals
+                if _normalize_approval_id(str(item.get("approval_id", ""))) == normalized
+            ),
+            None,
+        )
+    if not isinstance(matched, dict):
+        return f"I could not find board approval ID `{normalized}`. Run `/approvals` and copy an ID from the list."
+
+    state = _load_board_approval_state()
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    outcome = "APPROVED" if command == "approve" else "DENIED"
+    prior = decisions.get(normalized, {})
+    prior = prior if isinstance(prior, dict) else {}
+    if str(prior.get("status", "")).upper() == outcome:
+        return f"`{normalized}` is already marked {outcome}."
+
+    decisions[normalized] = {
+        "status": outcome,
+        "decided_at_utc": _utc_now_iso(),
+        "decided_by_user_id": user_id,
+        "topic": str(matched.get("topic", "")).strip(),
+        "owner": str(matched.get("owner", "")).strip(),
+        "decision": _resolve_board_decision_text(matched),
+        "source_snapshot_utc": generated,
+    }
+    state["decisions"] = decisions
+    if not _persist_board_approval_state(state):
+        return "I could not persist that approval decision. Please retry."
+    return (
+        f"Board approval `{normalized}` marked {outcome}. "
+        f"Topic: {matched.get('topic')} | Owner: {matched.get('owner')}."
+    )
+
+
 async def _handle_board_command() -> str:
     mode = "board_pack" if _runtime().phase3_enabled else "board_review"
     result = await _run_tool_router(["run_holding", "--mode", mode, "--force"], timeout_sec=1500)
@@ -768,18 +1590,586 @@ async def _handle_board_command() -> str:
     ).strip()
 
 
-async def _handle_status_command() -> str:
-    division_data = _build_division_data("company status", ["trading", "websites", "holding"])
-    facts = division_data.get("context_lines", [])
-    primary = facts[0] if facts else "Company snapshot is available but sparse."
-    secondary = facts[1] if len(facts) > 1 else ""
-    tertiary = facts[2] if len(facts) > 2 else ""
-    lines = [primary]
-    if secondary:
-        lines.append(secondary)
-    if tertiary:
-        lines.append(tertiary)
-    return " ".join(lines).strip()
+async def _handle_status_command(compact: bool = False) -> str:
+    runtime = _runtime()
+    phase3 = runtime.latest_phase3() if runtime.phase3_enabled else None
+    if isinstance(phase3, dict):
+        company = phase3.get("company_scorecard", {})
+        company = company if isinstance(company, dict) else {}
+        property_blocks = phase3.get("property_pnl_blocks", [])
+        property_blocks = [item for item in property_blocks if isinstance(item, dict)]
+        briefs = phase3.get("property_department_briefs", [])
+        briefs = [item for item in briefs if isinstance(item, dict)]
+        brief_by_property = {str(item.get("property_id", "")).strip(): item for item in briefs if str(item.get("property_id", "")).strip()}
+        revamp_queue = phase3.get("revamp_queue", [])
+        revamp_queue = [item for item in revamp_queue if isinstance(item, dict)]
+        items = [item for item in company.get("items", []) if isinstance(item, dict)]
+        rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        non_green_items = [
+            item
+            for item in items
+            if str(item.get("status", "")).upper() in {"RED", "AMBER"}
+            and "property" in str(item.get("metric", "")).strip().lower()
+        ]
+        non_green_items.sort(key=lambda item: rank.get(str(item.get("status", "")).upper(), 3))
+        generated = str(phase3.get("generated_at_utc", "")).strip()
+        freshness = _snapshot_freshness_label(generated)
+
+        promoted_properties: list[str] = []
+        green_count = 0
+        forecast_values: list[float] = []
+        confidence_present = 0
+        confidence_total = 0
+        property_statuses: list[str] = []
+        for block in property_blocks:
+            property_name = str(block.get("property_name", block.get("property_id", "property"))).strip() or "property"
+            promoted_properties.append(property_name)
+            status_payload = block.get("status", {})
+            status_payload = status_payload if isinstance(status_payload, dict) else {}
+            block_status = str(status_payload.get("value", "")).upper()
+            if block_status in {"RED", "AMBER", "GREEN"}:
+                property_statuses.append(block_status)
+            if block_status == "GREEN":
+                green_count += 1
+            pct = status_payload.get("pct_to_forecast_mrr")
+            try:
+                if pct is not None:
+                    forecast_values.append(float(pct))
+            except (TypeError, ValueError):
+                pass
+            revenue = block.get("revenue", {})
+            revenue = revenue if isinstance(revenue, dict) else {}
+            pipeline = block.get("pipeline", {})
+            pipeline = pipeline if isinstance(pipeline, dict) else {}
+            ops = block.get("operations", {})
+            ops = ops if isinstance(ops, dict) else {}
+            for value in [
+                revenue.get("total_mrr_usd"),
+                pipeline.get("pages_indexed_7d"),
+                ops.get("research_brief_age_days"),
+            ]:
+                confidence_total += 1
+                if value is not None:
+                    confidence_present += 1
+
+        on_plan_ratio = (green_count / len(property_blocks) * 100.0) if property_blocks else 0.0
+        forecast_attainment = (sum(forecast_values) / len(forecast_values)) if forecast_values else None
+        confidence_ratio = (confidence_present / confidence_total) if confidence_total else 0.0
+        if confidence_ratio >= 0.75:
+            data_confidence = "High"
+        elif confidence_ratio >= 0.40:
+            data_confidence = "Medium"
+        else:
+            data_confidence = "Low"
+        overall_status = "RED" if "RED" in property_statuses else "AMBER" if "AMBER" in property_statuses else "GREEN" if "GREEN" in property_statuses else company.get("status", "unknown")
+
+        decision_rows: list[dict[str, str]] = []
+        for item in non_green_items:
+            status = str(item.get("status", "AMBER")).upper()
+            decision_rows.append(
+                {
+                    "priority": status,
+                    "topic": str(item.get("metric", "Company KPI")).strip() or "Company KPI",
+                    "decision": str(item.get("action", "Review KPI and execute corrective actions.")).strip(),
+                    "owner": "holding",
+                    "due": "next heartbeat",
+                    "impact": f"actual={item.get('actual')} vs target={item.get('target')}",
+                }
+            )
+        for block in property_blocks:
+            property_id = str(block.get("property_id", "")).strip()
+            property_name = str(block.get("property_name", property_id)).strip() or property_id or "property"
+            brief = brief_by_property.get(property_id, {})
+            brief = brief if isinstance(brief, dict) else {}
+            departments = brief.get("departments", {})
+            departments = departments if isinstance(departments, dict) else {}
+            for department_name in ["finance", "marketing", "product", "operations"]:
+                department = departments.get(department_name, {})
+                department = department if isinstance(department, dict) else {}
+                status = str(department.get("status", "")).upper()
+                if status not in {"RED", "AMBER"}:
+                    continue
+                signals = department.get("signals", [])
+                signals = signals if isinstance(signals, list) else []
+                impact = str(signals[0]).strip() if signals else str(department.get("headline", "")).strip()
+                decision_rows.append(
+                    {
+                        "priority": status,
+                        "topic": f"{property_name} / {department_name}",
+                        "decision": str(department.get("proposal", "Execute department recovery plan.")).strip(),
+                        "owner": department_name,
+                        "due": "+7d",
+                        "impact": impact or "KPI below target",
+                    }
+                )
+        decision_rows.sort(key=lambda row: rank.get(str(row.get("priority", "")).upper(), 3))
+        top_decisions = decision_rows[:3]
+
+        if str(overall_status).upper() == "GREEN":
+            portfolio_headline = "Promoted portfolio is operating to plan; maintain cadence."
+            capital_posture = "Maintain measured growth investment in promoted assets."
+        elif str(overall_status).upper() == "RED":
+            portfolio_headline = "Promoted portfolio is off-plan; stabilization is required before expansion."
+            capital_posture = "Protect capital and prioritize recovery actions over expansion."
+        else:
+            portfolio_headline = "Promoted portfolio is operating, but execution is below plan."
+            capital_posture = "Hold expansion and direct effort to execution recovery."
+
+        if compact:
+            key_decision = top_decisions[0] if top_decisions else {}
+            focus_text = str(key_decision.get("topic", "")).strip() if key_decision else "No immediate decision items."
+            owner_text = _resolve_delivery_owner(key_decision.get("owner")) if key_decision else "Execution Lead"
+            decision_now = (
+                str(key_decision.get("decision", "")).strip()
+                if key_decision
+                else "No approval blockers at this time."
+            )
+            compact_lines = [
+                "CEO Business Brief (Quick)",
+                f"Updated: {generated if generated else 'n/a'} UTC",
+                f"Freshness: {freshness}",
+                f"Scope: promoted properties only ({len(property_blocks)} tracked: {', '.join(promoted_properties) if promoted_properties else 'none'})",
+                "",
+                "Portfolio Health",
+                f"- Status: {overall_status}",
+                f"- Headline: {portfolio_headline}",
+                f"- Execution on-plan: {green_count}/{len(property_blocks)} ({on_plan_ratio:.1f}%)",
+                (
+                    f"- Commercial outlook: {forecast_attainment:.1f}% of near-term forecast"
+                    if forecast_attainment is not None
+                    else "- Commercial outlook: limited visibility this cycle"
+                ),
+                "",
+                "Decision Required Now",
+                f"- {decision_now}",
+                f"- Delivery owner: {owner_text}",
+                "",
+                "Primary Focus This Week",
+                f"- {focus_text}",
+                "",
+                "Capital Guidance",
+                f"- {capital_posture}",
+                "",
+                "Command Center",
+                "- /status for full CEO business brief",
+                "- /approvals for decisions awaiting approval",
+            ]
+            return "\n".join(compact_lines)
+
+        lines = [
+            "CEO Business Brief - Promoted Portfolio",
+            f"- Snapshot UTC: {generated if generated else 'n/a'}",
+            f"- Snapshot freshness: {freshness}",
+            f"- Reporting scope: promoted properties only ({len(property_blocks)} tracked: {', '.join(promoted_properties) if promoted_properties else 'none'})",
+            "",
+            "1) Executive Summary",
+            f"- Portfolio health: {overall_status}",
+            f"- Portfolio headline: {portfolio_headline}",
+            f"- Execution on-plan: {green_count}/{len(property_blocks)} ({on_plan_ratio:.1f}%)",
+            (
+                f"- Commercial outlook: {forecast_attainment:.1f}% of forecast"
+                if forecast_attainment is not None
+                else "- Commercial outlook: limited visibility this cycle"
+            ),
+            f"- Data confidence: {data_confidence}",
+            "",
+            "2) Decisions Required",
+        ]
+        if not top_decisions:
+            lines.append("- No CEO approvals pending right now.")
+        else:
+            for index, item in enumerate(top_decisions, start=1):
+                lines.append(
+                    f"- Decision {index} [{item.get('priority')}]"
+                )
+                lines.append(f"  Topic: {item.get('topic')}")
+                lines.append(f"  Action: {item.get('decision')}")
+                lines.append(f"  Owner/Timing: {_resolve_delivery_owner(item.get('owner'))} | {item.get('due')}")
+
+        lines.append("")
+        lines.append("3) Promoted Property Review")
+        for block in property_blocks[:5]:
+            property_id = str(block.get("property_id", "")).strip()
+            property_name = str(block.get("property_name", property_id)).strip() or property_id or "property"
+            status_payload = block.get("status", {})
+            status_payload = status_payload if isinstance(status_payload, dict) else {}
+            movers = block.get("top_movers", {})
+            movers = movers if isinstance(movers, dict) else {}
+            brief = brief_by_property.get(property_id, {})
+            brief = brief if isinstance(brief, dict) else {}
+            md_overall = brief.get("md_overall", {})
+            md_overall = md_overall if isinstance(md_overall, dict) else {}
+            focus = md_overall.get("focus_next_7d", [])
+            focus = focus if isinstance(focus, list) else []
+            strategic_direction = str(md_overall.get("strategic_direction", "")).strip()
+            ask = "Approve focused remediation and hold expansion for 7 days."
+            if str(status_payload.get("value", "")).upper() == "GREEN":
+                ask = "Approve continue cadence and monitor only."
+            elif str(status_payload.get("value", "")).upper() == "RED":
+                ask = "Approve recovery plan immediately and pause non-core expansion."
+            risk_text = str(movers.get("biggest_risk", "")).strip() or "No material risk recorded."
+            plan_text = str(focus[0]).strip() if focus else strategic_direction
+            if not plan_text:
+                plan_text = "Run department-level recovery plan and review next heartbeat."
+            lines.extend(
+                [
+                    f"- {property_name} | Status: {status_payload.get('value', 'unknown')}",
+                    f"  Primary risk: {risk_text}",
+                    f"  Next 7-day management action: {plan_text}",
+                    f"  CEO action requested: {ask}",
+                ]
+            )
+
+        lines.extend(["", "4) Capital Posture"])
+        total_hours = 0.0
+        hours_present = False
+        total_value = 0.0
+        value_present = False
+        for block in property_blocks:
+            operations = block.get("operations", {})
+            operations = operations if isinstance(operations, dict) else {}
+            hours = operations.get("hours_invested_7d")
+            value = operations.get("quantified_value_usd_7d")
+            try:
+                if hours is not None:
+                    total_hours += float(hours)
+                    hours_present = True
+            except (TypeError, ValueError):
+                pass
+            try:
+                if value is not None:
+                    total_value += float(value)
+                    value_present = True
+            except (TypeError, ValueError):
+                pass
+        efficiency = (total_value / total_hours) if (hours_present and value_present and total_hours > 0) else None
+        lines.append(f"- Recommended posture: {capital_posture}")
+        lines.append(f"- Time invested (7d): {total_hours:.1f}h" if hours_present else "- Time invested (7d): not yet captured")
+        lines.append(f"- Value created (7d): {_format_money(total_value)}" if value_present else "- Value created (7d): not yet captured")
+        lines.append(f"- Efficiency signal: {_format_money(efficiency)}/h" if efficiency is not None else "- Efficiency signal: insufficient data")
+
+        lines.extend(["", "5) Revamp Queue (Excluded from Company Score)"])
+        if not revamp_queue:
+            lines.append("- None.")
+        else:
+            for item in revamp_queue[:6]:
+                property_id = str(item.get("property_id", "unknown")).strip() or "unknown"
+                readiness = item.get("promotion_readiness", {})
+                readiness = readiness if isinstance(readiness, dict) else {}
+                reason = str(readiness.get("status", "not promoted")).strip() or "not promoted"
+                lines.append(f"- {property_id} (reason: {reason})")
+        lines.extend(["", "Command Center", "- /approvals for required decisions"])
+        return "\n".join(lines)
+
+    phase2 = runtime.latest_phase2()
+    if isinstance(phase2, dict):
+        summary = phase2.get("base_summary", {})
+        summary = summary if isinstance(summary, dict) else {}
+        divisions = phase2.get("divisions", [])
+        divisions = [item for item in divisions if isinstance(item, dict)]
+        parts = [
+            "Holding Company Snapshot",
+            "- Status: phase2 snapshot",
+            "- Scope: promoted properties only (phase3 snapshot unavailable)",
+            "",
+            "Performance",
+            f"- PnL: {_format_money(summary.get('pnl_total'))}",
+            f"- Trades: {summary.get('trades_total')}",
+            f"- Errors: {summary.get('error_lines_total')}",
+        ]
+        if divisions:
+            first = divisions[0]
+            scorecard = first.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            parts.extend(
+                [
+                    "",
+                    "Top Division",
+                    f"- {str(first.get('division', 'division')).title()} status {scorecard.get('status', first.get('status', 'unknown'))}",
+                ]
+            )
+        generated = str(phase2.get("generated_at_utc", "")).strip()
+        if generated:
+            parts.insert(3, f"- Snapshot UTC: {generated}")
+            parts.insert(4, f"- Snapshot freshness: {_snapshot_freshness_label(generated)}")
+        return "\n".join(parts)
+
+    daily = runtime.latest_daily_brief()
+    if isinstance(daily, dict):
+        summary = daily.get("summary", {})
+        summary = summary if isinstance(summary, dict) else {}
+        generated = str(daily.get("generated_at_utc", "")).strip()
+        lines = [
+            "Holding Company Snapshot",
+            "- Status: daily brief snapshot",
+            "- Scope: promoted properties only (phase2/phase3 snapshots unavailable)",
+            "",
+            "Performance",
+            f"- PnL: {_format_money(summary.get('pnl_total'))}",
+            f"- Trades: {summary.get('trades_total')}",
+            f"- Errors: {summary.get('error_lines_total')}",
+        ]
+        if generated:
+            lines.insert(3, f"- Snapshot UTC: {generated}")
+            lines.insert(4, f"- Snapshot freshness: {_snapshot_freshness_label(generated)}")
+        return "\n".join(lines)
+
+    return "Company snapshot is not available yet. Run /brief for a fresh report."
+
+
+async def _handle_approvals_command(refresh: bool = False, user_id: int | None = None) -> str:
+    reply, _ = await _build_approvals_reply(refresh=refresh, user_id=user_id)
+    return reply
+
+
+def _portfolio_facts_from_phase3(payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "status": "unknown",
+            "generated": "",
+            "freshness": "unknown",
+            "promoted_count": 0,
+            "promoted_names": [],
+            "on_plan_pct": None,
+            "top_issue": "snapshot unavailable",
+        }
+    company = payload.get("company_scorecard", {})
+    company = company if isinstance(company, dict) else {}
+    items = company.get("items", [])
+    items = [item for item in items if isinstance(item, dict)]
+    rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+    items_sorted = sorted(items, key=lambda row: rank.get(str(row.get("status", "")).upper(), 3))
+    top_item = items_sorted[0] if items_sorted else {}
+    top_issue = str(top_item.get("metric", "")).strip() if isinstance(top_item, dict) else ""
+    blocks = payload.get("property_pnl_blocks", [])
+    blocks = [item for item in blocks if isinstance(item, dict)]
+    names = [
+        str(item.get("property_name", item.get("property_id", "property"))).strip() or "property"
+        for item in blocks
+    ]
+    green = 0
+    for block in blocks:
+        status_payload = block.get("status", {})
+        status_payload = status_payload if isinstance(status_payload, dict) else {}
+        if str(status_payload.get("value", "")).upper() == "GREEN":
+            green += 1
+    on_plan_pct = (green / len(blocks) * 100.0) if blocks else None
+    generated = str(payload.get("generated_at_utc", "")).strip()
+    return {
+        "status": str(company.get("status", "unknown")).upper() or "unknown",
+        "generated": generated,
+        "freshness": _snapshot_freshness_label(generated),
+        "promoted_count": len(blocks),
+        "promoted_names": names,
+        "on_plan_pct": on_plan_pct,
+        "top_issue": top_issue or "company KPI requires review",
+    }
+
+
+async def _handle_approvals_explainer() -> str:
+    pending, _, generated = await _collect_board_approval_rows(refresh=False)
+    if not pending:
+        return "There are no pending board approvals right now."
+    lines = ["Approval Context (CEO)", f"Snapshot: {_snapshot_freshness_label(generated)} ({generated} UTC)"]
+    for item in pending[:5]:
+        approval_id = str(item.get("approval_id", "")).strip()
+        topic = str(item.get("topic", "")).strip() or "KPI item"
+        lines.append(f"- {approval_id}")
+        lines.append(f"  What this is: {_approval_topic_meaning(topic)}")
+        lines.append(f"  Delivery owner: {_resolve_delivery_owner(item.get('owner'))}")
+        lines.append(f"  Decision requested: {item.get('decision')}")
+    lines.append("Action: `/approve <board_id>` to proceed or `/deny <board_id>` to reject.")
+    return "\n".join(lines)
+
+
+async def _handle_management_take() -> str:
+    phase3 = _runtime().latest_phase3()
+    facts = _portfolio_facts_from_phase3(phase3 if isinstance(phase3, dict) else None)
+    pending, _, generated = await _collect_board_approval_rows(refresh=False)
+    red_count = 0
+    amber_count = 0
+    for item in pending:
+        status = str(item.get("priority", "")).upper()
+        if status == "RED":
+            red_count += 1
+        elif status == "AMBER":
+            amber_count += 1
+
+    def _infer_owner_from_phase3(payload: dict[str, Any] | None) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        company = payload.get("company_scorecard", {})
+        company = company if isinstance(company, dict) else {}
+        company_items = company.get("items", [])
+        company_items = [item for item in company_items if isinstance(item, dict)]
+        company_items.sort(key=lambda row: rank.get(str(row.get("status", "")).upper(), 3))
+        for item in company_items:
+            status = str(item.get("status", "")).upper()
+            if status in {"RED", "AMBER"}:
+                return "holding"
+
+        briefs = payload.get("property_department_briefs", [])
+        briefs = [item for item in briefs if isinstance(item, dict)]
+        for brief in briefs:
+            departments = brief.get("departments", {})
+            departments = departments if isinstance(departments, dict) else {}
+            for department_name in ["operations", "finance", "marketing", "product"]:
+                department = departments.get(department_name, {})
+                department = department if isinstance(department, dict) else {}
+                status = str(department.get("status", "")).upper()
+                if status in {"RED", "AMBER"}:
+                    return department_name
+        return ""
+
+    top_pending = pending[0] if pending else {}
+    next_move = str(top_pending.get("decision", "")).strip() if top_pending else ""
+    if top_pending:
+        delivery_owner = _resolve_delivery_owner(top_pending.get("owner"))
+    else:
+        inferred_owner = _infer_owner_from_phase3(phase3 if isinstance(phase3, dict) else None)
+        delivery_owner = _resolve_delivery_owner(inferred_owner) if inferred_owner else "Execution Lead"
+    if not next_move:
+        next_move = "Continue execution cadence and monitor the next heartbeat."
+    names = facts.get("promoted_names", [])
+    names_text = ", ".join(str(name) for name in names[:3]) if names else "none"
+    lines = [
+        "Executive Take",
+        (
+            f"- We are {facts.get('status')} across promoted properties "
+            f"({facts.get('promoted_count')} tracked: {names_text})."
+        ),
+        (
+            f"- Execution on-plan: {facts.get('on_plan_pct'):.1f}%."
+            if isinstance(facts.get("on_plan_pct"), float)
+            else "- Execution on-plan: n/a."
+        ),
+        f"- Primary pressure point: {facts.get('top_issue')}.",
+        f"- Pending approvals: {len(pending)} (RED {red_count}, AMBER {amber_count}).",
+        f"- Delivery owner now: {delivery_owner}.",
+        f"- Recommended immediate move: {next_move}",
+        f"- Snapshot freshness: {facts.get('freshness')} ({generated or facts.get('generated') or 'n/a'} UTC).",
+    ]
+    return "\n".join(lines)
+
+
+def _summarize_marketing_from_phase3(payload: dict[str, Any] | None) -> str:
+    if not isinstance(payload, dict):
+        return "Marketing status: no fresh phase3 payload available. Run /status for a live update."
+    briefs = payload.get("property_department_briefs", [])
+    briefs = briefs if isinstance(briefs, list) else []
+    lines: list[str] = []
+    for brief in briefs:
+        if not isinstance(brief, dict):
+            continue
+        departments = brief.get("departments", {})
+        departments = departments if isinstance(departments, dict) else {}
+        marketing = departments.get("marketing", {})
+        marketing = marketing if isinstance(marketing, dict) else {}
+        status = str(marketing.get("status", "")).upper()
+        if not status:
+            continue
+        name = str(brief.get("property_name", brief.get("property_id", "property"))).strip() or "property"
+        headline = str(marketing.get("headline", "")).strip() or "no headline"
+        proposal = str(marketing.get("proposal", "")).strip()
+        line = f"- {name}: [{status}] {headline}"
+        if proposal:
+            line += f" | proposal={proposal}"
+        lines.append(line)
+    if not lines:
+        return "Marketing status is not available in the latest phase3 payload."
+    return "Marketing status by operating property:\n" + "\n".join(lines[:5])
+
+
+def _resolve_mt5_bot_id() -> str | None:
+    runtime = _runtime()
+    if "mt5_desk" in runtime.bot_ids:
+        return "mt5_desk"
+    for bot_id in sorted(runtime.bot_ids):
+        if "mt5" in bot_id.lower():
+            return bot_id
+    return None
+
+
+async def _handle_mt5_ops_intent() -> str:
+    bot_id = _resolve_mt5_bot_id()
+    if not bot_id:
+        return "MT5 Desk is not configured as a known bot id in this environment."
+    health = await _run_tool_router(["run_trading_script", "--bot", bot_id, "--command-key", "health"], timeout_sec=300)
+    report = await _run_tool_router(["run_trading_script", "--bot", bot_id, "--command-key", "report"], timeout_sec=600)
+    return (
+        f"MT5 Desk operations check ({bot_id})\n"
+        f"- health: {'OK' if health.get('ok') else 'FAILED'}\n"
+        f"- report: {'OK' if report.get('ok') else 'FAILED'}\n"
+        "Scheduler restart is not configured as a bridge command, so no scheduler restart was executed."
+    )
+
+
+def _normalize_intent_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text.lower()).strip()
+    return normalized.strip("?!.,")
+
+
+def _is_company_status_query(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    if lowered in {"status", "company status", "where are we now", "whats the status of the company right now"}:
+        return True
+    if re.search(r"\bwher[e]?\s+are\s+we\s+now\b", lowered):
+        return True
+    has_status = any(term in lowered for term in ("status", "where are we now", "where we are", "current state"))
+    has_company = any(term in lowered for term in ("company", "holding", "portfolio", "business", "we now"))
+    return bool(has_status and has_company)
+
+
+def _is_approvals_query(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    if "approval" not in lowered and "approve" not in lowered:
+        return False
+    return any(term in lowered for term in ("list", "pending", "outstanding", "need", "show", "what"))
+
+
+def _is_approvals_explainer_query(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    has_approval_ref = "approval" in lowered or "approve" in lowered
+    has_explainer = any(term in lowered for term in ("about", "mean", "what are these", "what is this", "context"))
+    return bool(has_approval_ref and has_explainer)
+
+
+def _is_mt5_ops_request(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    return bool(
+        "mt5" in lowered
+        and any(term in lowered for term in ("restart", "scheduler", "research"))
+        and any(term in lowered for term in ("run", "start", "restart"))
+    )
+
+
+def _is_marketing_query(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    return any(term in lowered for term in ("marketing", "growth", "campaign", "traffic"))
+
+
+def _is_management_take_query(text: str) -> bool:
+    lowered = _normalize_intent_text(text)
+    if any(term in lowered for term in ("md", "what's your take", "whats your take", "talk to me", "what about now")):
+        return True
+    return _looks_like_natural_question(text)
+
+
+async def _handle_natural_deterministic_intent(text: str, user_id: int | None = None) -> str | None:
+    if _is_company_status_query(text):
+        return await _handle_status_command(compact=True)
+    if _is_approvals_explainer_query(text):
+        return await _handle_approvals_explainer()
+    if _is_approvals_query(text):
+        return await _handle_approvals_command(user_id=user_id)
+    if _is_mt5_ops_request(text):
+        return await _handle_mt5_ops_intent()
+    if _is_marketing_query(text):
+        return _summarize_marketing_from_phase3(_runtime().latest_phase3())
+    if _is_management_take_query(text):
+        return await _handle_management_take()
+    return None
 
 
 async def _handle_memory_command(query: str) -> str:
@@ -841,12 +2231,31 @@ async def _handle_bot_command(text: str) -> str:
     return f"{bot_id} {action} completed."
 
 
-async def _handle_known_command(text: str) -> str | None:
+async def _handle_known_command(text: str, user_id: int | None = None) -> str | None:
     lowered = text.lower().strip()
     if lowered == "/help":
         return _format_help()
     if lowered == "/status":
         return await _handle_status_command()
+    if lowered == "/hermes_status":
+        return await _handle_hermes_status_command()
+    if text.startswith("/approvals"):
+        refresh = bool(re.search(r"\b(refresh|force)\b", text, flags=re.I))
+        return await _handle_approvals_command(refresh=refresh, user_id=user_id)
+    if re.match(r"^/approve(?:\s+|$)", text, flags=re.I):
+        approval_id = re.sub(r"^/approve\s*", "", text, count=1, flags=re.I).strip()
+        return await _handle_board_approval_decision(approval_id, "approve", user_id=user_id)
+    if re.match(r"^/deny(?:\s+|$)", text, flags=re.I):
+        approval_id = re.sub(r"^/deny\s*", "", text, count=1, flags=re.I).strip()
+        return await _handle_board_approval_decision(approval_id, "deny", user_id=user_id)
+    if lowered == "/approve_selected":
+        return await _handle_board_bulk_decision(command="approve", scope="selected", user_id=user_id)
+    if lowered == "/deny_selected":
+        return await _handle_board_bulk_decision(command="deny", scope="selected", user_id=user_id)
+    if lowered == "/approve_all":
+        return await _handle_board_bulk_decision(command="approve", scope="all", user_id=user_id)
+    if lowered == "/deny_all":
+        return await _handle_board_bulk_decision(command="deny", scope="all", user_id=user_id)
     if lowered == "/brief":
         return await _handle_board_command() if _runtime().phase3_enabled else await _handle_status_command()
     if lowered in {"/board", "/board review"}:
@@ -941,7 +2350,7 @@ async def process_text_message(
     LOGGER.debug('[DEBUG] Message starts with "/"? %s', starts_with_slash)
     if starts_with_slash:
         LOGGER.debug("[DEBUG] Routing to command handler: %s", stripped_text.split()[0] if stripped_text else "")
-        command_reply = await _handle_known_command(stripped_text)
+        command_reply = await _handle_known_command(stripped_text, user_id=user_id)
         if command_reply is None:
             LOGGER.warning("[WARN] No handler matched, returning generic help")
             command_reply = "I don't recognize that slash command. Try `/help`."
@@ -962,10 +2371,23 @@ async def process_text_message(
         )
         return command_reply, metadata
 
+    response_type, divisions, topics = _classify_message(stripped_text)
+    deterministic_reply = await _handle_natural_deterministic_intent(stripped_text, user_id=user_id)
+    if deterministic_reply is not None:
+        metadata = {"authorized": True, "divisions_involved": divisions, "topics": topics}
+        await _save_conversation(
+            timestamp=_utc_now_iso(),
+            user_id=user_id,
+            user_msg=text,
+            bot_response=deterministic_reply,
+            response_type="deterministic_intent",
+            metadata=metadata,
+        )
+        return deterministic_reply, metadata
+
     LOGGER.debug("[DEBUG] Retrieving context...")
     context = await _retrieve_context(stripped_text)
     LOGGER.debug("[DEBUG] Context retrieved: %s", sorted(context.keys()))
-    response_type, divisions, topics = _classify_message(stripped_text)
     division_data = _build_division_data(stripped_text, divisions)
 
     try:
@@ -1046,7 +2468,91 @@ async def handle_message(message: Any) -> None:
         metadata.get("topics", []),
         metadata.get("divisions_involved", []),
     )
-    await message.answer(reply)
+    reply_markup = None
+    try:
+        normalized = _normalize_intent_text(text)
+    except Exception:  # noqa: BLE001
+        normalized = text.lower().strip()
+    if normalized.startswith("/approvals") or "Owner approvals snapshot" in reply:
+        pending, _, _ = await _collect_board_approval_rows(refresh=False)
+        pending_ids = [
+            _normalize_approval_id(str(item.get("approval_id", "")))
+            for item in pending
+            if _normalize_approval_id(str(item.get("approval_id", "")))
+        ]
+        selected_ids = _prune_board_selected_ids(user_id, pending_ids)
+        reply_markup = _build_board_approvals_keyboard(pending, selected_ids=selected_ids)
+    await message.answer(reply, reply_markup=reply_markup)
+
+
+async def handle_callback_query(callback_query: Any) -> None:
+    data = str(getattr(callback_query, "data", "") or "").strip()
+    user_id = getattr(getattr(callback_query, "from_user", None), "id", None)
+    if not data:
+        await callback_query.answer("No action payload received.")
+        return
+    is_supported = (
+        data.startswith("board_approve:")
+        or data.startswith("board_deny:")
+        or data.startswith("board_toggle:")
+        or data in {"board_approve_selected", "board_deny_selected", "board_approve_all", "board_deny_all", "board_clear_selected"}
+    )
+    if not is_supported:
+        await callback_query.answer("Unsupported action.")
+        return
+
+    pending, _, _ = await _collect_board_approval_rows(refresh=False)
+    pending_ids = [
+        _normalize_approval_id(str(item.get("approval_id", "")))
+        for item in pending
+        if _normalize_approval_id(str(item.get("approval_id", "")))
+    ]
+    selected_ids = _prune_board_selected_ids(user_id, pending_ids)
+
+    if data.startswith("board_toggle:"):
+        approval_id = _normalize_approval_id(data.split(":", 1)[1].strip())
+        if approval_id not in pending_ids:
+            result = f"`{approval_id}` is not pending right now. Run `/approvals` to refresh."
+        else:
+            is_selected, selected_ids = _toggle_board_selected_id(user_id=user_id, approval_id=approval_id)
+            action = "selected" if is_selected else "removed from selection"
+            result = f"`{approval_id}` {action}."
+    elif data == "board_clear_selected":
+        _set_board_selected_ids(user_id, [])
+        selected_ids = []
+        result = "Selection cleared."
+    elif data == "board_approve_selected":
+        result = await _handle_board_bulk_decision(command="approve", scope="selected", user_id=user_id)
+    elif data == "board_deny_selected":
+        result = await _handle_board_bulk_decision(command="deny", scope="selected", user_id=user_id)
+    elif data == "board_approve_all":
+        result = await _handle_board_bulk_decision(command="approve", scope="all", user_id=user_id)
+    elif data == "board_deny_all":
+        result = await _handle_board_bulk_decision(command="deny", scope="all", user_id=user_id)
+    else:
+        action = "approve" if data.startswith("board_approve:") else "deny"
+        approval_id = data.split(":", 1)[1].strip()
+        result = await _handle_board_approval_decision(approval_id=approval_id, command=action, user_id=user_id)
+        selected_ids = [item for item in selected_ids if item != _normalize_approval_id(approval_id)]
+        _set_board_selected_ids(user_id, selected_ids)
+
+    updated_text, keyboard = await _build_approvals_reply(refresh=False, user_id=user_id)
+
+    message = getattr(callback_query, "message", None)
+    if message is not None:
+        try:
+            await message.edit_text(updated_text, reply_markup=keyboard)
+        except Exception:  # noqa: BLE001
+            try:
+                await message.answer(updated_text, reply_markup=keyboard)
+            except Exception:  # noqa: BLE001
+                pass
+    await callback_query.answer("Recorded.")
+    if message is not None:
+        try:
+            await message.answer(result)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _send_owner_brief() -> None:
@@ -1127,6 +2633,7 @@ async def main() -> None:
     bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN", _runtime().bot_token))
     dp = Dispatcher()
     dp.message.register(handle_message)
+    dp.callback_query.register(handle_callback_query)
 
     LOGGER.info("Starting aiogram polling")
     try:

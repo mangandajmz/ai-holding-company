@@ -216,6 +216,24 @@ class TelegramBridge:
             "command": cmd,
         }
 
+    def _company_status_action(self) -> dict[str, Any]:
+        if self.phase3_enabled:
+            return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
+        return {"type": "tool", "name": "run_divisions", "args": ["run_divisions", "--division", "all", "--force"]}
+
+    def _approvals_status_action(self) -> dict[str, Any]:
+        return {"type": "approvals_status"}
+
+    @staticmethod
+    def _is_company_status_query(text: str) -> bool:
+        lowered = text.lower().strip()
+        if lowered in {"status", "company status", "what is the company status", "whats the company status"}:
+            return True
+        has_status = "status" in lowered
+        has_company = any(term in lowered for term in ("company", "holding", "business", "portfolio"))
+        has_question = any(term in lowered for term in ("what", "how", "where", "right now", "current"))
+        return bool(has_status and (has_company or has_question))
+
     def _parse_action(self, text: str) -> dict[str, Any]:
         raw = text.strip()
         lowered = raw.lower()
@@ -224,8 +242,12 @@ class TelegramBridge:
             return {"type": "help"}
         if lowered in {"/commercial", "commercial"}:
             return {"type": "freetext", "text": raw}
-        if lowered in {"/status", "status", "daily_brief", "ceo"}:
+        if lowered in {"/status", "status"}:
+            return self._company_status_action()
+        if lowered in {"daily_brief", "ceo"}:
             return {"type": "freetext", "text": "What is the company status?"}
+        if re.match(r"^/approvals$", raw, re.I):
+            return self._approvals_status_action()
         if lowered in {"/brief", "brief"} or any(
             p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")
         ):
@@ -350,6 +372,16 @@ class TelegramBridge:
                 "name": "run_divisions",
                 "args": ["run_divisions", "--division", "all", "--force"],
             }
+        if self._is_company_status_query(raw):
+            return self._company_status_action()
+        if "approval" in lowered and any(term in lowered for term in ("list", "pending", "outstanding", "need", "show", "what")):
+            return self._approvals_status_action()
+        if (
+            "mt5" in lowered
+            and any(term in lowered for term in ("restart", "scheduler", "research"))
+            and any(term in lowered for term in ("run", "start", "restart"))
+        ):
+            return {"type": "mt5_ops"}
         if "board review" in lowered:
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
@@ -372,6 +404,7 @@ class TelegramBridge:
             "- /bot <bot_id> logs [lines]\n"
             "- /divisions [all|trading|websites]\n"
             "- /board review\n"
+            "- /approvals\n"
             "- /note <text>\n"
             "- /memory <query>\n"
             "- /help\n"
@@ -852,6 +885,46 @@ class TelegramBridge:
             "I don't have a dedicated commercial payload to summarize here. Use /board review for the broader company view."
         )
 
+    def _summarize_marketing_question(self, phase3: dict[str, Any] | None) -> str:
+        if not isinstance(phase3, dict):
+            return "Marketing status: no fresh phase3 payload available. Run /status or /brief for a live update."
+        briefs = phase3.get("property_department_briefs", [])
+        briefs = briefs if isinstance(briefs, list) else []
+        marketing_lines: list[str] = []
+        for brief in briefs:
+            if not isinstance(brief, dict):
+                continue
+            departments = brief.get("departments", {})
+            departments = departments if isinstance(departments, dict) else {}
+            marketing = departments.get("marketing", {})
+            marketing = marketing if isinstance(marketing, dict) else {}
+            status = str(marketing.get("status", "")).upper()
+            if not status:
+                continue
+            property_name = str(brief.get("property_name", brief.get("property_id", "property"))).strip() or "property"
+            signals = marketing.get("signals", [])
+            signals = signals if isinstance(signals, list) else []
+            proposal = str(marketing.get("proposal", "")).strip()
+            headline = str(marketing.get("headline", "")).strip()
+            summary = headline if headline else "No headline provided."
+            line = f"- {property_name}: [{status}] {summary}"
+            if signals:
+                line += f" | signals={'; '.join(str(item) for item in signals[:2])}"
+            if proposal:
+                line += f" | proposal={proposal}"
+            marketing_lines.append(line)
+        if marketing_lines:
+            return self._lines_to_text(["Marketing status by operating property:", *marketing_lines[:5]])
+        return "Marketing status is not available in the latest phase3 payload. Run /status for a refreshed heartbeat."
+
+    def _resolve_mt5_bot_id(self) -> str | None:
+        if "mt5_desk" in self.bot_ids:
+            return "mt5_desk"
+        for bot_id in sorted(self.bot_ids):
+            if "mt5" in bot_id.lower():
+                return bot_id
+        return None
+
     def _answer_from_memory(self, text: str) -> str:
         facts = self._dedupe_memory_results(self._search_memory(text, top_k=6))
         if not facts:
@@ -1063,6 +1136,8 @@ class TelegramBridge:
 
         if "/commercial" in lowered or "commercial" == lowered.strip():
             return self._summarize_commercial_question(phase2=phase2, phase3=phase3)
+        if any(term in lowered for term in ("marketing", "growth", "campaign", "traffic")):
+            return self._summarize_marketing_question(phase3=phase3)
         if any(term in lowered for term in ("trading", "mt5", "polymarket")):
             return self._summarize_trading_question(daily=daily, phase2=phase2)
         if any(term in lowered for term in ("website", "websites", "site", "sites")):
@@ -1080,6 +1155,69 @@ class TelegramBridge:
             return str(action.get("message"))
         if action.get("type") == "freetext":
             return self._answer_freetext(action["text"])
+        if action.get("type") == "approvals_status":
+            lines = ["Owner approvals snapshot"]
+            if self.phase3_enabled:
+                board_result = self._run_tool_router(
+                    ["run_holding", "--mode", "board_review", "--force"],
+                    timeout_sec=1500,
+                )
+                board_payload = board_result.get("payload")
+                approvals: list[dict[str, Any]] = []
+                if board_result.get("ok") and isinstance(board_payload, dict):
+                    board = board_payload.get("board_review", {})
+                    board = board if isinstance(board, dict) else {}
+                    raw_approvals = board.get("approvals", [])
+                    raw_approvals = raw_approvals if isinstance(raw_approvals, list) else []
+                    approvals = [item for item in raw_approvals if isinstance(item, dict)]
+                if approvals:
+                    lines.append("Board approvals:")
+                    for item in approvals[:5]:
+                        lines.append(
+                            f"- [{item.get('priority')}] {item.get('topic')} -> {item.get('decision')} (owner={item.get('owner')})"
+                        )
+                else:
+                    lines.append("Board approvals: none pending.")
+            else:
+                lines.append("Board approvals: phase3 is disabled.")
+
+            from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+            develop_status = run_developer_tool(config=self.config, action="status")
+            pending_count = int(develop_status.get("pending_count", 0))
+            if pending_count == 0:
+                lines.append("Developer approvals: none pending.")
+            else:
+                lines.append(f"Developer approvals ({pending_count}):")
+                for item in develop_status.get("pending", []):
+                    if not isinstance(item, dict):
+                        continue
+                    approval_id = str(item.get("approval_id", "")).strip()
+                    task = str(item.get("task", "")).strip()
+                    lines.append(f"- {approval_id}: {task[:80]}")
+                lines.append("To approve code: /develop_approve <approval_id>")
+            return self._lines_to_text(lines)
+        if action.get("type") == "mt5_ops":
+            bot_id = self._resolve_mt5_bot_id()
+            if not bot_id:
+                return "MT5 Desk is not configured as a known bot id in this environment."
+            health_result = self._run_tool_router(
+                ["run_trading_script", "--bot", bot_id, "--command-key", "health"],
+                timeout_sec=300,
+            )
+            report_result = self._run_tool_router(
+                ["run_trading_script", "--bot", bot_id, "--command-key", "report"],
+                timeout_sec=600,
+            )
+            return self._lines_to_text(
+                [
+                    f"MT5 Desk operations check ({bot_id})",
+                    self._summarize_tool_result("run_trading_script", health_result),
+                    self._summarize_tool_result("run_trading_script", report_result),
+                    "Scheduler restart is not configured as a bridge command, so no scheduler restart was executed.",
+                    "If you want execution mode (observer off), use: /bot mt5_desk execute confirm",
+                ]
+            )
         if action.get("type") == "content":
             from content_studio import run_content_studio  # pylint: disable=import-outside-toplevel
 

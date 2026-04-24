@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
 .env
 .env.local
@@ -9,6 +13,17 @@ __pycache__/
 reports/*.json
 reports/*.md
 !reports/.gitkeep
+
+artifacts/**
+!artifacts/phase2_run1.json
+!artifacts/phase2_run2.json
+
+logs/
+*.log
+.playwright-cli/
+
+.~lock.*
+System.Collections.Hashtable.Out
 
 memory/vector_store.jsonl
 memory/*.jsonl

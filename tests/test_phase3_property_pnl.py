@@ -68,6 +68,7 @@ def _base_config(tmp_path: Path) -> dict:
                         "quantified_value_usd_7d": 400,
                     },
                 },
+                "promotion": {"promoted": True},
             }
         },
     }
@@ -451,6 +452,72 @@ def test_build_phase3_markdown_renders_property_blocks_section() -> None:
     assert "MD Overall: [AMBER]" in markdown
 
 
+def test_build_revamp_queue_report_lists_stub_properties_only(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    config["property_charters"]["freeghosttools"] = {
+        "charter": {"version": "v0-stub", "property_type": "website", "phase": "maintain", "wedge": "TBD"},
+    }
+    config["property_charters"]["mt5_forex_bot"] = {
+        "charter": {"version": "v0-stub", "property_type": "trading_bot", "phase": "maintain", "wedge": "TBD"},
+    }
+    phase2_payload = _base_phase2_payload()
+    phase2_payload["base_websites"] = [
+        {"id": "freeghosttools", "ok": True, "status_code": 200, "latency_ms": 205},
+    ]
+    phase2_payload["base_bots"] = [
+        {"id": "mt5_desk", "status": "attention", "pnl_total": 0.0, "trades_total": 0, "error_lines_total": 3},
+    ]
+
+    queue = phase3_holding._build_revamp_queue_report(config=config, phase2_payload=phase2_payload)
+    ids = {str(item.get("property_id")) for item in queue if isinstance(item, dict)}
+
+    assert "freetraderhub" not in ids
+    assert "freeghosttools" in ids
+    assert "mt5_forex_bot" in ids
+
+
+def test_build_revamp_queue_report_evaluates_promotion_readiness(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    config["promotion_framework"] = {
+        "reference_property": "freetraderhub",
+        "required_gates": [
+            "business_case_defined",
+            "target_product_defined",
+            "feasibility_validated",
+            "roi_case_defined",
+            "metrics_defined",
+            "metrics_trackable",
+        ],
+        "min_live_metrics": 2,
+    }
+    config["property_charters"]["freeghosttools"] = {
+        "charter": {"version": "v0-stub", "property_type": "website", "phase": "revamp", "wedge": "utility tools"},
+        "promotion": {
+            "business_case_defined": True,
+            "target_product_defined": True,
+            "feasibility_validated": True,
+            "roi_case_defined": True,
+            "metrics_defined": ["sessions_7d", "conversion_rate"],
+            "metrics_trackable": True,
+            "tracked_metrics": ["sessions_7d", "conversion_rate"],
+            "live_metrics_count": 2,
+            "notes": "Ready to promote when owner confirms.",
+        },
+    }
+    phase2_payload = _base_phase2_payload()
+    phase2_payload["base_websites"] = [{"id": "freeghosttools", "ok": True, "status_code": 200, "latency_ms": 210}]
+
+    queue = phase3_holding._build_revamp_queue_report(config=config, phase2_payload=phase2_payload)
+    freeghost = next(item for item in queue if item.get("property_id") == "freeghosttools")
+    readiness = freeghost["promotion_readiness"]
+
+    assert readiness["status"] == "READY_FOR_PROMOTION"
+    assert readiness["ready"] is True
+    assert readiness["missing_gates"] == []
+    assert readiness["live_metrics_ready"] is True
+    assert "Ready for promotion" in str(freeghost["readiness_gate"])
+
+
 def test_score_company_uses_property_scoped_kpis_for_website_only(tmp_path: Path) -> None:
     config = _base_config(tmp_path)
     config["phase3"]["baseline_state_file"] = str(tmp_path / "phase3_company_baseline.json")
@@ -478,6 +545,44 @@ def test_score_company_uses_property_scoped_kpis_for_website_only(tmp_path: Path
     assert "Monthly PnL growth" not in metrics
     assert "Property value delta (7d)" in metrics
     assert "Property forecast attainment" in metrics
+
+
+def test_score_company_can_exclude_parked_divisions_from_ratio(tmp_path: Path) -> None:
+    config = _base_config(tmp_path)
+    phase2_payload = _base_phase2_payload()
+    phase2_payload["generated_at_utc"] = "2026-04-22T00:00:00+00:00"
+    phase2_payload["base_summary"] = {"websites_total": 1, "websites_up": 1}
+    phase2_payload["warnings"] = []
+    phase2_payload["base_alerts"] = []
+    phase2_payload["divisions"] = [
+        {"division": "trading", "status": "RED", "scorecard": {"status": "RED", "items": []}},
+        {"division": "websites", "status": "GREEN", "scorecard": {"status": "GREEN", "items": []}},
+        {"division": "content_studio", "status": "GREEN", "scorecard": {"status": "GREEN", "items": []}},
+    ]
+    property_blocks = [
+        {
+            "property_id": "freetraderhub",
+            "property_type": "website",
+            "status": {"value": "GREEN", "pct_to_forecast_mrr": 120.0},
+            "operations": {"value_delta_usd": 100.0},
+        }
+    ]
+
+    scorecard = phase3_holding._score_company(
+        config=config,
+        phase2_payload=phase2_payload,
+        targets={},
+        property_pnl_blocks=property_blocks,
+        scored_divisions={"websites", "content_studio"},
+    )
+    division_item = next(
+        item
+        for item in scorecard.get("items", [])
+        if isinstance(item, dict) and str(item.get("metric")) == "Operating division GREEN ratio"
+    )
+
+    assert division_item["actual"] == "100.0%"
+    assert division_item["status"] == "GREEN"
 
 
 def test_build_property_department_briefs_exposes_audience_scored_views(tmp_path: Path) -> None:
@@ -543,3 +648,52 @@ def test_run_phase3_holding_includes_property_pnl_blocks_and_markdown(monkeypatc
     assert Path(result["property_kpi_history_file"]).exists()
     assert "## Property P&L Blocks" in captured["markdown"]
     assert "## Property Department Briefs" in captured["markdown"]
+
+
+def test_build_board_review_includes_approval_id_and_decision() -> None:
+    board = phase3_holding._build_board_review(
+        company_scorecard={
+            "items": [
+                {
+                    "status": "RED",
+                    "metric": "Property blocks on-plan ratio",
+                    "actual": "0.0%",
+                    "target": ">= 100%",
+                    "action": None,
+                }
+            ]
+        },
+        divisions=[
+            {
+                "division": "operations",
+                "scorecard": {
+                    "items": [
+                        {
+                            "status": "AMBER",
+                            "metric": "Execution velocity",
+                            "actual": "below plan",
+                            "target": "on plan",
+                            "action": "",
+                        }
+                    ]
+                },
+            }
+        ],
+        commercial_result={
+            "status": "AMBER",
+            "risk": {
+                "risk_verdict": "Forecast visibility is weak this cycle.",
+                "exposure_flags": ["Revenue forecast attainment"],
+            },
+        },
+    )
+
+    approvals = board.get("approvals", [])
+    approvals = approvals if isinstance(approvals, list) else []
+    assert len(approvals) >= 3
+    for item in approvals:
+        assert isinstance(item, dict)
+        approval_id = str(item.get("approval_id", "")).strip()
+        decision = str(item.get("decision", "")).strip()
+        assert approval_id.startswith("board_")
+        assert decision

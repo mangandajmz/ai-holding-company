@@ -16,7 +16,11 @@ function Import-EnvFile {
 
     Get-Content $Path | ForEach-Object {
         if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
-            [System.Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), 'Process')
+            $key = $matches[1].Trim()
+            $value = $matches[2].Trim()
+            # Avoid duplicate Path/PATH entries that break Start-Process on Windows.
+            if ($key -ieq 'PATH') { return }
+            [System.Environment]::SetEnvironmentVariable($key, $value, 'Process')
         }
     }
 }

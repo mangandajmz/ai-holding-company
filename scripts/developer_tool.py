@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -295,32 +296,45 @@ def approve_and_deploy(approval_id: str) -> dict[str, Any]:
         }
 
     target_file.parent.mkdir(parents=True, exist_ok=True)
-    target_file.write_text(code, encoding="utf-8")
-
-    syntax_check = subprocess.run(
-        [sys.executable, "-m", "py_compile", str(target_file)],
-        cwd=str(ROOT),
-        capture_output=True,
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target_file.stem}_{approval_id}_",
+        suffix=target_file.suffix or ".py",
+        dir=str(target_file.parent),
         text=True,
-        check=False,
     )
-    if syntax_check.returncode != 0:
-        _append_jsonl(
-            _AUDIT_FILE,
-            {
+    temp_path = Path(temp_name)
+    try:
+        with open(temp_fd, "w", encoding="utf-8", closefd=True) as handle:
+            handle.write(code)
+
+        syntax_check = subprocess.run(
+            [sys.executable, "-m", "py_compile", str(temp_path)],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if syntax_check.returncode != 0:
+            _append_jsonl(
+                _AUDIT_FILE,
+                {
+                    "approval_id": approval_id,
+                    "status": "REJECTED_SYNTAX",
+                    "timestamp": _now_iso(),
+                    "error": syntax_check.stderr.strip(),
+                },
+            )
+            return {
+                "ok": False,
                 "approval_id": approval_id,
                 "status": "REJECTED_SYNTAX",
-                "timestamp": _now_iso(),
                 "error": syntax_check.stderr.strip(),
-            },
-        )
-        return {
-            "ok": False,
-            "approval_id": approval_id,
-            "status": "REJECTED_SYNTAX",
-            "error": syntax_check.stderr.strip(),
-            "message": "Deployment blocked by syntax validation.",
-        }
+                "message": "Deployment blocked by syntax validation.",
+            }
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    target_file.write_text(code, encoding="utf-8")
 
     _mark_pending_status(approval_id, "DEPLOYED")
 
@@ -465,4 +479,3 @@ def run_developer_tool(
         }
 
     return {"ok": False, "status": "INVALID_ACTION", "message": f"Unsupported action: {action}"}
-

@@ -279,6 +279,277 @@ def _resolve_property_research_id(property_id: str, charter_entry: dict[str, Any
     return defaults.get(property_id)
 
 
+def _resolve_property_bot_ids(property_id: str, charter_entry: dict[str, Any]) -> list[str]:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    bot_ids: list[str] = []
+    raw_bot_ids = tracking.get("bot_ids", [])
+    if isinstance(raw_bot_ids, list):
+        for value in raw_bot_ids:
+            bot_id = str(value).strip()
+            if bot_id:
+                bot_ids.append(bot_id)
+    single_bot = str(tracking.get("bot_id", "")).strip()
+    if single_bot:
+        bot_ids.append(single_bot)
+    if bot_ids:
+        return list(dict.fromkeys(bot_ids))
+    defaults = {
+        "mt5_forex_bot": ["mt5_desk"],
+        "polymarket_bot": ["polymarket"],
+    }
+    return defaults.get(property_id, [])
+
+
+def _bot_snapshot_by_id(phase2_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for bot in phase2_payload.get("base_bots", []):
+        if not isinstance(bot, dict):
+            continue
+        bot_id = str(bot.get("id", "")).strip()
+        if bot_id:
+            output[bot_id] = bot
+    return output
+
+
+def _is_operating_property(entry: dict[str, Any]) -> bool:
+    if entry.get("active", True) is False:
+        return False
+    charter = entry.get("charter", {})
+    charter = charter if isinstance(charter, dict) else {}
+    version = str(charter.get("version", "")).strip().lower()
+    if not version:
+        return False
+    if version.startswith("v0-stub"):
+        return False
+    promotion = entry.get("promotion", {})
+    promotion = promotion if isinstance(promotion, dict) else {}
+    return bool(promotion.get("promoted", False))
+
+
+def _is_revamp_queue_property(entry: dict[str, Any]) -> bool:
+    if entry.get("active", True) is False:
+        return False
+    return not _is_operating_property(entry)
+
+
+def _promotion_framework_config(config: dict[str, Any]) -> dict[str, Any]:
+    raw = config.get("promotion_framework", {})
+    raw = raw if isinstance(raw, dict) else {}
+    required = raw.get("required_gates", [])
+    required = required if isinstance(required, list) else []
+    required_gates = [str(value).strip() for value in required if str(value).strip()]
+    if not required_gates:
+        required_gates = [
+            "business_case_defined",
+            "target_product_defined",
+            "feasibility_validated",
+            "roi_case_defined",
+            "metrics_defined",
+            "metrics_trackable",
+        ]
+    min_live_metrics = _to_int(raw.get("min_live_metrics"))
+    if min_live_metrics is None or min_live_metrics < 0:
+        min_live_metrics = 3
+    return {
+        "reference_property": str(raw.get("reference_property", "freetraderhub")).strip() or "freetraderhub",
+        "required_gates": required_gates,
+        "min_live_metrics": min_live_metrics,
+        "promotion_policy": str(
+            raw.get(
+                "promotion_policy",
+                "Promote only when all required gates pass and live metric count meets minimum.",
+            )
+        ).strip()
+        or "Promote only when all required gates pass and live metric count meets minimum.",
+    }
+
+
+def _as_clean_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
+
+
+def _evaluate_promotion_readiness(entry: dict[str, Any], framework: dict[str, Any]) -> dict[str, Any]:
+    promotion = entry.get("promotion", {})
+    promotion = promotion if isinstance(promotion, dict) else {}
+
+    defined_metrics = _as_clean_list(promotion.get("metrics_defined"))
+    tracked_metrics = _as_clean_list(promotion.get("tracked_metrics"))
+    live_metrics_count = _to_int(promotion.get("live_metrics_count"))
+    if live_metrics_count is None:
+        live_metrics_count = len(tracked_metrics)
+
+    gates = {
+        "business_case_defined": bool(promotion.get("business_case_defined", False)),
+        "target_product_defined": bool(promotion.get("target_product_defined", False)),
+        "feasibility_validated": bool(promotion.get("feasibility_validated", False)),
+        "roi_case_defined": bool(promotion.get("roi_case_defined", False)),
+        "metrics_defined": bool(defined_metrics) or bool(promotion.get("metrics_defined") is True),
+        "metrics_trackable": bool(promotion.get("metrics_trackable", False)),
+    }
+
+    required_gates = framework.get("required_gates", [])
+    required_gates = required_gates if isinstance(required_gates, list) else []
+    required_gates = [str(gate).strip() for gate in required_gates if str(gate).strip()]
+
+    passed_gates = [gate for gate in required_gates if gates.get(gate, False)]
+    missing_gates = [gate for gate in required_gates if not gates.get(gate, False)]
+
+    min_live_metrics = _to_int(framework.get("min_live_metrics"))
+    if min_live_metrics is None or min_live_metrics < 0:
+        min_live_metrics = 3
+    live_metrics_ready = live_metrics_count >= min_live_metrics
+    ready = (not missing_gates) and live_metrics_ready
+    status = "READY_FOR_PROMOTION" if ready else "REVAMP_IN_PROGRESS"
+    if ready:
+        message = "Ready for promotion: all framework gates passed and live metrics minimum met."
+    else:
+        message = "Not ready for promotion: complete missing gates and metric tracking minimum."
+
+    return {
+        "status": status,
+        "ready": ready,
+        "required_gates": required_gates,
+        "passed_gates": passed_gates,
+        "missing_gates": missing_gates,
+        "gates": gates,
+        "defined_metrics": defined_metrics,
+        "tracked_metrics": tracked_metrics,
+        "live_metrics_count": live_metrics_count,
+        "min_live_metrics": min_live_metrics,
+        "live_metrics_ready": live_metrics_ready,
+        "notes": _clean_optional_text(promotion.get("notes")),
+        "message": message,
+    }
+
+
+def _scored_division_names(
+    config: dict[str, Any],
+    property_blocks: list[dict[str, Any]],
+    divisions: list[dict[str, Any]],
+) -> set[str]:
+    property_types: set[str] = set()
+    for block in property_blocks:
+        if not isinstance(block, dict):
+            continue
+        prop_type = str(block.get("property_type", "")).strip().lower()
+        if prop_type:
+            property_types.add(prop_type)
+    if not property_types:
+        for _, entry in _property_charters(config).items():
+            if not isinstance(entry, dict) or not _is_operating_property(entry):
+                continue
+            charter = entry.get("charter", {})
+            charter = charter if isinstance(charter, dict) else {}
+            prop_type = str(charter.get("property_type", "")).strip().lower()
+            if prop_type:
+                property_types.add(prop_type)
+
+    scoped: set[str] = set()
+    if "website" in property_types:
+        scoped.update({"websites", "content_studio"})
+    if "trading_bot" in property_types:
+        scoped.add("trading")
+
+    has_commercial = any(
+        isinstance(division, dict) and str(division.get("division", "")).strip().lower() == "commercial"
+        for division in divisions
+    )
+    if has_commercial:
+        scoped.add("commercial")
+
+    if scoped:
+        return scoped
+
+    fallback: set[str] = set()
+    for division in divisions:
+        if not isinstance(division, dict):
+            continue
+        name = str(division.get("division", "")).strip().lower()
+        if name:
+            fallback.add(name)
+    return fallback
+
+
+def _split_divisions_by_scope(
+    divisions: list[dict[str, Any]],
+    scored_divisions: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    operating: list[dict[str, Any]] = []
+    parked: list[dict[str, Any]] = []
+    for division in divisions:
+        if not isinstance(division, dict):
+            continue
+        name = str(division.get("division", "")).strip().lower()
+        if name in scored_divisions:
+            operating.append(division)
+        else:
+            parked.append(division)
+    return operating, parked
+
+
+def _build_revamp_queue_report(config: dict[str, Any], phase2_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    websites = _website_snapshot_by_id(phase2_payload)
+    bots = _bot_snapshot_by_id(phase2_payload)
+    framework = _promotion_framework_config(config)
+    output: list[dict[str, Any]] = []
+    for property_id, entry in _property_charters(config).items():
+        if not isinstance(entry, dict) or not _is_revamp_queue_property(entry):
+            continue
+        charter = entry.get("charter", {})
+        charter = charter if isinstance(charter, dict) else {}
+        property_type = str(charter.get("property_type", "")).strip().lower() or "unknown"
+        readiness = _evaluate_promotion_readiness(entry=entry, framework=framework)
+        item: dict[str, Any] = {
+            "property_id": property_id,
+            "property_type": property_type,
+            "charter_version": str(charter.get("version", "")).strip() or "v0-stub",
+            "phase": str(charter.get("phase", "")).strip() or "revamp_queue",
+            "wedge": _clean_optional_text(charter.get("wedge")) or "TBD",
+            "readiness_gate": readiness.get("message"),
+            "promotion_framework_reference": framework.get("reference_property"),
+            "promotion_readiness": readiness,
+            "website_watch": [],
+            "bot_watch": [],
+        }
+        if property_type == "website":
+            website_ids = [value for value in [
+                _resolve_property_website_id(property_id, entry),
+                _resolve_property_research_id(property_id, entry),
+            ] if value]
+            for website_id in list(dict.fromkeys(website_ids)):
+                snapshot = websites.get(website_id, {})
+                snapshot = snapshot if isinstance(snapshot, dict) else {}
+                item["website_watch"].append(
+                    {
+                        "website_id": website_id,
+                        "ok": snapshot.get("ok"),
+                        "status_code": snapshot.get("status_code"),
+                        "latency_ms": snapshot.get("latency_ms"),
+                    }
+                )
+        if property_type == "trading_bot":
+            for bot_id in _resolve_property_bot_ids(property_id, entry):
+                snapshot = bots.get(bot_id, {})
+                snapshot = snapshot if isinstance(snapshot, dict) else {}
+                item["bot_watch"].append(
+                    {
+                        "bot_id": bot_id,
+                        "status": snapshot.get("status"),
+                        "pnl_total": snapshot.get("pnl_total"),
+                        "trades_total": snapshot.get("trades_total"),
+                        "error_lines_total": snapshot.get("error_lines_total"),
+                    }
+                )
+        output.append(item)
+    return output
+
+
 def _latest_content_drafts_pending(phase2_payload: dict[str, Any]) -> int | None:
     for division in phase2_payload.get("divisions", []):
         if not isinstance(division, dict):
@@ -313,12 +584,7 @@ def _build_property_metric_feed_from_phase2(
     for property_id, raw_entry in charters.items():
         if not isinstance(raw_entry, dict):
             continue
-        if raw_entry.get("active", True) is False:
-            continue
-        charter = raw_entry.get("charter", {})
-        charter = charter if isinstance(charter, dict) else {}
-        charter_version = str(charter.get("version", "")).strip().lower()
-        if charter_version.startswith("v0-stub"):
+        if not _is_operating_property(raw_entry):
             continue
 
         tracking: dict[str, Any] = {}
@@ -477,7 +743,7 @@ def _build_property_pnl_blocks(
     for property_id, raw_entry in charters.items():
         if not isinstance(raw_entry, dict):
             continue
-        if raw_entry.get("active", True) is False:
+        if not _is_operating_property(raw_entry):
             continue
         charter = raw_entry.get("charter", {})
         charter = charter if isinstance(charter, dict) else {}
@@ -488,8 +754,6 @@ def _build_property_pnl_blocks(
         formula = str(charter.get("r12_formula_version", "")).strip() or "n/a"
         internal_rate = _to_float(charter.get("internal_rate_usd_hr"))
         charter_version = str(charter.get("version", "")).strip() or "n/a"
-        if charter_version.lower().startswith("v0-stub"):
-            continue
 
         feed_entry = feed_properties.get(property_id, {})
         feed_entry = feed_entry if isinstance(feed_entry, dict) else {}
@@ -1403,6 +1667,7 @@ def _score_company(
     phase2_payload: dict[str, Any],
     targets: dict[str, Any],
     property_pnl_blocks: list[dict[str, Any]] | None = None,
+    scored_divisions: set[str] | None = None,
 ) -> dict[str, Any]:
     company_targets = targets.get("company", {})
     company_targets = company_targets if isinstance(company_targets, dict) else {}
@@ -1431,7 +1696,9 @@ def _score_company(
     property_types.discard("")
     use_legacy_scope = not property_types
 
+    scoped_divisions = set(scored_divisions or [])
     green_divisions = 0
+    counted_divisions = 0
     commercial_status: str | None = None
     for division in divisions:
         if not isinstance(division, dict):
@@ -1442,9 +1709,14 @@ def _score_company(
         status = str(division.get("status", scorecard.get("status", ""))).upper()
         if division_name == "commercial" and status in {"GREEN", "AMBER", "RED"}:
             commercial_status = status
+        if scoped_divisions and division_name not in scoped_divisions:
+            continue
+        if status not in {"GREEN", "AMBER", "RED"}:
+            continue
+        counted_divisions += 1
         if status == "GREEN":
             green_divisions += 1
-    division_ratio = (green_divisions / len(divisions)) if divisions else None
+    division_ratio = (green_divisions / counted_divisions) if counted_divisions else None
     div_cfg = company_targets.get("division_green_ratio", {})
     div_cfg = div_cfg if isinstance(div_cfg, dict) else {}
     div_target = _to_float(div_cfg.get("target_min")) or 0.67
@@ -1594,9 +1866,10 @@ def _score_company(
             }
         )
 
+    division_metric_name = "Operating division GREEN ratio" if scoped_divisions else "Division GREEN ratio"
     items.append(
         {
-            "metric": "Division GREEN ratio",
+            "metric": division_metric_name,
             "target": f">= {div_target*100:.0f}%",
             "actual": _fmt_ratio(division_ratio),
             "variance": div_variance,
@@ -1654,7 +1927,11 @@ def _score_company(
         "items": items,
         "risks": risks[:6],
         "actions": actions[:6],
-        "meta": monthly_growth_meta,
+        "meta": {
+            **monthly_growth_meta,
+            "scored_divisions": sorted(scoped_divisions),
+            "counted_divisions": counted_divisions,
+        },
     }
 
 
@@ -2125,6 +2402,16 @@ def _build_board_review(
     approvals: list[dict[str, Any]] = []
     rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
     red_deadline = datetime.now(timezone.utc).date().isoformat()
+    seen_ids: dict[str, int] = {}
+
+    def _next_approval_id(topic: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", str(topic).lower()).strip("-")
+        if not slug:
+            slug = "item"
+        base = f"board_{slug[:32]}"
+        count = seen_ids.get(base, 0) + 1
+        seen_ids[base] = count
+        return base if count == 1 else f"{base}_{count}"
 
     company_items = [item for item in company_scorecard.get("items", []) if isinstance(item, dict)]
     for item in sorted(company_items, key=lambda x: rank.get(str(x.get("status", "")).upper(), 3)):
@@ -2146,6 +2433,8 @@ def _build_board_review(
                 "deadline": red_deadline if status == "RED" else "+7d",
                 "dissent": "PENDING - dissent_agent review required",
                 "measurement_plan": f"Monitor {metric} in next daily brief. GREEN for 2 consecutive runs.",
+                "approval_id": _next_approval_id(f"company-kpi-{metric}"),
+                "decision": action_suffix,
                 "priority": status,
                 "topic": f"Company KPI: {metric}",
             }
@@ -2180,6 +2469,8 @@ def _build_board_review(
                     "deadline": red_deadline if status == "RED" else "+7d",
                     "dissent": "PENDING - dissent_agent review required",
                     "measurement_plan": f"Monitor {metric} in next daily brief. GREEN for 2 consecutive runs.",
+                    "approval_id": _next_approval_id(f"{division_name}-kpi-{metric}"),
+                    "decision": action_suffix,
                     "priority": status,
                     "topic": f"{division_name.title()} KPI: {metric}",
                 }
@@ -2199,6 +2490,9 @@ def _build_board_review(
                         break
             topic_tail = first_flag if first_flag else "Commercial risk check"
             rationale = str(risk.get("risk_verdict", "")).strip() or "n/a"
+            recommended_action = str(risk.get("recommended_action", "")).strip()
+            if not recommended_action:
+                recommended_action = "Review commercial exposure and approve mitigation plan."
             approvals.append(
                 {
                     "rationale": rationale,
@@ -2208,7 +2502,9 @@ def _build_board_review(
                     "owner": "commercial",
                     "deadline": red_deadline if commercial_status == "RED" else "+7d",
                     "dissent": "PENDING - dissent_agent review required",
-                    "measurement_plan": "",
+                    "measurement_plan": "Review commercial KPI in next daily brief. GREEN for 2 consecutive runs.",
+                    "approval_id": _next_approval_id(f"commercial-{topic_tail}"),
+                    "decision": recommended_action,
                     "priority": commercial_status,
                     "topic": f"Commercial: {topic_tail}",
                 }
@@ -2225,6 +2521,64 @@ def _validate_board_pack_item(item: dict[str, Any]) -> bool:
     owner = str(item.get("owner", "")).strip()
     measurement_plan = str(item.get("measurement_plan", "")).strip()
     return bool(rationale and owner and measurement_plan)
+
+
+def _render_revamp_queue_markdown(items: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = ["## Revamp Queue (Parked Properties)"]
+    if not items:
+        lines.append("- None")
+        return lines
+    for item in items:
+        property_id = str(item.get("property_id", "unknown")).strip() or "unknown"
+        lines.append(f"### {property_id}")
+        lines.append(
+            f"- Type: {item.get('property_type')} | Charter: {item.get('charter_version')} | Phase: {item.get('phase')}"
+        )
+        lines.append(f"- Wedge: {item.get('wedge')}")
+        lines.append(f"- Gate: {item.get('readiness_gate')}")
+        readiness = item.get("promotion_readiness", {})
+        readiness = readiness if isinstance(readiness, dict) else {}
+        if readiness:
+            lines.append(
+                f"- Promotion readiness: {readiness.get('status')} "
+                f"(gates {len(readiness.get('passed_gates', []))}/{len(readiness.get('required_gates', []))}, "
+                f"live metrics {readiness.get('live_metrics_count')}/{readiness.get('min_live_metrics')})"
+            )
+            missing = readiness.get("missing_gates", [])
+            missing = missing if isinstance(missing, list) else []
+            if missing:
+                lines.append(f"- Missing gates: {', '.join(str(x) for x in missing)}")
+            defined_metrics = readiness.get("defined_metrics", [])
+            defined_metrics = defined_metrics if isinstance(defined_metrics, list) else []
+            if defined_metrics:
+                lines.append(f"- Defined metrics: {', '.join(str(x) for x in defined_metrics)}")
+            tracked_metrics = readiness.get("tracked_metrics", [])
+            tracked_metrics = tracked_metrics if isinstance(tracked_metrics, list) else []
+            if tracked_metrics:
+                lines.append(f"- Tracked metrics: {', '.join(str(x) for x in tracked_metrics)}")
+            note = _clean_optional_text(readiness.get("notes"))
+            if note:
+                lines.append(f"- Notes: {note}")
+        website_watch = item.get("website_watch", [])
+        website_watch = website_watch if isinstance(website_watch, list) else []
+        for website in website_watch:
+            if not isinstance(website, dict):
+                continue
+            lines.append(
+                f"- Website watch {website.get('website_id')}: "
+                f"ok={website.get('ok')} status={website.get('status_code')} latency_ms={website.get('latency_ms')}"
+            )
+        bot_watch = item.get("bot_watch", [])
+        bot_watch = bot_watch if isinstance(bot_watch, list) else []
+        for bot in bot_watch:
+            if not isinstance(bot, dict):
+                continue
+            lines.append(
+                f"- Bot watch {bot.get('bot_id')}: status={bot.get('status')} "
+                f"pnl={_fmt_optional_money(_to_float(bot.get('pnl_total')))} "
+                f"trades={bot.get('trades_total')} errors={bot.get('error_lines_total')}"
+            )
+    return lines
 
 
 def _build_phase3_markdown(payload: dict[str, Any]) -> str:
@@ -2269,10 +2623,24 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
     lines.extend(_render_property_department_briefs_markdown(department_briefs))
+    revamp_queue_raw = payload.get("revamp_queue", [])
+    revamp_queue = (
+        [item for item in revamp_queue_raw if isinstance(item, dict)]
+        if isinstance(revamp_queue_raw, list)
+        else []
+    )
+    lines.append("")
+    lines.extend(_render_revamp_queue_markdown(revamp_queue))
 
     lines.append("")
     lines.append("## Division Scorecards")
-    for division in payload.get("divisions", []):
+    operating_divisions_raw = payload.get("operating_divisions", payload.get("divisions", []))
+    operating_divisions = (
+        [division for division in operating_divisions_raw if isinstance(division, dict)]
+        if isinstance(operating_divisions_raw, list)
+        else []
+    )
+    for division in operating_divisions:
         if not isinstance(division, dict):
             continue
         scorecard = division.get("scorecard", {})
@@ -2287,6 +2655,19 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
                 f"  [{item.get('status')}] {item.get('metric')} -> "
                 f"actual={item.get('actual')} target={item.get('target')}"
             )
+    parked_divisions_raw = payload.get("parked_divisions", [])
+    parked_divisions = (
+        [division for division in parked_divisions_raw if isinstance(division, dict)]
+        if isinstance(parked_divisions_raw, list)
+        else []
+    )
+    if parked_divisions:
+        lines.append("")
+        lines.append("## Parked Division Watch")
+        for division in parked_divisions:
+            scorecard = division.get("scorecard", {})
+            scorecard = scorecard if isinstance(scorecard, dict) else {}
+            lines.append(f"- {str(division.get('division')).title()}: status={scorecard.get('status')} (excluded from company score)")
 
     lines.append("")
     lines.append("## CEO Office Brief")
@@ -2294,7 +2675,7 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
         _fallback_ceo_brief(
             mode=str(payload.get("mode", "heartbeat")),
             company_scorecard=company,
-            divisions=payload.get("divisions", []) if isinstance(payload.get("divisions"), list) else [],
+            divisions=operating_divisions,
         ).strip()
     )
 
@@ -2415,6 +2796,16 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         config=config,
         property_blocks=property_pnl_blocks,
     )
+    scored_divisions = _scored_division_names(
+        config=config,
+        property_blocks=property_pnl_blocks,
+        divisions=divisions,
+    )
+    operating_divisions, parked_divisions = _split_divisions_by_scope(
+        divisions=divisions,
+        scored_divisions=scored_divisions,
+    )
+    revamp_queue = _build_revamp_queue_report(config=config, phase2_payload=phase2_payload)
     kpi_history_file = ""
     history_warning: str | None = None
     try:
@@ -2430,13 +2821,14 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         phase2_payload=phase2_payload,
         targets=targets,
         property_pnl_blocks=property_pnl_blocks,
+        scored_divisions=scored_divisions,
     )
 
     board_review: dict[str, Any] | None = None
     if mode in {"board_review", "board_pack"}:
         board_review = _build_board_review(
             company_scorecard=company_scorecard,
-            divisions=divisions,
+            divisions=operating_divisions,
             commercial_result=commercial_result,
         )
 
@@ -2477,7 +2869,11 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "company_scorecard": company_scorecard,
         "property_pnl_blocks": property_pnl_blocks,
         "property_department_briefs": property_department_briefs,
+        "revamp_queue": revamp_queue,
         "property_kpi_history_file": kpi_history_file,
+        "operating_divisions": operating_divisions,
+        "parked_divisions": parked_divisions,
+        "scored_division_names": sorted(scored_divisions),
         "divisions": divisions,
         "ceo_engine": ceo_result.get("engine"),
         "ceo_brief_markdown": ceo_result.get("brief_markdown", ""),
