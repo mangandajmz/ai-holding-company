@@ -1,4 +1,4 @@
-"""Command router for Telegram-initiated directives and scheduled heartbeat jobs."""
+"""Command router used by OpenClaw heartbeat and chat directives."""
 
 from __future__ import annotations
 
@@ -60,16 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
     holding.add_argument(
         "--mode",
         default="heartbeat",
-        choices=["heartbeat", "board_review", "board_pack"],
-        help="Holding mode: heartbeat (daily), board_review (deeper review), or board_pack (full Board Pack).",
+        choices=["heartbeat", "board_review"],
+        help="Holding mode: heartbeat (daily) or board_review (deeper review).",
     )
     holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
-
-    commercial = sub.add_parser("run_commercial", help="Run Commercial Division: PNL roll-up, risk check, and brief.")
-    commercial.add_argument("--force", action="store_true", help="Force a fresh base brief before running commercial.")
-
-    score = sub.add_parser("score_initiative", help="Score a single initiative via Board Pack criteria (Commercial Analyst).")
-    score.add_argument("--text", required=True, help="Initiative description to score.")
 
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
@@ -149,18 +143,6 @@ def main() -> None:
         from phase3_holding import run_phase3_holding  # pylint: disable=import-outside-toplevel
 
         _emit(run_phase3_holding(config=config, mode=args.mode, force=args.force))
-        return
-
-    if args.command == "run_commercial":
-        from commercial import run_commercial_division  # pylint: disable=import-outside-toplevel
-
-        _emit(run_commercial_division(config=config, force=args.force))
-        return
-
-    if args.command == "score_initiative":
-        from commercial import score_initiative  # pylint: disable=import-outside-toplevel
-
-        _emit(score_initiative(initiative_text=args.text, config=config))
         return
 
     if args.command == "log_direction":
