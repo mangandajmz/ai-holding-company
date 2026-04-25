@@ -1,4 +1,5 @@
 company:
+  # Enabled capital-risk projects always count toward portfolio health.
   monthly_pnl_growth_pct:
     target_min: 10.0
     amber_min: 0.0
@@ -14,6 +15,10 @@ company:
   max_alerts_per_heartbeat:
     target_max: 0
     amber_max: 2
+
+freshness:
+  daily_brief_max_age_hours: 6
+  remote_bot_check_max_age_hours: 6
 
 trading:
   mt5:

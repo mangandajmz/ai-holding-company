@@ -11,7 +11,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,8 @@ CONVERSATION_HISTORY_FILE = ROOT / "state" / "conversation_history.jsonl"
 LOG_FILE = ROOT / "logs" / "aiogram_bridge.log"
 REPORTS_DIR = ROOT / "reports"
 BOARD_APPROVAL_STATE_FILE = ROOT / "state" / "board_approval_decisions.json"
+EXECUTION_ALLOWED_STATUSES = {"APPROVED", "ASSIGNED", "STARTED", "DONE", "VALIDATED"}
+EXECUTION_OPEN_STATUSES = {"APPROVED", "ASSIGNED", "STARTED", "DONE"}
 DEFAULT_FALLBACK_REPLY = (
     "I can still answer at a high level, but my local language model is offline right now. "
     "The latest reports show attention is needed in trading, while websites are up and reachable."
@@ -172,6 +174,60 @@ def _safe_json_dump(path: Path, payload: dict[str, Any]) -> bool:
         return False
 
 
+def _normalize_execution_status(value: Any, completion_reason: str = "") -> str:
+    status = str(value or "").strip().upper()
+    if status == "PENDING":
+        return "APPROVED"
+    if status == "DONE" and completion_reason == "kpi_green":
+        return "VALIDATED"
+    if status not in EXECUTION_ALLOWED_STATUSES:
+        return "APPROVED"
+    return status
+
+
+def _normalize_execution_row(raw_state: dict[str, Any]) -> dict[str, Any]:
+    completion_reason = str(raw_state.get("completion_reason", "")).strip()
+    status = _normalize_execution_status(raw_state.get("status", ""), completion_reason=completion_reason)
+    row = {
+        "status": status,
+        "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
+        "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
+        "assigned_at_utc": str(raw_state.get("assigned_at_utc", "")).strip(),
+        "started_at_utc": str(raw_state.get("started_at_utc", "")).strip(),
+        "done_at_utc": str(raw_state.get("done_at_utc", "")).strip(),
+        "validated_at_utc": str(raw_state.get("validated_at_utc", "")).strip(),
+        "assigned_by_user_id": raw_state.get("assigned_by_user_id"),
+        "started_by_user_id": raw_state.get("started_by_user_id"),
+        "done_by_user_id": raw_state.get("done_by_user_id"),
+        "validated_by_user_id": raw_state.get("validated_by_user_id"),
+        "completion_note": str(raw_state.get("completion_note", "")).strip(),
+        "completion_reason": completion_reason,
+        "topic": str(raw_state.get("topic", "")).strip(),
+        "owner": str(raw_state.get("owner", "")).strip(),
+        "decision": str(raw_state.get("decision", "")).strip(),
+        "due_at_utc": str(raw_state.get("due_at_utc", "")).strip(),
+    }
+    if row["status"] != "VALIDATED":
+        row["validated_at_utc"] = ""
+        row["validated_by_user_id"] = None
+    return row
+
+
+def _resolve_due_at_utc(deadline: Any) -> str:
+    text = str(deadline or "").strip()
+    if not text:
+        return ""
+    parsed = _parse_iso_datetime(text)
+    if parsed is not None:
+        return parsed.isoformat()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return f"{text}T23:59:59+00:00"
+    match = re.fullmatch(r"\+(\d+)d", text)
+    if match:
+        return (datetime.now(timezone.utc) + timedelta(days=int(match.group(1)))).replace(microsecond=0).isoformat()
+    return ""
+
+
 def _load_board_approval_state() -> dict[str, Any]:
     payload = _safe_json_load(BOARD_APPROVAL_STATE_FILE)
     if not isinstance(payload, dict):
@@ -185,19 +241,7 @@ def _load_board_approval_state() -> dict[str, Any]:
         approval_id = _normalize_approval_id(str(raw_id))
         if not approval_id or not isinstance(raw_state, dict):
             continue
-        status = str(raw_state.get("status", "PENDING")).strip().upper()
-        if status not in {"PENDING", "DONE"}:
-            status = "PENDING"
-        execution_by_approval[approval_id] = {
-            "status": status,
-            "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
-            "done_at_utc": str(raw_state.get("done_at_utc", "")).strip(),
-            "completion_reason": str(raw_state.get("completion_reason", "")).strip(),
-            "topic": str(raw_state.get("topic", "")).strip(),
-            "owner": str(raw_state.get("owner", "")).strip(),
-            "decision": str(raw_state.get("decision", "")).strip(),
-            "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
-        }
+        execution_by_approval[approval_id] = _normalize_execution_row(raw_state)
     board_snapshot = payload.get("board_snapshot", {})
     board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
     approvals = board_snapshot.get("approvals", [])
@@ -239,19 +283,7 @@ def _persist_board_approval_state(state: dict[str, Any]) -> bool:
         approval_id = _normalize_approval_id(str(raw_id))
         if not approval_id or not isinstance(raw_state, dict):
             continue
-        status = str(raw_state.get("status", "PENDING")).strip().upper()
-        if status not in {"PENDING", "DONE"}:
-            status = "PENDING"
-        execution_by_approval[approval_id] = {
-            "status": status,
-            "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
-            "done_at_utc": str(raw_state.get("done_at_utc", "")).strip(),
-            "completion_reason": str(raw_state.get("completion_reason", "")).strip(),
-            "topic": str(raw_state.get("topic", "")).strip(),
-            "owner": str(raw_state.get("owner", "")).strip(),
-            "decision": str(raw_state.get("decision", "")).strip(),
-            "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
-        }
+        execution_by_approval[approval_id] = _normalize_execution_row(raw_state)
     board_snapshot = state.get("board_snapshot", {})
     board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
     approvals = board_snapshot.get("approvals", [])
@@ -338,6 +370,7 @@ class AiogramBridgeRuntime:
             for item in (self.config.get("websites", []) or [])
             if isinstance(item, dict) and str(item.get("id", "")).strip()
         }
+        self.bot_execute_preflights: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _parse_optional_int(value: str) -> int | None:
@@ -887,6 +920,286 @@ async def _run_tool_router(sub_args: list[str], timeout_sec: int = 300) -> dict[
     }
 
 
+def _load_targets_config() -> dict[str, Any]:
+    phase3_cfg = _runtime().config.get("phase3", {})
+    phase3_cfg = phase3_cfg if isinstance(phase3_cfg, dict) else {}
+    rel = str(phase3_cfg.get("targets_file", "config/targets.yaml")).strip() or "config/targets.yaml"
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    payload = _load_yaml(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _humanize_duration(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "unknown"
+    total_seconds = int(seconds)
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    minutes = total_seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    rem_minutes = minutes % 60
+    if hours < 24:
+        return f"{hours}h" if rem_minutes == 0 else f"{hours}h {rem_minutes}m"
+    days = hours // 24
+    rem_hours = hours % 24
+    return f"{days}d" if rem_hours == 0 else f"{days}d {rem_hours}h"
+
+
+def _age_seconds_from_timestamp(timestamp: Any) -> float | None:
+    parsed = _parse_iso_datetime(timestamp)
+    if parsed is None:
+        return None
+    return max((datetime.now(timezone.utc) - parsed).total_seconds(), 0.0)
+
+
+def _bot_snapshot_from_daily_brief(bot_id: str) -> dict[str, Any]:
+    brief = _runtime().latest_daily_brief()
+    if not isinstance(brief, dict):
+        return {}
+
+    bot_snapshot = {}
+    bots = brief.get("bots", [])
+    bots = bots if isinstance(bots, list) else []
+    for item in bots:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id", "")).strip() == bot_id:
+            bot_snapshot = item
+            break
+
+    sync_snapshot = {}
+    remote_sync = brief.get("remote_sync", {})
+    remote_sync = remote_sync if isinstance(remote_sync, dict) else {}
+    sync_bots = remote_sync.get("bots", [])
+    sync_bots = sync_bots if isinstance(sync_bots, list) else []
+    for item in sync_bots:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("bot_id", "")).strip() == bot_id:
+            sync_snapshot = item
+            break
+
+    return {
+        "brief_generated_at_utc": str(brief.get("generated_at_utc", "")).strip(),
+        "bot_snapshot": bot_snapshot,
+        "sync_snapshot": sync_snapshot,
+    }
+
+
+def _bot_preflight_cache_key(bot_id: str, user_id: int | None) -> str:
+    return f"{user_id if user_id is not None else 0}:{bot_id}"
+
+
+def _store_bot_execute_preflight(bot_id: str, user_id: int | None, preflight: dict[str, Any]) -> None:
+    key = _bot_preflight_cache_key(bot_id, user_id)
+    _runtime().bot_execute_preflights[key] = dict(preflight)
+
+
+def _clear_bot_execute_preflight(bot_id: str, user_id: int | None) -> None:
+    key = _bot_preflight_cache_key(bot_id, user_id)
+    _runtime().bot_execute_preflights.pop(key, None)
+
+
+def _recent_bot_execute_preflight(bot_id: str, user_id: int | None, max_age_minutes: int = 10) -> dict[str, Any] | None:
+    key = _bot_preflight_cache_key(bot_id, user_id)
+    preflight = _runtime().bot_execute_preflights.get(key)
+    if not isinstance(preflight, dict):
+        return None
+    generated_at = _parse_iso_datetime(preflight.get("generated_at_utc"))
+    if generated_at is None:
+        return None
+    age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    if age_seconds > max_age_minutes * 60:
+        _runtime().bot_execute_preflights.pop(key, None)
+        return None
+    return preflight
+
+
+def _extract_nested_report_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = result.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    stdout_text = str(payload.get("stdout", "")).strip()
+    if stdout_text.startswith("{"):
+        try:
+            nested = json.loads(stdout_text)
+        except json.JSONDecodeError:
+            nested = {}
+        if isinstance(nested, dict):
+            return nested
+    return payload
+
+
+async def _build_bot_execute_preflight(bot_id: str) -> dict[str, Any]:
+    health_result = await _run_tool_router(["run_trading_script", "--bot", bot_id, "--command-key", "health"], timeout_sec=300)
+    report_result = await _run_tool_router(["run_trading_script", "--bot", bot_id, "--command-key", "report"], timeout_sec=600)
+    report_payload = _extract_nested_report_payload(report_result)
+    targets = _load_targets_config()
+    trading_targets = targets.get("trading", {})
+    trading_targets = trading_targets if isinstance(trading_targets, dict) else {}
+    brief_context = _bot_snapshot_from_daily_brief(bot_id)
+    brief_bot = brief_context.get("bot_snapshot", {})
+    brief_bot = brief_bot if isinstance(brief_bot, dict) else {}
+    sync_snapshot = brief_context.get("sync_snapshot", {})
+    sync_snapshot = sync_snapshot if isinstance(sync_snapshot, dict) else {}
+    service_check = sync_snapshot.get("service_check", {})
+    service_check = service_check if isinstance(service_check, dict) else {}
+
+    bot_kind = "generic"
+    freshness_timestamp = ""
+    freshness_target = ""
+    freshness_age_seconds: float | None = None
+    open_positions = None
+    exposure = None
+
+    if "last_cycle_completed" in report_payload or bot_id == "mt5_desk":
+        bot_kind = "mt5"
+        cycle_payload = report_payload.get("last_cycle_completed", {})
+        cycle_payload = cycle_payload if isinstance(cycle_payload, dict) else {}
+        freshness_timestamp = str(cycle_payload.get("timestamp", "")).strip()
+        freshness_age_seconds = _age_seconds_from_timestamp(freshness_timestamp)
+        mt5_targets = trading_targets.get("mt5", {})
+        mt5_targets = mt5_targets if isinstance(mt5_targets, dict) else {}
+        max_age_minutes = _safe_float(mt5_targets.get("max_cycle_age_minutes"))
+        freshness_target = (
+            f"<= {int(max_age_minutes)}m"
+            if max_age_minutes is not None
+            else "<= 180m"
+        )
+    elif "csv_latest_timestamp" in report_payload or bot_id == "polymarket":
+        bot_kind = "polymarket"
+        freshness_timestamp = str(report_payload.get("csv_latest_timestamp", "")).strip()
+        freshness_age_seconds = _age_seconds_from_timestamp(freshness_timestamp)
+        open_positions = report_payload.get("csv_open")
+        exposure = report_payload.get("estimated_bankroll_current")
+        polymarket_targets = trading_targets.get("polymarket", {})
+        polymarket_targets = polymarket_targets if isinstance(polymarket_targets, dict) else {}
+        max_age_hours = _safe_float(polymarket_targets.get("max_trade_data_age_hours"))
+        freshness_target = (
+            f"<= {int(max_age_hours)}h"
+            if max_age_hours is not None
+            else "<= 72h"
+        )
+
+    warning_count = _safe_float(report_payload.get("warning_lines_24h"))
+    if warning_count is None:
+        warning_count = _safe_float(brief_bot.get("error_lines_total"))
+
+    data_source = str(brief_bot.get("data_source", "")).strip() or "report_only"
+    report_generated_at = str(report_payload.get("generated_at_utc", "")).strip()
+    report_age_seconds = _age_seconds_from_timestamp(report_generated_at)
+    brief_generated_at = str(brief_context.get("brief_generated_at_utc", "")).strip()
+    brief_age_seconds = _age_seconds_from_timestamp(brief_generated_at)
+    used_cached_state = bool(sync_snapshot.get("used_cached_state") or service_check.get("cached_last_known"))
+    cache_age_minutes = _safe_float(sync_snapshot.get("cache_age_minutes"))
+    if cache_age_minutes is None:
+        cache_age_minutes = _safe_float(service_check.get("cache_age_minutes"))
+    last_live_check_utc = (
+        str(sync_snapshot.get("last_live_check_utc", "")).strip()
+        or str(service_check.get("last_live_check_utc", "")).strip()
+    )
+
+    blocking_reasons: list[str] = []
+    if not health_result.get("ok"):
+        blocking_reasons.append("health command failed")
+    if not report_result.get("ok"):
+        blocking_reasons.append("report command failed")
+    if not report_payload:
+        blocking_reasons.append("report payload missing")
+    if not report_generated_at:
+        blocking_reasons.append("report freshness timestamp missing")
+    if freshness_age_seconds is None:
+        blocking_reasons.append("last-cycle or trade-data freshness missing")
+    if bot_kind == "mt5":
+        max_age_minutes = _safe_float(((trading_targets.get("mt5", {}) if isinstance(trading_targets.get("mt5", {}), dict) else {})).get("max_cycle_age_minutes"))
+        if freshness_age_seconds is not None and max_age_minutes is not None and freshness_age_seconds > max_age_minutes * 60:
+            blocking_reasons.append("mt5 cycle is older than configured max age")
+    if bot_kind == "polymarket":
+        max_age_hours = _safe_float(((trading_targets.get("polymarket", {}) if isinstance(trading_targets.get("polymarket", {}), dict) else {})).get("max_trade_data_age_hours"))
+        if freshness_age_seconds is not None and max_age_hours is not None and freshness_age_seconds > max_age_hours * 3600:
+            blocking_reasons.append("polymarket trade data is older than configured max age")
+        if open_positions is None:
+            blocking_reasons.append("open positions snapshot missing")
+    if sync_snapshot and not bool(sync_snapshot.get("ok", True)):
+        blocking_reasons.append("remote sync is degraded")
+    if used_cached_state:
+        blocking_reasons.append("remote service state is using cached last-known status")
+
+    return {
+        "generated_at_utc": _utc_now_iso(),
+        "bot_id": bot_id,
+        "bot_kind": bot_kind,
+        "ok_to_execute": not blocking_reasons,
+        "blocking_reasons": blocking_reasons,
+        "health_ok": bool(health_result.get("ok")),
+        "health_return_code": health_result.get("return_code"),
+        "report_ok": bool(report_result.get("ok")),
+        "report_status": str(report_payload.get("status", "unknown")).strip() or "unknown",
+        "report_headline": str(report_payload.get("headline", "")).strip(),
+        "report_generated_at_utc": report_generated_at,
+        "report_age_seconds": report_age_seconds,
+        "freshness_timestamp": freshness_timestamp,
+        "freshness_age_seconds": freshness_age_seconds,
+        "freshness_target": freshness_target,
+        "warning_count_24h": int(warning_count) if warning_count is not None else None,
+        "open_positions": open_positions,
+        "exposure": exposure,
+        "data_source": data_source,
+        "brief_generated_at_utc": brief_generated_at,
+        "brief_age_seconds": brief_age_seconds,
+        "used_cached_state": used_cached_state,
+        "cache_age_minutes": cache_age_minutes,
+        "last_live_check_utc": last_live_check_utc,
+    }
+
+
+def _format_bot_execute_preflight(preflight: dict[str, Any], require_confirm: bool = True) -> str:
+    lines = [
+        f"Execution preflight for `{preflight.get('bot_id')}`",
+        f"- Health: {'OK' if preflight.get('health_ok') else 'FAILED'} (rc={preflight.get('health_return_code')})",
+        f"- Report: {preflight.get('report_status')} | generated {_humanize_duration(preflight.get('report_age_seconds'))} ago",
+    ]
+    headline = str(preflight.get("report_headline", "")).strip()
+    if headline:
+        lines.append(f"- Report headline: {headline}")
+    freshness_age = _humanize_duration(preflight.get("freshness_age_seconds"))
+    freshness_target = str(preflight.get("freshness_target", "")).strip() or "n/a"
+    freshness_timestamp = str(preflight.get("freshness_timestamp", "")).strip() or "missing"
+    lines.append(f"- Last cycle/data age: {freshness_age} (target {freshness_target}) from {freshness_timestamp}")
+    lines.append(f"- Warning count (24h): {preflight.get('warning_count_24h', 'n/a')}")
+    if preflight.get("open_positions") is not None:
+        lines.append(f"- Open positions: {preflight.get('open_positions')}")
+    if preflight.get("exposure") is not None:
+        lines.append(f"- Exposure snapshot: {_format_money(preflight.get('exposure'))}")
+    lines.append(
+        f"- Data source: {preflight.get('data_source')} | daily brief age { _humanize_duration(preflight.get('brief_age_seconds')) }"
+    )
+    lines.append(
+        f"- Remote fallback: {'YES' if preflight.get('used_cached_state') else 'NO'}"
+        + (
+            f" | cache age {int(preflight.get('cache_age_minutes'))}m"
+            if _safe_float(preflight.get("cache_age_minutes")) is not None
+            else ""
+        )
+        + (
+            f" | last live check {preflight.get('last_live_check_utc')}"
+            if str(preflight.get("last_live_check_utc", "")).strip()
+            else ""
+        )
+    )
+    if preflight.get("ok_to_execute"):
+        if require_confirm:
+            lines.append("Preflight is clean. To commit capital, rerun `/bot <id> execute confirm` within 10 minutes.")
+        else:
+            lines.append("Preflight is clean.")
+    else:
+        lines.append("Execution blocked because:")
+        for reason in preflight.get("blocking_reasons", []):
+            lines.append(f"- {reason}")
+    return "\n".join(lines)
+
+
 def _format_help() -> str:
     return (
         "AI Holding Company bridge commands:\n"
@@ -895,11 +1208,16 @@ def _format_help() -> str:
         "- /approvals [refresh]\n"
         "- /approve <board_approval_id>\n"
         "- /deny <board_approval_id>\n"
+        "- /assign <board_approval_id>\n"
+        "- /start <board_approval_id>\n"
+        "- /done <board_approval_id> <completion_note>\n"
         "- /approve_selected | /deny_selected\n"
         "- /approve_all | /deny_all\n"
         "- /hermes_status\n"
         "- /content <brief text>\n"
         "- /content_status\n"
+        "- /content_approve <draft_id>\n"
+        "- /content_deny <draft_id> [note]\n"
         "- /develop <task description>\n"
         "- /develop_approve <approval_id>\n"
         "- /develop_deny <approval_id>\n"
@@ -908,7 +1226,7 @@ def _format_help() -> str:
         "- /board\n"
         "- /brief\n"
         "- /memory <query>\n"
-        "- /bot <bot_id> health|report|logs [lines]|execute confirm\n"
+        "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
         f"Observer mode: {'ON' if _runtime().observer_mode else 'OFF'}"
     )
 
@@ -929,19 +1247,72 @@ async def _handle_content_command(brief_text: str) -> str:
     result = await asyncio.to_thread(run_content_studio, _runtime().config, brief_text)
     return (
         f"Content Studio logged the brief \"{_brief_preview(brief_text)}\". "
+        f"Draft ID: `{result.get('draft_id')}`. "
         f"Division status is {result.get('status')}, with {result.get('drafts_pending')} draft(s) still waiting on CEO review. "
-        "Nothing is published automatically under R3/R4."
+        "Review draft buckets with `/content_status`. Nothing is published automatically under R3/R4."
     )
 
 
 async def _handle_content_status_command() -> str:
-    from content_studio import run_content_studio  # pylint: disable=import-outside-toplevel
+    from content_studio import list_content_drafts  # pylint: disable=import-outside-toplevel
 
-    result = await asyncio.to_thread(run_content_studio, _runtime().config, "")
+    result = await asyncio.to_thread(list_content_drafts, _runtime().config)
+    grouped = result.get("drafts_by_status", {})
+    grouped = grouped if isinstance(grouped, dict) else {}
+    lines = [
+        f"Content Studio is {result.get('status')}.",
+        (
+            f"Pending: {len(grouped.get('PENDING_CEO_APPROVAL', []))} | "
+            f"Approved: {len(grouped.get('APPROVED', []))} | "
+            f"Denied: {len(grouped.get('DENIED', []))}"
+        ),
+        f"Oldest pending wait: {result.get('last_approval_wait_hours')} hours.",
+    ]
+    for status in ("PENDING_CEO_APPROVAL", "APPROVED", "DENIED"):
+        drafts = grouped.get(status, [])
+        drafts = drafts if isinstance(drafts, list) else []
+        if not drafts:
+            continue
+        lines.append("")
+        lines.append(f"{status}:")
+        for draft in drafts[:5]:
+            if not isinstance(draft, dict):
+                continue
+            topic = str(draft.get("topic", "Untitled")).strip() or "Untitled"
+            lines.append(f"- `{draft.get('draft_id')}` | {topic}")
+    return "\n".join(lines)
+
+
+async def _handle_content_decision(
+    draft_id: str,
+    decision: str,
+    user_id: int | None,
+    decision_note: str = "",
+) -> str:
+    from content_studio import decide_content_draft  # pylint: disable=import-outside-toplevel
+
+    if not draft_id.strip():
+        action = "approve" if decision == "approve" else "deny"
+        note_suffix = " [note]" if action == "deny" else ""
+        return f"Draft ID required. Use `/content_{action} <draft_id>{note_suffix}`."
+
+    result = await asyncio.to_thread(
+        decide_content_draft,
+        _runtime().config,
+        draft_id,
+        decision,
+        user_id,
+        decision_note,
+    )
+    if not result.get("ok"):
+        return f"Content decision failed: {result.get('message') or result.get('error')}"
+
+    action_text = "approved" if decision == "approve" else "denied"
+    note_text = f" Note: {result.get('decision_note')}" if result.get("decision_note") else ""
     return (
-        f"Content Studio is {result.get('status')}. "
-        f"There are {result.get('drafts_pending')} draft(s) pending, and the oldest has waited "
-        f"{result.get('last_approval_wait_hours')} hours for CEO review."
+        f"Draft `{result.get('draft_id')}` is now {action_text.upper()}. "
+        f"Pending drafts remaining: {result.get('drafts_pending')}."
+        f"{note_text}"
     )
 
 
@@ -1117,6 +1488,101 @@ def _topic_kpi_status(topic: str, phase3_payload: dict[str, Any] | None) -> str:
     return ""
 
 
+def _upsert_execution_row(
+    state: dict[str, Any],
+    approval_id: str,
+    item: dict[str, Any],
+    approved_at_utc: str,
+) -> dict[str, Any]:
+    raw_execution = state.get("execution_by_approval", {})
+    raw_execution = raw_execution if isinstance(raw_execution, dict) else {}
+    existing = _normalize_execution_row(raw_execution.get(approval_id, {})) if isinstance(raw_execution.get(approval_id, {}), dict) else _normalize_execution_row({})
+    status = existing.get("status", "APPROVED")
+    if status not in EXECUTION_ALLOWED_STATUSES:
+        status = "APPROVED"
+    if not status:
+        status = "APPROVED"
+    due_at_utc = existing.get("due_at_utc") or _resolve_due_at_utc(item.get("deadline"))
+    updated_row = {
+        **existing,
+        "status": status,
+        "updated_at_utc": _utc_now_iso(),
+        "topic": str(item.get("topic", "")).strip(),
+        "owner": str(item.get("owner", "")).strip(),
+        "decision": _resolve_board_decision_text(item),
+        "approved_at_utc": approved_at_utc,
+        "due_at_utc": due_at_utc,
+    }
+    raw_execution[approval_id] = updated_row
+    state["execution_by_approval"] = raw_execution
+    return updated_row
+
+
+def _set_execution_status(
+    approval_id: str,
+    target_status: str,
+    user_id: int | None = None,
+    completion_note: str = "",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    normalized_id = _normalize_approval_id(approval_id)
+    if not normalized_id:
+        return False, "Approval ID required.", None
+
+    state = _load_board_approval_state()
+    raw_execution = state.get("execution_by_approval", {})
+    raw_execution = raw_execution if isinstance(raw_execution, dict) else {}
+    current_raw = raw_execution.get(normalized_id)
+    if not isinstance(current_raw, dict):
+        return False, f"`{normalized_id}` is not in the approved execution queue yet. Approve it first.", None
+
+    row = _normalize_execution_row(current_raw)
+    current_status = row.get("status", "APPROVED")
+    now_iso = _utc_now_iso()
+    target_status = _normalize_execution_status(target_status)
+
+    if target_status == "ASSIGNED":
+        if current_status == "VALIDATED":
+            return False, f"`{normalized_id}` is already VALIDATED.", row
+        if current_status in {"STARTED", "DONE"}:
+            return False, f"`{normalized_id}` is already {current_status}; assigning would move it backwards.", row
+        row["status"] = "ASSIGNED"
+        row["assigned_at_utc"] = row.get("assigned_at_utc") or now_iso
+        row["assigned_by_user_id"] = user_id
+    elif target_status == "STARTED":
+        if current_status == "APPROVED":
+            return False, f"`{normalized_id}` must be assigned before it can be started. Use `/assign {normalized_id}` first.", row
+        if current_status == "VALIDATED":
+            return False, f"`{normalized_id}` is already VALIDATED.", row
+        if current_status == "DONE":
+            return False, f"`{normalized_id}` is already DONE and waiting for KPI validation.", row
+        row["status"] = "STARTED"
+        row["assigned_at_utc"] = row.get("assigned_at_utc") or now_iso
+        row["assigned_by_user_id"] = row.get("assigned_by_user_id") or user_id
+        row["started_at_utc"] = row.get("started_at_utc") or now_iso
+        row["started_by_user_id"] = user_id
+    elif target_status == "DONE":
+        if current_status == "APPROVED":
+            return False, f"`{normalized_id}` must be assigned and started before it can be marked done.", row
+        if current_status == "ASSIGNED":
+            return False, f"`{normalized_id}` must be started before it can be marked done. Use `/start {normalized_id}` first.", row
+        if current_status == "VALIDATED":
+            return False, f"`{normalized_id}` is already VALIDATED.", row
+        row["status"] = "DONE"
+        row["done_at_utc"] = now_iso
+        row["done_by_user_id"] = user_id
+        row["completion_note"] = completion_note.strip()
+        row["completion_reason"] = "manual_done"
+    else:
+        return False, f"Unsupported execution status `{target_status}`.", row
+
+    row["updated_at_utc"] = now_iso
+    raw_execution[normalized_id] = row
+    state["execution_by_approval"] = raw_execution
+    if not _persist_board_approval_state(state):
+        return False, "I could not persist that execution state update.", row
+    return True, "", row
+
+
 def _sync_execution_queue_from_approvals(
     approvals: list[dict[str, Any]],
     phase3_payload: dict[str, Any] | None,
@@ -1155,36 +1621,22 @@ def _sync_execution_queue_from_approvals(
         metric_status = _topic_kpi_status(topic, phase3_payload)
         is_green = metric_status == "GREEN"
         previous = execution_by_approval.get(approval_id, {})
-        previous = previous if isinstance(previous, dict) else {}
-        current_status = str(previous.get("status", "PENDING")).strip().upper()
-        if current_status not in {"PENDING", "DONE"}:
-            current_status = "PENDING"
-            changed = True
-
-        completion_reason = str(previous.get("completion_reason", "")).strip()
-        done_at = str(previous.get("done_at_utc", "")).strip()
-        if is_green and current_status != "DONE":
-            current_status = "DONE"
-            completion_reason = "kpi_green"
-            done_at = now_iso
-            changed = True
-        elif not is_green and current_status == "DONE" and completion_reason == "kpi_green":
-            current_status = "PENDING"
-            completion_reason = ""
-            done_at = ""
-            changed = True
-
-        updated_row = {
-            "status": current_status,
-            "updated_at_utc": now_iso,
-            "done_at_utc": done_at,
-            "completion_reason": completion_reason,
-            "topic": topic,
-            "owner": owner,
-            "decision": decision_text,
-            "approved_at_utc": approved_at,
-        }
-        if execution_by_approval.get(approval_id) != updated_row:
+        previous = _normalize_execution_row(previous) if isinstance(previous, dict) else _normalize_execution_row({})
+        updated_row = _upsert_execution_row(state, approval_id, item, approved_at)
+        updated_row = _normalize_execution_row(updated_row)
+        current_status = updated_row.get("status", "APPROVED")
+        completion_reason = str(updated_row.get("completion_reason", "")).strip()
+        if is_green and current_status == "DONE":
+            updated_row["status"] = "VALIDATED"
+            updated_row["validated_at_utc"] = updated_row.get("validated_at_utc") or now_iso
+            updated_row["completion_reason"] = "kpi_green"
+            updated_row["updated_at_utc"] = now_iso
+        elif not is_green and current_status == "VALIDATED" and completion_reason == "kpi_green":
+            updated_row["status"] = "DONE"
+            updated_row["validated_at_utc"] = ""
+            updated_row["validated_by_user_id"] = None
+            updated_row["updated_at_utc"] = now_iso
+        if previous != updated_row:
             execution_by_approval[approval_id] = updated_row
             changed = True
 
@@ -1198,26 +1650,101 @@ def _sync_execution_queue_from_approvals(
                 "topic": topic or "Untitled approval",
                 "owner": owner,
                 "decision": decision_text,
-                "status": current_status,
+                "status": updated_row.get("status"),
                 "metric_status": metric_status,
                 "approved_at_utc": approved_at,
-                "done_at_utc": done_at,
+                "due_at_utc": updated_row.get("due_at_utc"),
+                "done_at_utc": updated_row.get("done_at_utc"),
+                "completion_note": updated_row.get("completion_note"),
             }
         )
 
-    stale_ids = [approval_id for approval_id in list(execution_by_approval.keys()) if approval_id not in keep_ids]
-    for approval_id in stale_ids:
-        execution_by_approval.pop(approval_id, None)
-        changed = True
+    for approval_id, decision_state in decisions.items():
+        normalized_id = _normalize_approval_id(str(approval_id))
+        if not normalized_id or normalized_id in keep_ids:
+            continue
+        decision_state = decision_state if isinstance(decision_state, dict) else {}
+        if str(decision_state.get("status", "")).strip().upper() != "APPROVED":
+            continue
+        persisted_item = {
+            "approval_id": normalized_id,
+            "topic": str(decision_state.get("topic", "")).strip(),
+            "owner": str(decision_state.get("owner", "")).strip(),
+            "decision": str(decision_state.get("decision", "")).strip(),
+            "deadline": "",
+        }
+        previous = execution_by_approval.get(normalized_id, {})
+        previous = _normalize_execution_row(previous) if isinstance(previous, dict) else _normalize_execution_row({})
+        updated_row = _upsert_execution_row(
+            state,
+            normalized_id,
+            persisted_item,
+            str(decision_state.get("decided_at_utc", "")).strip(),
+        )
+        execution_by_approval[normalized_id] = updated_row
+        if previous != updated_row:
+            changed = True
+        keep_ids.add(normalized_id)
+        rows.append(
+            {
+                "approval_id": normalized_id,
+                "priority": "AMBER",
+                "topic": str(updated_row.get("topic", "")).strip() or "Untitled approval",
+                "owner": str(updated_row.get("owner", "")).strip(),
+                "decision": str(updated_row.get("decision", "")).strip(),
+                "status": str(updated_row.get("status", "")).strip(),
+                "metric_status": _topic_kpi_status(str(updated_row.get("topic", "")), phase3_payload),
+                "approved_at_utc": str(updated_row.get("approved_at_utc", "")).strip(),
+                "due_at_utc": str(updated_row.get("due_at_utc", "")).strip(),
+                "done_at_utc": str(updated_row.get("done_at_utc", "")).strip(),
+                "completion_note": str(updated_row.get("completion_note", "")).strip(),
+            }
+        )
+
+    for approval_id, raw_row in list(execution_by_approval.items()):
+        if approval_id in keep_ids or not isinstance(raw_row, dict):
+            continue
+        persisted_row = _normalize_execution_row(raw_row)
+        if raw_row != persisted_row:
+            execution_by_approval[approval_id] = persisted_row
+            changed = True
+        rows.append(
+            {
+                "approval_id": approval_id,
+                "priority": "AMBER",
+                "topic": persisted_row.get("topic") or "Untitled approval",
+                "owner": persisted_row.get("owner"),
+                "decision": persisted_row.get("decision"),
+                "status": persisted_row.get("status"),
+                "metric_status": _topic_kpi_status(str(persisted_row.get("topic", "")), phase3_payload),
+                "approved_at_utc": persisted_row.get("approved_at_utc"),
+                "due_at_utc": persisted_row.get("due_at_utc"),
+                "done_at_utc": persisted_row.get("done_at_utc"),
+                "completion_note": persisted_row.get("completion_note"),
+            }
+        )
 
     if changed:
         state["execution_by_approval"] = execution_by_approval
         _persist_board_approval_state(state)
 
-    rank = {"PENDING": 0, "DONE": 1}
+    rank = {"APPROVED": 0, "ASSIGNED": 1, "STARTED": 2, "DONE": 3, "VALIDATED": 4}
     priority_rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
     rows.sort(key=lambda row: (rank.get(str(row.get("status", "")), 2), priority_rank.get(str(row.get("priority", "")), 3)))
     return rows, changed
+
+
+def _split_execution_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    open_rows = [row for row in rows if str(row.get("status", "")).upper() in EXECUTION_OPEN_STATUSES]
+    validated_rows = [row for row in rows if str(row.get("status", "")).upper() == "VALIDATED"]
+    return open_rows, validated_rows
+
+
+async def _current_execution_rows(refresh: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    pending, decided, generated = await _collect_board_approval_rows(refresh=refresh)
+    rows, _ = _sync_execution_queue_from_approvals(pending + decided, _runtime().latest_phase3())
+    open_rows, validated_rows = _split_execution_rows(rows)
+    return open_rows, validated_rows, generated
 
 
 def _approval_topic_meaning(topic: str) -> str:
@@ -1507,6 +2034,7 @@ async def _build_approvals_reply(refresh: bool = False, user_id: int | None = No
     keyboard: Any | None = None
     if _runtime().phase3_enabled:
         pending, decided, generated = await _collect_board_approval_rows(refresh=refresh)
+        execution_open, execution_validated, _ = await _current_execution_rows(refresh=False)
         if generated:
             lines.append(f"Snapshot freshness: {_snapshot_freshness_label(generated)} ({generated} UTC)")
 
@@ -1538,6 +2066,29 @@ async def _build_approvals_reply(refresh: bool = False, user_id: int | None = No
             keyboard = _build_board_approvals_keyboard(pending, selected_ids=selected_ids)
         else:
             lines.append("Board approvals pending: none.")
+
+        if execution_open:
+            lines.append("Approved work queue:")
+            for item in execution_open[:10]:
+                lines.append(
+                    f"- {item.get('approval_id')} [{item.get('status')}] {item.get('topic')} | "
+                    f"Owner: {_resolve_delivery_owner(item.get('owner'))}"
+                )
+                lines.append(
+                    f"  /assign {item.get('approval_id')} | /start {item.get('approval_id')} | "
+                    f"/done {item.get('approval_id')} <completion_note>"
+                )
+        else:
+            lines.append("Approved work queue: none.")
+
+        if execution_validated:
+            lines.append("Validated complete:")
+            for item in execution_validated[:10]:
+                lines.append(
+                    f"- {item.get('approval_id')} [VALIDATED] {item.get('topic')} at {item.get('done_at_utc') or item.get('approved_at_utc')}"
+                )
+        else:
+            lines.append("Validated complete: none.")
 
         if decided:
             lines.append("Board decisions logged:")
@@ -1640,6 +2191,8 @@ async def _apply_board_approval_outcome(
     state = _load_board_approval_state()
     decisions = state.get("decisions", {})
     decisions = decisions if isinstance(decisions, dict) else {}
+    execution_by_approval = state.get("execution_by_approval", {})
+    execution_by_approval = execution_by_approval if isinstance(execution_by_approval, dict) else {}
     updated = 0
     already = 0
     for approval_id in matched_ids:
@@ -1659,6 +2212,12 @@ async def _apply_board_approval_outcome(
             "decision": _resolve_board_decision_text(matched),
             "source_snapshot_utc": generated,
         }
+        if outcome == "APPROVED":
+            approved_at = str(decisions[approval_id].get("decided_at_utc", "")).strip()
+            state["execution_by_approval"] = execution_by_approval
+            _upsert_execution_row(state, approval_id, matched, approved_at)
+        else:
+            execution_by_approval.pop(approval_id, None)
         updated += 1
     state["decisions"] = decisions
     if updated > 0 and not _persist_board_approval_state(state):
@@ -1751,6 +2310,8 @@ async def _handle_board_approval_decision(
     state = _load_board_approval_state()
     decisions = state.get("decisions", {})
     decisions = decisions if isinstance(decisions, dict) else {}
+    execution_by_approval = state.get("execution_by_approval", {})
+    execution_by_approval = execution_by_approval if isinstance(execution_by_approval, dict) else {}
     outcome = "APPROVED" if command == "approve" else "DENIED"
     prior = decisions.get(normalized, {})
     prior = prior if isinstance(prior, dict) else {}
@@ -1767,12 +2328,50 @@ async def _handle_board_approval_decision(
         "source_snapshot_utc": generated,
     }
     state["decisions"] = decisions
+    if outcome == "APPROVED":
+        state["execution_by_approval"] = execution_by_approval
+        _upsert_execution_row(state, normalized, matched, str(decisions[normalized].get("decided_at_utc", "")).strip())
+    else:
+        execution_by_approval.pop(normalized, None)
+        state["execution_by_approval"] = execution_by_approval
     if not _persist_board_approval_state(state):
         return "I could not persist that approval decision. Please retry."
     return (
         f"Board approval `{normalized}` marked {outcome}. "
         f"Topic: {matched.get('topic')} | Owner: {matched.get('owner')}."
     )
+
+
+async def _handle_execution_status_command(
+    approval_id: str,
+    command: str,
+    user_id: int | None = None,
+    completion_note: str = "",
+) -> str:
+    normalized = _normalize_approval_id(approval_id)
+    if not normalized:
+        return f"Approval ID required. Use `/{command} <board_approval_id>`."
+
+    target_status = {
+        "assign": "ASSIGNED",
+        "start": "STARTED",
+        "done": "DONE",
+    }.get(command, "")
+    ok, error, row = _set_execution_status(
+        normalized,
+        target_status=target_status,
+        user_id=user_id,
+        completion_note=completion_note,
+    )
+    if not ok:
+        return error
+    row = row if isinstance(row, dict) else {}
+    note_suffix = f" Note: {row.get('completion_note')}" if row.get("completion_note") else ""
+    return (
+        f"`{normalized}` is now {row.get('status')}. "
+        f"Owner: {_resolve_delivery_owner(row.get('owner'))}. "
+        f"Action: {row.get('decision')}.{note_suffix}"
+    ).strip()
 
 
 async def _handle_board_command() -> str:
@@ -1914,7 +2513,8 @@ async def _handle_status_command(compact: bool = False) -> str:
         pending_approvals, decided_approvals, _ = _approval_rows_from_phase3_payload(phase3 if isinstance(phase3, dict) else None)
         approval_rows = pending_approvals + decided_approvals
         execution_rows, _ = _sync_execution_queue_from_approvals(approval_rows, phase3 if isinstance(phase3, dict) else None)
-        execution_pending = [item for item in execution_rows if str(item.get("status", "")).upper() != "DONE"]
+        execution_pending = [item for item in execution_rows if str(item.get("status", "")).upper() in EXECUTION_OPEN_STATUSES]
+        execution_validated = [item for item in execution_rows if str(item.get("status", "")).upper() == "VALIDATED"]
         pending_red = sum(1 for item in pending_approvals if str(item.get("priority", "")).upper() == "RED")
         pending_amber = sum(1 for item in pending_approvals if str(item.get("priority", "")).upper() == "AMBER")
 
@@ -1961,6 +2561,7 @@ async def _handle_status_command(compact: bool = False) -> str:
                 ),
                 f"- Pending approvals: {len(pending_approvals)} (RED {pending_red}, AMBER {pending_amber})",
                 f"- Approved awaiting execution: {len(execution_pending)}",
+                f"- Validated complete: {len(execution_validated)}",
                 "",
                 "Decision Required Now",
                 f"- {decision_now}",
@@ -1998,6 +2599,7 @@ async def _handle_status_command(compact: bool = False) -> str:
             "2) Decisions Required",
             f"- Pending approvals: {len(pending_approvals)} (RED {pending_red}, AMBER {pending_amber})",
             f"- Approved but not executed: {len(execution_pending)}",
+            f"- Validated complete: {len(execution_validated)}",
         ]
         if pending_approvals:
             lines.append("- Top pending approval:")
@@ -2432,20 +3034,34 @@ async def _handle_memory_command(query: str) -> str:
     return f"Closest conversation matches for \"{query}\": " + "; ".join(snippets)
 
 
-async def _handle_bot_command(text: str) -> str:
+async def _handle_bot_command(text: str, user_id: int | None = None) -> str:
     match = re.match(r"^/bot\s+([a-zA-Z0-9_-]+)\s+(health|report|logs|execute)(?:\s+(\d+|confirm))?$", text, re.I)
     if not match:
-        return "Use `/bot <bot_id> health|report|logs [lines]|execute confirm`."
+        return "Use `/bot <bot_id> health|report|logs [lines]|execute [confirm]`."
     bot_id = match.group(1)
     action = match.group(2).lower()
     extra = (match.group(3) or "").strip().lower()
     if bot_id not in _runtime().bot_ids:
         return f"I don't recognize bot id `{bot_id}`."
     if action == "execute":
-        if _runtime().observer_mode:
-            return "Observer mode is ON, so execute is blocked."
         if extra != "confirm":
-            return "Execute requires explicit confirmation: `/bot <id> execute confirm`."
+            preflight = await _build_bot_execute_preflight(bot_id)
+            _store_bot_execute_preflight(bot_id, user_id, preflight)
+            return _format_bot_execute_preflight(preflight, require_confirm=not _runtime().observer_mode)
+        if _runtime().observer_mode:
+            preflight = await _build_bot_execute_preflight(bot_id)
+            _clear_bot_execute_preflight(bot_id, user_id)
+            return "Observer mode is ON, so execute is blocked.\n\n" + _format_bot_execute_preflight(
+                preflight,
+                require_confirm=False,
+            )
+        recent_preflight = _recent_bot_execute_preflight(bot_id, user_id)
+        if not recent_preflight or not recent_preflight.get("ok_to_execute"):
+            return "Execution preflight required. Run `/bot <id> execute` first and review the snapshot before confirming."
+        preflight = await _build_bot_execute_preflight(bot_id)
+        if not preflight.get("ok_to_execute"):
+            _clear_bot_execute_preflight(bot_id, user_id)
+            return _format_bot_execute_preflight(preflight, require_confirm=False)
     args = ["run_trading_script", "--bot", bot_id, "--command-key", action]
     if action == "logs":
         lines = extra if extra.isdigit() else "120"
@@ -2464,6 +3080,13 @@ async def _handle_bot_command(text: str) -> str:
             f"errors {first.get('error_lines')}."
         )
     if isinstance(payload, dict):
+        if action == "execute":
+            _clear_bot_execute_preflight(bot_id, user_id)
+            return (
+                _format_bot_execute_preflight(preflight, require_confirm=False)
+                + "\n\n"
+                + f"{bot_id} execute completed with status {'OK' if payload.get('ok') else 'attention'}."
+            )
         headline = ""
         stdout_text = str(payload.get("stdout", "")).strip()
         if stdout_text.startswith("{"):
@@ -2498,6 +3121,27 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
     if re.match(r"^/deny(?:\s+|$)", text, flags=re.I):
         approval_id = re.sub(r"^/deny\s*", "", text, count=1, flags=re.I).strip()
         return await _handle_board_approval_decision(approval_id, "deny", user_id=user_id)
+    if re.match(r"^/assign(?:\s+|$)", text, flags=re.I):
+        approval_id = re.sub(r"^/assign\s*", "", text, count=1, flags=re.I).strip()
+        return await _handle_execution_status_command(approval_id, "assign", user_id=user_id)
+    if re.match(r"^/start(?:\s+|$)", text, flags=re.I):
+        approval_id = re.sub(r"^/start\s*", "", text, count=1, flags=re.I).strip()
+        return await _handle_execution_status_command(approval_id, "start", user_id=user_id)
+    if re.match(r"^/done(?:\s+|$)", text, flags=re.I):
+        payload = re.sub(r"^/done\s*", "", text, count=1, flags=re.I).strip()
+        if payload:
+            parts = payload.split(maxsplit=1)
+            approval_id = parts[0]
+            completion_note = parts[1] if len(parts) > 1 else ""
+        else:
+            approval_id = ""
+            completion_note = ""
+        return await _handle_execution_status_command(
+            approval_id,
+            "done",
+            user_id=user_id,
+            completion_note=completion_note,
+        )
     if lowered == "/approve_selected":
         return await _handle_board_bulk_decision(command="approve", scope="selected", user_id=user_id)
     if lowered == "/deny_selected":
@@ -2520,6 +3164,24 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         return await _handle_content_status_command()
     if lowered == "/develop_status":
         return await _handle_develop_status()
+    if text.startswith("/content_approve"):
+        draft_id = re.sub(r"^/content_approve\s*", "", text, count=1, flags=re.I).strip()
+        return await _handle_content_decision(draft_id=draft_id, decision="approve", user_id=user_id)
+    if text.startswith("/content_deny"):
+        payload = re.sub(r"^/content_deny\s*", "", text, count=1, flags=re.I).strip()
+        if payload:
+            parts = payload.split(maxsplit=1)
+            draft_id = parts[0]
+            decision_note = parts[1] if len(parts) > 1 else ""
+        else:
+            draft_id = ""
+            decision_note = ""
+        return await _handle_content_decision(
+            draft_id=draft_id,
+            decision="deny",
+            user_id=user_id,
+            decision_note=decision_note,
+        )
     if text.startswith("/content"):
         brief_text = re.sub(r"^/content\s*", "", text, count=1, flags=re.I)
         return await _handle_content_command(brief_text)
@@ -2536,7 +3198,7 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         query = re.sub(r"^/memory\s*", "", text, count=1, flags=re.I)
         return await _handle_memory_command(query)
     if text.startswith("/bot "):
-        return await _handle_bot_command(text)
+        return await _handle_bot_command(text, user_id=user_id)
     if text.startswith("/site "):
         site_id = re.sub(r"^/site\s*", "", text, count=1, flags=re.I).strip()
         if site_id not in _runtime().website_ids:

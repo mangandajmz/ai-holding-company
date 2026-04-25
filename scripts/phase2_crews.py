@@ -122,11 +122,36 @@ def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _load_targets(config: dict[str, Any]) -> dict[str, Any]:
+    phase3 = config.get("phase3", {})
+    phase3 = phase3 if isinstance(phase3, dict) else {}
+    rel = str(phase3.get("targets_file", "config/targets.yaml")).strip() or "config/targets.yaml"
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    payload = _load_yaml(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _brief_freshness_threshold_hours(config: dict[str, Any]) -> float:
+    targets = _load_targets(config)
+    freshness = targets.get("freshness", {})
+    freshness = freshness if isinstance(freshness, dict) else {}
+    return _to_float(freshness.get("daily_brief_max_age_hours")) or 6.0
+
+
 def _ensure_brief_payload(config: dict[str, Any], force: bool) -> tuple[dict[str, Any], str]:
     fresh = daily_brief(config=config, force=force)
-    if not fresh.get("skipped"):
-        return fresh, "fresh"
-    return _load_latest_brief_payload(config=config), "cached_latest"
+    payload = fresh if not fresh.get("skipped") else _load_latest_brief_payload(config=config)
+    payload = dict(payload) if isinstance(payload, dict) else {}
+    source_mode = "fresh" if not fresh.get("skipped") else "cached_latest"
+    generated = _parse_iso_utc(str(payload.get("generated_at_utc", "")).strip())
+    age_hours: float | None = None
+    if generated is not None:
+        age_hours = max((datetime.now(timezone.utc) - generated).total_seconds() / 3600.0, 0.0)
+    threshold_hours = _brief_freshness_threshold_hours(config)
+    payload["stale_input"] = bool(age_hours is not None and age_hours > threshold_hours)
+    payload["stale_input_age_hours"] = round(age_hours, 2) if age_hours is not None else None
+    payload["stale_input_threshold_hours"] = threshold_hours
+    return payload, source_mode
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -1285,6 +1310,11 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Generated (UTC): {payload['generated_at_utc']}")
     lines.append(f"- Source brief mode: {payload['source_brief_mode']}")
     lines.append(f"- Divisions executed: {', '.join(payload['divisions_ran'])}")
+    if payload.get("stale_input"):
+        lines.append(
+            f"- STALE DATA: base telemetry is {payload.get('stale_input_age_hours')}h old "
+            f"(threshold {payload.get('stale_input_threshold_hours')}h)."
+        )
     lines.append("")
     lines.append("## Summary")
     summary = payload.get("base_summary", {})
@@ -1293,10 +1323,29 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Bot trades total: {summary.get('trades_total')}")
     lines.append(f"- Websites up: {summary.get('websites_up')}/{summary.get('websites_total')}")
     lines.append(f"- Alerts in base brief: {len(payload.get('base_alerts', []))}")
+    base_remote_sync = payload.get("base_remote_sync", {})
+    base_remote_sync = base_remote_sync if isinstance(base_remote_sync, dict) else {}
+    sync_bots = base_remote_sync.get("bots", [])
+    sync_bots = sync_bots if isinstance(sync_bots, list) else []
+    cached_syncs = [item for item in sync_bots if isinstance(item, dict) and item.get("used_cached_state")]
+    if cached_syncs:
+        lines.append("- Remote cache fallback detected:")
+        for sync in cached_syncs:
+            lines.append(
+                f"  {sync.get('bot_id')}: cache_age_minutes={sync.get('cache_age_minutes')} "
+                f"last_live_check_utc={sync.get('last_live_check_utc') or 'unknown'}"
+            )
     brief_payload = {
         "bots": payload.get("base_bots", []),
         "websites": payload.get("base_websites", []),
     }
+    warnings = payload.get("warnings", [])
+    warnings = warnings if isinstance(warnings, list) else []
+    if warnings:
+        lines.append("")
+        lines.append("## Warnings")
+        for warning in warnings[:10]:
+            lines.append(f"- {warning}")
 
     for division in payload.get("divisions", []):
         if not isinstance(division, dict):
@@ -1409,6 +1458,23 @@ def run_phase2_divisions(config: dict[str, Any], division: str = "all", force: b
     warnings: list[str] = []
     if llm_error:
         warnings.append(llm_error)
+    if brief_payload.get("stale_input"):
+        warnings.append(
+            "Phase 2 is running on stale daily brief telemetry "
+            f"({brief_payload.get('stale_input_age_hours')}h old; threshold "
+            f"{brief_payload.get('stale_input_threshold_hours')}h)."
+        )
+    remote_sync = brief_payload.get("remote_sync", {})
+    remote_sync = remote_sync if isinstance(remote_sync, dict) else {}
+    sync_bots = remote_sync.get("bots", [])
+    sync_bots = sync_bots if isinstance(sync_bots, list) else []
+    for sync in sync_bots:
+        if not isinstance(sync, dict) or not sync.get("used_cached_state"):
+            continue
+        warnings.append(
+            f"{sync.get('bot_id')}: remote bot state fell back to cache "
+            f"({sync.get('cache_age_minutes')}m old; last live check {sync.get('last_live_check_utc') or 'unknown'})."
+        )
 
     for division_id in divisions_to_run:
         try:
@@ -1457,6 +1523,10 @@ def run_phase2_divisions(config: dict[str, Any], division: str = "all", force: b
         "base_alerts": brief_payload.get("alerts", []),
         "base_bots": brief_payload.get("bots", []),
         "base_websites": brief_payload.get("websites", []),
+        "base_remote_sync": remote_sync,
+        "stale_input": bool(brief_payload.get("stale_input")),
+        "stale_input_age_hours": brief_payload.get("stale_input_age_hours"),
+        "stale_input_threshold_hours": brief_payload.get("stale_input_threshold_hours"),
         "warnings": warnings,
         "divisions": division_payloads,
     }

@@ -286,7 +286,7 @@ SUCCESS CRITERIA:
 ## BLOCK 4 — MA Gate: Block Incomplete Board Pack Items
 
 ```
-Read PLAN.md §5 and §8, CLAUDE.md, and scripts/telegram_bridge.py (or tool_router.py —
+Read PLAN.md §5 and §8, CLAUDE.md, and scripts/aiogram_bridge.py (or tool_router.py —
 check which file handles MA message routing) before doing anything.
 Blocks 1–3 must be complete before starting this block.
 
@@ -351,7 +351,7 @@ SUCCESS CRITERIA:
 - All existing tests still pass
 ```
 
-> **→ CODEX REVIEW GATE** — run on `scripts/phase3_holding.py` and `scripts/telegram_bridge.py` before Block 5.
+> **→ CODEX REVIEW GATE** — run on `scripts/phase3_holding.py` and `scripts/aiogram_bridge.py` before Block 5.
 > Check: _validate_board_pack_item() handles missing keys without raising,
 > gate_blocked key always present in board_review dict (True or False, never None),
 > Telegram handler cannot surface raw exception text to CEO,
@@ -449,7 +449,7 @@ SUCCESS CRITERIA:
 
 > **→ CODEX REVIEW GATE** — final retrospective review across all Stage H files:
 > `crews/holding_ceo.yaml`, `scripts/phase3_holding.py`, `scripts/tool_router.py`,
-> `scripts/telegram_bridge.py`.
+> `scripts/aiogram_bridge.py`.
 > Check all three categories. Resolve all issues. Confirm N issues found, N resolved, CLEAN.
 > Record in commit message: "Codex review: N issues resolved."
 

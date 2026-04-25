@@ -154,6 +154,18 @@ projects:
     status: "light"
     enabled: true
     notes: "Brief-driven content creation. All drafts require CEO approval before publishing (R3/R4)."
+  mt5_desk:
+    project_name: "MT5 Agentic Trading Desk"
+    project_type: "capital_risk"
+    enabled: true
+    source_bot_id: "mt5_desk"
+    notes: "Always include this live trading system in Phase 3 portfolio health while enabled."
+  polymarket:
+    project_name: "Polymarket Copy Trading Bot"
+    project_type: "capital_risk"
+    enabled: true
+    source_bot_id: "polymarket"
+    notes: "Always include this live trading system in Phase 3 portfolio health while enabled."
 
 property_charters:
   freetraderhub:

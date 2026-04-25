@@ -66,6 +66,7 @@ If a previous tool completed some blocks:
 | config/targets.yaml | KPI thresholds |
 | scripts/phase2_crews.py | Division orchestration layer |
 | scripts/phase3_holding.py | CEO layer — Board Pack logic lives here |
+| scripts/aiogram_bridge.py | Sole production Telegram bridge for commands, approvals, and scheduling |
 | scripts/utils.py | Shared helpers — use existing ones, add none |
 | crews/holding_ceo.yaml | CEO crew spec — Stage H Block 1 target |
 | crews/commercial_division.yaml | Commercial crew spec (Stage G, complete) |

@@ -75,6 +75,24 @@ def _property_charters(config: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _project_registry(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("projects", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _has_enabled_capital_risk_project(config: dict[str, Any]) -> bool:
+    tracked_types = {"trading", "bot", "capital_risk", "trading_bot"}
+    for _, entry in _project_registry(config).items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("enabled", True) is False:
+            continue
+        project_type = str(entry.get("project_type", "")).strip().lower()
+        if project_type in tracked_types:
+            return True
+    return False
+
+
 def _property_metric_feed_path(config: dict[str, Any]) -> Path:
     phase3 = _phase3_cfg(config)
     rel = str(phase3.get("property_metric_feed_file", "state/property_metric_feed.json")).strip()
@@ -104,6 +122,84 @@ def _load_json_mapping(path: Path) -> dict[str, Any]:
 def _persist_json_mapping(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _board_approval_state_path() -> Path:
+    return ROOT / "state" / "board_approval_decisions.json"
+
+
+def _normalize_execution_status(value: Any, completion_reason: str = "") -> str:
+    status = str(value or "").strip().upper()
+    if status == "PENDING":
+        return "APPROVED"
+    if status == "DONE" and completion_reason == "kpi_green":
+        return "VALIDATED"
+    if status not in {"APPROVED", "ASSIGNED", "STARTED", "DONE", "VALIDATED"}:
+        return "APPROVED"
+    return status
+
+
+def _build_approval_execution_snapshot(
+    board_review: dict[str, Any] | None,
+) -> dict[str, Any]:
+    state = _load_json_mapping(_board_approval_state_path())
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    execution_by_approval = state.get("execution_by_approval", {})
+    execution_by_approval = execution_by_approval if isinstance(execution_by_approval, dict) else {}
+    review = board_review if isinstance(board_review, dict) else {}
+    approvals = review.get("approvals", [])
+    approvals = approvals if isinstance(approvals, list) else []
+
+    pending_approval: list[dict[str, Any]] = []
+    for item in approvals:
+        if not isinstance(item, dict):
+            continue
+        approval_id = str(item.get("approval_id", "")).strip()
+        decision_state = decisions.get(approval_id, {})
+        decision_state = decision_state if isinstance(decision_state, dict) else {}
+        status = str(decision_state.get("status", "")).strip().upper()
+        if status in {"APPROVED", "DENIED"}:
+            continue
+        pending_approval.append(
+            {
+                "approval_id": approval_id,
+                "priority": str(item.get("priority", "")).strip().upper() or "AMBER",
+                "topic": str(item.get("topic", "")).strip(),
+                "owner": str(item.get("owner", "")).strip(),
+                "decision": str(item.get("decision", "")).strip(),
+            }
+        )
+
+    approved_awaiting_execution: list[dict[str, Any]] = []
+    validated_complete: list[dict[str, Any]] = []
+    for approval_id, raw_row in execution_by_approval.items():
+        if not isinstance(raw_row, dict):
+            continue
+        completion_reason = str(raw_row.get("completion_reason", "")).strip()
+        status = _normalize_execution_status(raw_row.get("status", ""), completion_reason=completion_reason)
+        row = {
+            "approval_id": str(approval_id).strip(),
+            "status": status,
+            "topic": str(raw_row.get("topic", "")).strip(),
+            "owner": str(raw_row.get("owner", "")).strip(),
+            "decision": str(raw_row.get("decision", "")).strip(),
+            "approved_at_utc": str(raw_row.get("approved_at_utc", "")).strip(),
+            "done_at_utc": str(raw_row.get("done_at_utc", "")).strip(),
+            "validated_at_utc": str(raw_row.get("validated_at_utc", "")).strip(),
+        }
+        if status == "VALIDATED":
+            validated_complete.append(row)
+        else:
+            approved_awaiting_execution.append(row)
+
+    approved_awaiting_execution.sort(key=lambda row: str(row.get("approved_at_utc", "")))
+    validated_complete.sort(key=lambda row: str(row.get("validated_at_utc", "") or row.get("done_at_utc", "")))
+    return {
+        "pending_approval": pending_approval,
+        "approved_awaiting_execution": approved_awaiting_execution,
+        "validated_complete": validated_complete,
+    }
 
 
 def _merge_non_null(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -433,6 +529,7 @@ def _scored_division_names(
     property_blocks: list[dict[str, Any]],
     divisions: list[dict[str, Any]],
 ) -> set[str]:
+    force_trading_scope = _has_enabled_capital_risk_project(config)
     property_types: set[str] = set()
     for block in property_blocks:
         if not isinstance(block, dict):
@@ -453,7 +550,7 @@ def _scored_division_names(
     scoped: set[str] = set()
     if "website" in property_types:
         scoped.update({"websites", "content_studio"})
-    if "trading_bot" in property_types:
+    if force_trading_scope or "trading_bot" in property_types:
         scoped.add("trading")
 
     has_commercial = any(
@@ -1694,6 +1791,9 @@ def _score_company(
         if isinstance(block, dict)
     }
     property_types.discard("")
+    force_trading_scope = _has_enabled_capital_risk_project(config)
+    if force_trading_scope:
+        property_types.add("trading_bot")
     use_legacy_scope = not property_types
 
     scoped_divisions = set(scored_divisions or [])
@@ -1931,6 +2031,7 @@ def _score_company(
             **monthly_growth_meta,
             "scored_divisions": sorted(scoped_divisions),
             "counted_divisions": counted_divisions,
+            "forced_trading_scope": force_trading_scope,
         },
     }
 
@@ -2588,7 +2689,19 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Generated (UTC): {payload.get('generated_at_utc')}")
     lines.append(f"- Mode: {payload.get('mode')}")
     lines.append(f"- Source brief mode: {payload.get('source_brief_mode')}")
+    if payload.get("stale_input"):
+        lines.append(
+            f"- STALE DATA: Phase 3 is running on telemetry that is {payload.get('stale_input_age_hours')}h old "
+            f"(threshold {payload.get('stale_input_threshold_hours')}h)."
+        )
     lines.append("")
+    warnings = payload.get("warnings", [])
+    warnings = warnings if isinstance(warnings, list) else []
+    if warnings:
+        lines.append("## Warnings")
+        for warning in warnings[:10]:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     company = payload.get("company_scorecard", {})
     company = company if isinstance(company, dict) else {}
@@ -2702,6 +2815,30 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
                 lines.append(f"- **Dissent:** {item.get('dissent') or 'n/a'}")
                 lines.append(f"- **Measurement:** {item.get('measurement_plan') or 'n/a'}")
         lines.append(f"- Notes: {board.get('notes')}")
+
+    approval_snapshot = payload.get("approval_execution_snapshot", {})
+    approval_snapshot = approval_snapshot if isinstance(approval_snapshot, dict) else {}
+    pending_approval = approval_snapshot.get("pending_approval", [])
+    pending_approval = [item for item in pending_approval if isinstance(item, dict)] if isinstance(pending_approval, list) else []
+    approved_awaiting = approval_snapshot.get("approved_awaiting_execution", [])
+    approved_awaiting = [item for item in approved_awaiting if isinstance(item, dict)] if isinstance(approved_awaiting, list) else []
+    validated_complete = approval_snapshot.get("validated_complete", [])
+    validated_complete = [item for item in validated_complete if isinstance(item, dict)] if isinstance(validated_complete, list) else []
+    lines.append("")
+    lines.append("## Approval Execution Snapshot")
+    lines.append(f"- Pending approval: {len(pending_approval)}")
+    for item in pending_approval[:3]:
+        lines.append(f"  {item.get('approval_id')}: {item.get('topic')} | owner={item.get('owner')}")
+    lines.append(f"- Approved awaiting execution: {len(approved_awaiting)}")
+    for item in approved_awaiting[:3]:
+        lines.append(
+            f"  {item.get('approval_id')} [{item.get('status')}]: {item.get('topic')} | owner={item.get('owner')}"
+        )
+    lines.append(f"- Validated complete: {len(validated_complete)}")
+    for item in validated_complete[:3]:
+        lines.append(
+            f"  {item.get('approval_id')}: {item.get('topic')} | validated_at={item.get('validated_at_utc') or item.get('done_at_utc')}"
+        )
 
     lines.append("")
     lines.append("## Owner Command Reminder")
@@ -2851,19 +2988,43 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
                 if isinstance(item, dict):
                     item["dissent"] = "Dissent agent unavailable - manual review required"
 
+    approval_execution_snapshot = _build_approval_execution_snapshot(
+        board_review
+        if isinstance(board_review, dict)
+        else _build_board_review(
+            company_scorecard=company_scorecard,
+            divisions=operating_divisions,
+            commercial_result=commercial_result,
+        )
+    )
+
     payload: dict[str, Any] = {
         "ok": True,
         "company_name": str(phase2_payload.get("company_name", config.get("company", {}).get("name", "AI Holding Company"))),
         "generated_at_utc": generated_at.isoformat(),
         "mode": mode,
         "source_brief_mode": phase2_payload.get("source_brief_mode"),
+        "stale_input": bool(phase2_payload.get("stale_input")),
+        "stale_input_age_hours": phase2_payload.get("stale_input_age_hours"),
+        "stale_input_threshold_hours": phase2_payload.get("stale_input_threshold_hours"),
         "targets_file": str((_phase3_cfg(config).get("targets_file") or "config/targets.yaml")),
         "soul_file": str((_phase3_cfg(config).get("soul_file") or "SOUL.md")),
         "base_summary": phase2_payload.get("base_summary", {}),
         "base_alerts": phase2_payload.get("base_alerts", []),
+        "base_remote_sync": phase2_payload.get("base_remote_sync", {}),
         "warnings": [
             warning
-            for warning in [llm_warning, ceo_result.get("warning"), history_warning, feed_refresh_warning]
+            for warning in [
+                *(
+                    phase2_payload.get("warnings", [])
+                    if isinstance(phase2_payload.get("warnings", []), list)
+                    else []
+                ),
+                llm_warning,
+                ceo_result.get("warning"),
+                history_warning,
+                feed_refresh_warning,
+            ]
             if warning
         ],
         "company_scorecard": company_scorecard,
@@ -2877,6 +3038,7 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "divisions": divisions,
         "ceo_engine": ceo_result.get("engine"),
         "ceo_brief_markdown": ceo_result.get("brief_markdown", ""),
+        "approval_execution_snapshot": approval_execution_snapshot,
         "phase2_files": phase2_payload.get("files", {}),
         "phase2_payload_ref": phase2_payload.get("files", {}).get("latest_json"),
     }

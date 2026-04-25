@@ -84,6 +84,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("develop_status", help="List pending Developer Tool approvals.")
 
+    content = sub.add_parser("content_create", help="Create a Content Studio draft from a brief.")
+    content.add_argument("--brief-text", required=True, help="Brief text for the content draft.")
+
+    sub.add_parser("content_status", help="List tracked Content Studio drafts by status.")
+
+    content_approve = sub.add_parser("content_approve", help="Approve a pending Content Studio draft.")
+    content_approve.add_argument("--draft-id", required=True, help="Draft ID returned by Content Studio.")
+    content_approve.add_argument("--decision-by-user-id", type=int, default=None, help="User ID approving the draft.")
+    content_approve.add_argument("--decision-note", default="", help="Optional approval note.")
+
+    content_deny = sub.add_parser("content_deny", help="Deny a pending Content Studio draft.")
+    content_deny.add_argument("--draft-id", required=True, help="Draft ID returned by Content Studio.")
+    content_deny.add_argument("--decision-by-user-id", type=int, default=None, help="User ID denying the draft.")
+    content_deny.add_argument("--decision-note", default="", help="Optional denial note.")
+
     time_cmd = sub.add_parser("time_checkin", help="Log CEO time saved (Stage I tracking).")
     time_cmd.add_argument("--activity", required=True, help="What activity saved time.")
     time_cmd.add_argument("--hours", type=float, required=True, help="Hours saved.")
@@ -193,6 +208,46 @@ def main() -> None:
         from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
 
         _emit(run_developer_tool(config=config, action="status"))
+        return
+
+    if args.command == "content_create":
+        from content_studio import run_content_studio  # pylint: disable=import-outside-toplevel
+
+        _emit(run_content_studio(config=config, brief_text=args.brief_text))
+        return
+
+    if args.command == "content_status":
+        from content_studio import list_content_drafts  # pylint: disable=import-outside-toplevel
+
+        _emit(list_content_drafts(config=config))
+        return
+
+    if args.command == "content_approve":
+        from content_studio import decide_content_draft  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            decide_content_draft(
+                config=config,
+                draft_id=args.draft_id,
+                decision="approve",
+                decision_by_user_id=args.decision_by_user_id,
+                decision_note=args.decision_note,
+            )
+        )
+        return
+
+    if args.command == "content_deny":
+        from content_studio import decide_content_draft  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            decide_content_draft(
+                config=config,
+                draft_id=args.draft_id,
+                decision="deny",
+                decision_by_user_id=args.decision_by_user_id,
+                decision_note=args.decision_note,
+            )
+        )
         return
 
     if args.command == "time_checkin":

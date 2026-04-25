@@ -2,7 +2,7 @@
 
 ## Automation & Scheduling
 
-**Do not use OpenClaw.** The Telegram bridge (`scripts/telegram_bridge.py`) is the
+**Do not use OpenClaw.** The Telegram bridge (`scripts/aiogram_bridge.py`) is the
 sole interface for automation, scheduling, and owner interaction. All agent
 commands, morning briefs, and scheduled runs go through Telegram.
 Use the bridge's `--send-morning-brief` flag or OS-level task scheduling
@@ -28,7 +28,7 @@ Specifically:
 - **Phase 1** — Monitoring: telemetry, log parsing, website checks (`monitoring.py`)
 - **Phase 2** — Division crews: CrewAI trading + websites analysis (`phase2_crews.py`)
 - **Phase 3** — CEO layer: company scorecard, board approvals (`phase3_holding.py`)
-- **Bridge** — Telegram interface to all phases (`telegram_bridge.py`)
+- **Bridge** — Telegram interface to all phases (`aiogram_bridge.py`)
 - **Memory** — Local vector store for company context (`local_vector_memory.py`)
 - **Utils** — Shared helpers only; no new helpers without removing a duplicate (`utils.py`)
 
