@@ -175,9 +175,29 @@ def _safe_json_dump(path: Path, payload: dict[str, Any]) -> bool:
 def _load_board_approval_state() -> dict[str, Any]:
     payload = _safe_json_load(BOARD_APPROVAL_STATE_FILE)
     if not isinstance(payload, dict):
-        return {"decisions": {}, "board_snapshot": {}, "selection_by_user": {}}
+        return {"decisions": {}, "execution_by_approval": {}, "board_snapshot": {}, "selection_by_user": {}}
     decisions = payload.get("decisions", {})
     decisions = decisions if isinstance(decisions, dict) else {}
+    raw_execution = payload.get("execution_by_approval", {})
+    raw_execution = raw_execution if isinstance(raw_execution, dict) else {}
+    execution_by_approval: dict[str, dict[str, Any]] = {}
+    for raw_id, raw_state in raw_execution.items():
+        approval_id = _normalize_approval_id(str(raw_id))
+        if not approval_id or not isinstance(raw_state, dict):
+            continue
+        status = str(raw_state.get("status", "PENDING")).strip().upper()
+        if status not in {"PENDING", "DONE"}:
+            status = "PENDING"
+        execution_by_approval[approval_id] = {
+            "status": status,
+            "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
+            "done_at_utc": str(raw_state.get("done_at_utc", "")).strip(),
+            "completion_reason": str(raw_state.get("completion_reason", "")).strip(),
+            "topic": str(raw_state.get("topic", "")).strip(),
+            "owner": str(raw_state.get("owner", "")).strip(),
+            "decision": str(raw_state.get("decision", "")).strip(),
+            "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
+        }
     board_snapshot = payload.get("board_snapshot", {})
     board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
     approvals = board_snapshot.get("approvals", [])
@@ -198,6 +218,7 @@ def _load_board_approval_state() -> dict[str, Any]:
             selection_by_user[user_id] = cleaned_ids
     return {
         "decisions": decisions,
+        "execution_by_approval": execution_by_approval,
         "board_snapshot": {
             "generated_at_utc": str(board_snapshot.get("generated_at_utc", "")).strip(),
             "fetched_at_utc": str(board_snapshot.get("fetched_at_utc", "")).strip(),
@@ -211,6 +232,26 @@ def _load_board_approval_state() -> dict[str, Any]:
 def _persist_board_approval_state(state: dict[str, Any]) -> bool:
     decisions = state.get("decisions", {})
     decisions = decisions if isinstance(decisions, dict) else {}
+    raw_execution = state.get("execution_by_approval", {})
+    raw_execution = raw_execution if isinstance(raw_execution, dict) else {}
+    execution_by_approval: dict[str, dict[str, Any]] = {}
+    for raw_id, raw_state in raw_execution.items():
+        approval_id = _normalize_approval_id(str(raw_id))
+        if not approval_id or not isinstance(raw_state, dict):
+            continue
+        status = str(raw_state.get("status", "PENDING")).strip().upper()
+        if status not in {"PENDING", "DONE"}:
+            status = "PENDING"
+        execution_by_approval[approval_id] = {
+            "status": status,
+            "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
+            "done_at_utc": str(raw_state.get("done_at_utc", "")).strip(),
+            "completion_reason": str(raw_state.get("completion_reason", "")).strip(),
+            "topic": str(raw_state.get("topic", "")).strip(),
+            "owner": str(raw_state.get("owner", "")).strip(),
+            "decision": str(raw_state.get("decision", "")).strip(),
+            "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
+        }
     board_snapshot = state.get("board_snapshot", {})
     board_snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
     approvals = board_snapshot.get("approvals", [])
@@ -231,6 +272,7 @@ def _persist_board_approval_state(state: dict[str, Any]) -> bool:
             selection_by_user[user_id] = cleaned_ids
     payload = {
         "decisions": decisions,
+        "execution_by_approval": execution_by_approval,
         "board_snapshot": {
             "generated_at_utc": str(board_snapshot.get("generated_at_utc", "")).strip(),
             "fetched_at_utc": str(board_snapshot.get("fetched_at_utc", "")).strip(),
@@ -1031,6 +1073,153 @@ def _resolve_board_decision_text(item: dict[str, Any]) -> str:
     return decision
 
 
+def _normalize_metric_key(raw_value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(raw_value or "").strip().lower())
+
+
+def _topic_kpi_status(topic: str, phase3_payload: dict[str, Any] | None) -> str:
+    if not isinstance(phase3_payload, dict):
+        return ""
+    topic_text = str(topic or "").strip()
+    if ":" not in topic_text:
+        return ""
+    prefix, metric = topic_text.split(":", 1)
+    scope = prefix.strip().lower().replace(" kpi", "")
+    metric_key = _normalize_metric_key(metric)
+    if not metric_key:
+        return ""
+
+    def _status_from_rows(rows: list[dict[str, Any]]) -> str:
+        for row in rows:
+            candidate_key = _normalize_metric_key(row.get("metric"))
+            if candidate_key == metric_key:
+                return str(row.get("status", "")).strip().upper()
+        return ""
+
+    if scope == "company":
+        company = phase3_payload.get("company_scorecard", {})
+        company = company if isinstance(company, dict) else {}
+        items = company.get("items", [])
+        items = [row for row in items if isinstance(row, dict)]
+        return _status_from_rows(items)
+
+    divisions = phase3_payload.get("divisions", [])
+    divisions = [row for row in divisions if isinstance(row, dict)]
+    for division in divisions:
+        division_name = str(division.get("division", "")).strip().lower()
+        if division_name != scope:
+            continue
+        scorecard = division.get("scorecard", {})
+        scorecard = scorecard if isinstance(scorecard, dict) else {}
+        items = scorecard.get("items", [])
+        items = [row for row in items if isinstance(row, dict)]
+        return _status_from_rows(items)
+    return ""
+
+
+def _sync_execution_queue_from_approvals(
+    approvals: list[dict[str, Any]],
+    phase3_payload: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    state = _load_board_approval_state()
+    decisions = state.get("decisions", {})
+    decisions = decisions if isinstance(decisions, dict) else {}
+    raw_execution = state.get("execution_by_approval", {})
+    raw_execution = raw_execution if isinstance(raw_execution, dict) else {}
+    execution_by_approval = {
+        _normalize_approval_id(str(key)): value
+        for key, value in raw_execution.items()
+        if _normalize_approval_id(str(key)) and isinstance(value, dict)
+    }
+    changed = False
+    now_iso = _utc_now_iso()
+    keep_ids: set[str] = set()
+    rows: list[dict[str, Any]] = []
+
+    for item in approvals:
+        if not isinstance(item, dict):
+            continue
+        approval_id = _normalize_approval_id(str(item.get("approval_id", "")))
+        if not approval_id:
+            continue
+        decision_state = decisions.get(approval_id, {})
+        decision_state = decision_state if isinstance(decision_state, dict) else {}
+        if str(decision_state.get("status", "")).strip().upper() != "APPROVED":
+            continue
+
+        keep_ids.add(approval_id)
+        topic = str(item.get("topic", "")).strip()
+        owner = str(item.get("owner", "")).strip()
+        decision_text = _resolve_board_decision_text(item)
+        approved_at = str(decision_state.get("decided_at_utc", "")).strip()
+        metric_status = _topic_kpi_status(topic, phase3_payload)
+        is_green = metric_status == "GREEN"
+        previous = execution_by_approval.get(approval_id, {})
+        previous = previous if isinstance(previous, dict) else {}
+        current_status = str(previous.get("status", "PENDING")).strip().upper()
+        if current_status not in {"PENDING", "DONE"}:
+            current_status = "PENDING"
+            changed = True
+
+        completion_reason = str(previous.get("completion_reason", "")).strip()
+        done_at = str(previous.get("done_at_utc", "")).strip()
+        if is_green and current_status != "DONE":
+            current_status = "DONE"
+            completion_reason = "kpi_green"
+            done_at = now_iso
+            changed = True
+        elif not is_green and current_status == "DONE" and completion_reason == "kpi_green":
+            current_status = "PENDING"
+            completion_reason = ""
+            done_at = ""
+            changed = True
+
+        updated_row = {
+            "status": current_status,
+            "updated_at_utc": now_iso,
+            "done_at_utc": done_at,
+            "completion_reason": completion_reason,
+            "topic": topic,
+            "owner": owner,
+            "decision": decision_text,
+            "approved_at_utc": approved_at,
+        }
+        if execution_by_approval.get(approval_id) != updated_row:
+            execution_by_approval[approval_id] = updated_row
+            changed = True
+
+        priority = str(item.get("priority", "")).strip().upper()
+        if priority not in {"RED", "AMBER", "GREEN"}:
+            priority = "AMBER"
+        rows.append(
+            {
+                "approval_id": approval_id,
+                "priority": priority,
+                "topic": topic or "Untitled approval",
+                "owner": owner,
+                "decision": decision_text,
+                "status": current_status,
+                "metric_status": metric_status,
+                "approved_at_utc": approved_at,
+                "done_at_utc": done_at,
+            }
+        )
+
+    stale_ids = [approval_id for approval_id in list(execution_by_approval.keys()) if approval_id not in keep_ids]
+    for approval_id in stale_ids:
+        execution_by_approval.pop(approval_id, None)
+        changed = True
+
+    if changed:
+        state["execution_by_approval"] = execution_by_approval
+        _persist_board_approval_state(state)
+
+    rank = {"PENDING": 0, "DONE": 1}
+    priority_rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
+    rows.sort(key=lambda row: (rank.get(str(row.get("status", "")), 2), priority_rank.get(str(row.get("priority", "")), 3)))
+    return rows, changed
+
+
 def _approval_topic_meaning(topic: str) -> str:
     clean = str(topic).strip().lower()
     if "on-plan ratio" in clean:
@@ -1233,6 +1422,24 @@ async def _resolve_board_approvals_snapshot(refresh: bool = False) -> tuple[list
 async def _collect_board_approval_rows(refresh: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
     approvals, generated = await _resolve_board_approvals_snapshot(refresh=refresh)
     decorated = _decorate_board_approvals_with_decisions(approvals)
+    _sync_execution_queue_from_approvals(decorated, _runtime().latest_phase3())
+    pending: list[dict[str, Any]] = []
+    decided: list[dict[str, Any]] = []
+    for item in decorated:
+        state = item.get("decision_state", {})
+        state = state if isinstance(state, dict) else {}
+        status = str(state.get("status", "")).upper()
+        if status in {"APPROVED", "DENIED"}:
+            decided.append(item)
+        else:
+            pending.append(item)
+    return pending, decided, generated
+
+
+def _approval_rows_from_phase3_payload(payload: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str]:
+    approvals, generated = _extract_board_approvals_from_payload(payload if isinstance(payload, dict) else None)
+    decorated = _decorate_board_approvals_with_decisions(approvals)
+    _sync_execution_queue_from_approvals(decorated, payload if isinstance(payload, dict) else None)
     pending: list[dict[str, Any]] = []
     decided: list[dict[str, Any]] = []
     for item in decorated:
@@ -1704,6 +1911,12 @@ async def _handle_status_command(compact: bool = False) -> str:
                 )
         decision_rows.sort(key=lambda row: rank.get(str(row.get("priority", "")).upper(), 3))
         top_decisions = decision_rows[:3]
+        pending_approvals, decided_approvals, _ = _approval_rows_from_phase3_payload(phase3 if isinstance(phase3, dict) else None)
+        approval_rows = pending_approvals + decided_approvals
+        execution_rows, _ = _sync_execution_queue_from_approvals(approval_rows, phase3 if isinstance(phase3, dict) else None)
+        execution_pending = [item for item in execution_rows if str(item.get("status", "")).upper() != "DONE"]
+        pending_red = sum(1 for item in pending_approvals if str(item.get("priority", "")).upper() == "RED")
+        pending_amber = sum(1 for item in pending_approvals if str(item.get("priority", "")).upper() == "AMBER")
 
         if str(overall_status).upper() == "GREEN":
             portfolio_headline = "Promoted portfolio is operating to plan; maintain cadence."
@@ -1717,13 +1930,20 @@ async def _handle_status_command(compact: bool = False) -> str:
 
         if compact:
             key_decision = top_decisions[0] if top_decisions else {}
-            focus_text = str(key_decision.get("topic", "")).strip() if key_decision else "No immediate decision items."
-            owner_text = _resolve_delivery_owner(key_decision.get("owner")) if key_decision else "Execution Lead"
-            decision_now = (
-                str(key_decision.get("decision", "")).strip()
-                if key_decision
-                else "No approval blockers at this time."
-            )
+            if pending_approvals:
+                lead_item = pending_approvals[0]
+                focus_text = str(lead_item.get("topic", "")).strip() or "Approval decision pending."
+                owner_text = _resolve_delivery_owner(lead_item.get("owner"))
+                decision_now = f"Await approval: {str(lead_item.get('decision', '')).strip()}"
+            elif execution_pending:
+                lead_item = execution_pending[0]
+                focus_text = str(lead_item.get("topic", "")).strip() or "Approved action pending execution."
+                owner_text = _resolve_delivery_owner(lead_item.get("owner"))
+                decision_now = str(lead_item.get("decision", "")).strip() or "Execute approved corrective action."
+            else:
+                focus_text = str(key_decision.get("topic", "")).strip() if key_decision else "No immediate decision items."
+                owner_text = _resolve_delivery_owner(key_decision.get("owner")) if key_decision else "Execution Lead"
+                decision_now = "No approval blockers at this time."
             compact_lines = [
                 "CEO Business Brief (Quick)",
                 f"Updated: {generated if generated else 'n/a'} UTC",
@@ -1739,6 +1959,8 @@ async def _handle_status_command(compact: bool = False) -> str:
                     if forecast_attainment is not None
                     else "- Commercial outlook: limited visibility this cycle"
                 ),
+                f"- Pending approvals: {len(pending_approvals)} (RED {pending_red}, AMBER {pending_amber})",
+                f"- Approved awaiting execution: {len(execution_pending)}",
                 "",
                 "Decision Required Now",
                 f"- {decision_now}",
@@ -1774,20 +1996,40 @@ async def _handle_status_command(compact: bool = False) -> str:
             f"- Data confidence: {data_confidence}",
             "",
             "2) Decisions Required",
+            f"- Pending approvals: {len(pending_approvals)} (RED {pending_red}, AMBER {pending_amber})",
+            f"- Approved but not executed: {len(execution_pending)}",
         ]
+        if pending_approvals:
+            lines.append("- Top pending approval:")
+            lines.append(f"  ID: {pending_approvals[0].get('approval_id')}")
+            lines.append(f"  Topic: {pending_approvals[0].get('topic')}")
+            lines.append(f"  Owner: {_resolve_delivery_owner(pending_approvals[0].get('owner'))}")
+            lines.append(f"  Action: {pending_approvals[0].get('decision')}")
+        else:
+            lines.append("- Pending approvals queue is clear.")
+
+        if execution_pending:
+            lines.append("- Top approved action awaiting execution:")
+            lines.append(f"  ID: {execution_pending[0].get('approval_id')}")
+            lines.append(f"  Topic: {execution_pending[0].get('topic')}")
+            lines.append(f"  Owner: {_resolve_delivery_owner(execution_pending[0].get('owner'))}")
+            lines.append(f"  Action: {execution_pending[0].get('decision')}")
+        else:
+            lines.append("- No approved actions are awaiting execution.")
+
+        lines.append("")
+        lines.append("3) Operational Priorities")
         if not top_decisions:
-            lines.append("- No CEO approvals pending right now.")
+            lines.append("- No AMBER/RED operational priorities are currently flagged.")
         else:
             for index, item in enumerate(top_decisions, start=1):
-                lines.append(
-                    f"- Decision {index} [{item.get('priority')}]"
-                )
+                lines.append(f"- Priority {index} [{item.get('priority')}]")
                 lines.append(f"  Topic: {item.get('topic')}")
                 lines.append(f"  Action: {item.get('decision')}")
                 lines.append(f"  Owner/Timing: {_resolve_delivery_owner(item.get('owner'))} | {item.get('due')}")
 
         lines.append("")
-        lines.append("3) Promoted Property Review")
+        lines.append("4) Promoted Property Review")
         for block in property_blocks[:5]:
             property_id = str(block.get("property_id", "")).strip()
             property_name = str(block.get("property_name", property_id)).strip() or property_id or "property"
@@ -1820,7 +2062,7 @@ async def _handle_status_command(compact: bool = False) -> str:
                 ]
             )
 
-        lines.extend(["", "4) Capital Posture"])
+        lines.extend(["", "5) Capital Posture"])
         total_hours = 0.0
         hours_present = False
         total_value = 0.0
@@ -1848,7 +2090,7 @@ async def _handle_status_command(compact: bool = False) -> str:
         lines.append(f"- Value created (7d): {_format_money(total_value)}" if value_present else "- Value created (7d): not yet captured")
         lines.append(f"- Efficiency signal: {_format_money(efficiency)}/h" if efficiency is not None else "- Efficiency signal: insufficient data")
 
-        lines.extend(["", "5) Revamp Queue (Excluded from Company Score)"])
+        lines.extend(["", "6) Revamp Queue (Excluded from Company Score)"])
         if not revamp_queue:
             lines.append("- None.")
         else:
@@ -1985,7 +2227,9 @@ async def _handle_approvals_explainer() -> str:
 async def _handle_management_take() -> str:
     phase3 = _runtime().latest_phase3()
     facts = _portfolio_facts_from_phase3(phase3 if isinstance(phase3, dict) else None)
-    pending, _, generated = await _collect_board_approval_rows(refresh=False)
+    pending, decided, generated = _approval_rows_from_phase3_payload(phase3 if isinstance(phase3, dict) else None)
+    execution_rows, _ = _sync_execution_queue_from_approvals(pending + decided, phase3 if isinstance(phase3, dict) else None)
+    execution_pending = [item for item in execution_rows if str(item.get("status", "")).upper() != "DONE"]
     red_count = 0
     amber_count = 0
     for item in pending:
@@ -2023,9 +2267,14 @@ async def _handle_management_take() -> str:
         return ""
 
     top_pending = pending[0] if pending else {}
-    next_move = str(top_pending.get("decision", "")).strip() if top_pending else ""
+    top_execution = execution_pending[0] if execution_pending else {}
+    next_move = ""
     if top_pending:
+        next_move = str(top_pending.get("decision", "")).strip()
         delivery_owner = _resolve_delivery_owner(top_pending.get("owner"))
+    elif top_execution:
+        next_move = str(top_execution.get("decision", "")).strip()
+        delivery_owner = _resolve_delivery_owner(top_execution.get("owner"))
     else:
         inferred_owner = _infer_owner_from_phase3(phase3 if isinstance(phase3, dict) else None)
         delivery_owner = _resolve_delivery_owner(inferred_owner) if inferred_owner else "Execution Lead"
@@ -2046,6 +2295,7 @@ async def _handle_management_take() -> str:
         ),
         f"- Primary pressure point: {facts.get('top_issue')}.",
         f"- Pending approvals: {len(pending)} (RED {red_count}, AMBER {amber_count}).",
+        f"- Approved awaiting execution: {len(execution_pending)}.",
         f"- Delivery owner now: {delivery_owner}.",
         f"- Recommended immediate move: {next_move}",
         f"- Snapshot freshness: {facts.get('freshness')} ({generated or facts.get('generated') or 'n/a'} UTC).",
