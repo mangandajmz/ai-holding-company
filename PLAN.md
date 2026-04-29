@@ -260,6 +260,7 @@ Locked. Do not re-open without a CEO directive.
 - Stage C (Sanitizer & Allowlist Remediation): ✅ LIVE — commit 261098d. safe_chat() wraps all Ollama calls. R8 path guard, R1 network guard, R11 provider scrub all active. /violations command live. 19 tests passing.
 - Stage H (Holding Board v2 + Board Pack): ✅ LIVE — 8-field Board Pack, dissent agent, MA gate, board_pack mode, 18 tests passing. /board pack Telegram command live.
 - Stage K (Marketing Division): ✅ LIVE — G3 guardrail (max 1 campaign/week), PENDING_CEO_APPROVAL R4 gate, campaign pipeline scoring, /campaign and /campaign_status Telegram commands, marketing division in phase2, 10 tests passing.
+- Stage D Sprint 1 (MD Agent layer, reliability-first): ✅ SHIPPED 2026-04-28 — scheduler watchdog (`_check_scheduler_watchdog`), issue log with day count (`md_agent_state.py`), one-screen decision-ready brief format, engine transparency tag `[det]`/`[ai]`, `/approve_*` + `/skip` task logging, R11 docstring fix. 15 new tests, 61 total passing. **CEO manual Sprint 0 tasks still required to make Stage D GREEN.**
 - Latest commit: `67ec6c1`
 
 ---

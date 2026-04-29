@@ -39,7 +39,7 @@ def bridge(tmp_path):
                 "allowed_user_ids": [],
             },
         },
-        "trading_bots": [{"id": "mt5_desk"}, {"id": "polymarket"}],
+        "trading_bots": [{"id": "mt5_desk"}, {"id": "polymarket"}, {"id": "freetraderhub_research"}, {"id": "freeghosttools_sitemap"}],
         "websites": [{"id": "freeghosttools"}, {"id": "freetraderhub"}],
         "paths": {"memory_dir": "memory", "reports_dir": str(tmp_path)},
         "phase3": {"enabled": True},
@@ -74,7 +74,7 @@ def bridge(tmp_path):
         b.state = {"last_update_id": 0}
         b.state_file = tmp_path / "state.json"
         b.audit_file = tmp_path / "audit.jsonl"
-        b.bot_ids = {"mt5_desk", "polymarket"}
+        b.bot_ids = {"mt5_desk", "polymarket", "freetraderhub_research", "freeghosttools_sitemap"}
         b.website_ids = {"freeghosttools", "freetraderhub"}
         b.reports_dir = tmp_path
         return b
@@ -343,3 +343,48 @@ class TestResolveEntityId:
 
     def test_site_match(self, bridge):
         assert bridge._resolve_entity_id("check freeghosttools", bridge.website_ids) == "freeghosttools"
+
+    def test_freetraderhub_research_exact(self, bridge):
+        assert bridge._resolve_entity_id("freetraderhub_research execute", bridge.bot_ids) == "freetraderhub_research"
+
+    def test_freeghosttools_sitemap_exact(self, bridge):
+        assert bridge._resolve_entity_id("freeghosttools_sitemap health", bridge.bot_ids) == "freeghosttools_sitemap"
+
+
+# ---------------------------------------------------------------------------
+# New pipeline bots — routing and execute observer block
+# ---------------------------------------------------------------------------
+
+class TestNewPipelineBots:
+    def test_freetraderhub_research_health_routes(self, bridge):
+        """'/bot freetraderhub_research health' parses to a tool action with correct args."""
+        action = bridge._parse_action("/bot freetraderhub_research health")
+        assert action.get("type") == "tool", f"Expected tool action, got: {action}"
+        args = action.get("args", [])
+        assert "freetraderhub_research" in args, f"Bot ID missing from args: {args}"
+        assert "health" in args, f"Command key missing from args: {args}"
+
+    def test_freeghosttools_sitemap_health_routes(self, bridge):
+        """'/bot freeghosttools_sitemap health' parses to a tool action with correct args."""
+        action = bridge._parse_action("/bot freeghosttools_sitemap health")
+        assert action.get("type") == "tool", f"Expected tool action, got: {action}"
+        args = action.get("args", [])
+        assert "freeghosttools_sitemap" in args, f"Bot ID missing from args: {args}"
+        assert "health" in args, f"Command key missing from args: {args}"
+
+    def test_freetraderhub_research_execute_blocked_in_observer(self, bridge):
+        """Execute must be blocked when observer mode is ON."""
+        bridge.observer_mode = True
+        action = bridge._parse_action("/bot freetraderhub_research execute confirm")
+        # In observer mode, _parse_action returns an error action
+        assert action.get("type") == "error", f"Expected error action in observer mode, got: {action}"
+        msg = action.get("message", "")
+        assert "observer" in msg.lower() or "blocked" in msg.lower(), f"Error should mention observer/blocked: {msg}"
+
+    def test_freeghosttools_sitemap_execute_blocked_in_observer(self, bridge):
+        """Execute must be blocked when observer mode is ON."""
+        bridge.observer_mode = True
+        action = bridge._parse_action("/bot freeghosttools_sitemap execute confirm")
+        assert action.get("type") == "error", f"Expected error action in observer mode, got: {action}"
+        msg = action.get("message", "")
+        assert "observer" in msg.lower() or "blocked" in msg.lower(), f"Error should mention observer/blocked: {msg}"
