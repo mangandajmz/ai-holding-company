@@ -21,6 +21,7 @@ DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
 
 
 from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
+import md_agent_state as _md_state  # noqa: E402
 
 
 def _state_read(path: Path) -> dict[str, Any]:
@@ -331,6 +332,13 @@ class TelegramBridge:
         if "board review" in lowered:
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
+        approve_match = re.match(r"^/approve_([a-zA-Z0-9_]+)$", raw, re.I)
+        if approve_match:
+            return {"type": "approve", "slug": approve_match.group(1)}
+
+        if re.match(r"^/skip$", raw, re.I):
+            return {"type": "skip"}
+
         return {"type": "freetext", "text": raw}
 
     @staticmethod
@@ -634,148 +642,229 @@ class TelegramBridge:
         lines.append("→ /brief for CEO scorecard  ·  /bot <id> health")
         return "\n".join(lines).strip()
 
-    def _summarize_holding_brief(self, payload: dict[str, Any]) -> str:
+    def _summarize_holding_brief(self, payload: dict[str, Any]) -> str:  # noqa: PLR0912
         if not isinstance(payload, dict):
             return "Holding heartbeat failed: invalid payload."
-        summary = payload.get("base_summary", {})
-        summary = summary if isinstance(summary, dict) else {}
-        company = payload.get("company_scorecard", {})
-        company = company if isinstance(company, dict) else {}
-        divisions = payload.get("divisions", [])
-        divisions = divisions if isinstance(divisions, list) else []
-        base_alerts = payload.get("base_alerts", []) or []
-        mode = str(payload.get("mode", "heartbeat"))
-        company_name = str(payload.get("company_name", "Manganda LTD"))
-        now_str = str(payload.get("generated_at_utc", _utc_now()))[:16].replace("T", "  ")
 
-        # — Exec summary line
+        divisions = [d for d in (payload.get("divisions") or []) if isinstance(d, dict)]
+        company = payload.get("company_scorecard") or {}
         company_status = str(company.get("status", "UNKNOWN")).upper()
-        priority_order = {"RED": 0, "AMBER": 1, "GREEN": 2}
-        all_items = [i for i in company.get("items", []) if isinstance(i, dict)]
-        count_red = sum(1 for i in all_items if str(i.get("status", "")).upper() == "RED")
-        count_amber = sum(1 for i in all_items if str(i.get("status", "")).upper() == "AMBER")
-        count_green = sum(1 for i in all_items if str(i.get("status", "")).upper() == "GREEN")
-        summary_line = (
-            f"{self._status_emoji(company_status)} {company_status}"
-            + (f"  —  {count_red} RED" if count_red else "")
-            + (f"  ·  {count_amber} AMBER" if count_amber else "")
-            + (f"  ·  {count_green} GREEN" if count_green else "")
-        )
+        ceo_engine = str(payload.get("ceo_engine") or "")
+        engine_tag = "[ai]" if "crewai" in ceo_engine else "[det]"
+
+        # Date header
+        try:
+            gen_dt = datetime.fromisoformat(
+                str(payload.get("generated_at_utc", _utc_now())).replace("Z", "+00:00")
+            )
+            date_str = gen_dt.strftime("%a %d %b")
+        except (ValueError, TypeError):
+            date_str = datetime.now(timezone.utc).strftime("%a %d %b")
+
+        SEP = "━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Division status lines
+        div_map = {str(d.get("division", "")).lower(): d for d in divisions}
+        div_lines: list[str] = []
+        for div_key, label in [("trading", "Trading "), ("websites", "Websites")]:
+            div = div_map.get(div_key)
+            if div is None:
+                div_lines.append(f"{label}  ⬜  no data")
+                continue
+            sc_status = str((div.get("scorecard") or {}).get("status", "UNKNOWN")).upper()
+            detail = self._compact_division_line(div)
+            div_lines.append(f"{label} {self._status_emoji(sc_status)}  {detail}")
+
+        # Agents cross-check line
+        cross = self._cross_check_line(divisions)
+
+        # Issue + upsert day count into md_agent_state
+        decision_item, decision_div = self._pick_decision_item(divisions)
+        decision_block = ""
+        if decision_item:
+            metric = str(decision_item.get("metric", "?"))
+            actual = str(decision_item.get("actual", ""))
+            action = str(decision_item.get("action", ""))
+            approve_cmd = self._approve_command_for(metric)
+            # Upsert into issue log so day count accumulates
+            issue_key = re.sub(r"[^a-z0-9]+", "_", metric.lower()).strip("_")
+            try:
+                issue = _md_state.upsert_issue(
+                    key=issue_key,
+                    description=f"{metric}: {actual}",
+                )
+                days = issue.get("days", 0)
+                day_tag = f" (day {days})" if days > 0 else ""
+            except Exception:  # noqa: BLE001
+                day_tag = ""
+            action_short = action.split(".")[0] if action else ""
+            decision_block = (
+                f"\n1 decision needed\n"
+                f"{metric}: {actual}{day_tag}. {action_short}.\n"
+                f"→ /{approve_cmd} or /skip"
+            )
+
+        # Resolve issues that are now GREEN
+        try:
+            for div in divisions:
+                for item in (div.get("scorecard") or {}).get("items") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("status", "")).upper() == "GREEN":
+                        key = re.sub(r"[^a-z0-9]+", "_", str(item.get("metric", "")).lower()).strip("_")
+                        _md_state.resolve_issue(key)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Company-level status line
+        company_emoji = self._status_emoji(company_status)
 
         lines = [
-            "══════════════════════════════",
-            f"{company_name}  ·  CEO Heartbeat",
-            f"{now_str} UTC  ·  {mode}",
-            "══════════════════════════════",
-            summary_line,
-            "",
-            "COMPANY KPIs",
+            f"AI Holding Co — {date_str}",
+            SEP,
+            f"Company {company_emoji}  {company_status}",
+        ] + div_lines + [
+            SEP,
         ]
+        if cross:
+            lines.append(f"Agents checked: {cross}  {engine_tag}")
+            lines.append(SEP)
+        if decision_block:
+            lines.append(decision_block)
+        else:
+            lines.append("No decisions needed today")
 
-        ranked_company = sorted(all_items, key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3))
-        for item in ranked_company[:5]:
-            emoji = self._status_emoji(item.get("status", ""))
-            action_flag = "  → REVIEW" if str(item.get("status", "")).upper() == "RED" else (
-                "  → WATCH" if str(item.get("status", "")).upper() == "AMBER" else ""
-            )
-            lines.append(
-                f"{emoji} {item.get('metric')}   "
-                f"{item.get('actual')}  vs  {item.get('target')}  ({item.get('variance')}){action_flag}"
-            )
+        board = payload.get("board_review") or {}
+        if isinstance(board, dict) and board.get("approvals"):
+            lines.append("")
+            lines.append("→ /board review  to see board approvals")
 
-        lines.append("")
-        lines.append("DIVISIONS")
+        return "\n".join(lines).strip()
+
+    # ------------------------------------------------------------------ #
+    #  Scheduler watchdog                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _check_scheduler_watchdog(self) -> str | None:
+        """Return a warning string if no morning brief has fired in > 25 hours, else None."""
+        last_iso = self.state.get("last_morning_brief_utc")
+        if not last_iso:
+            return None  # never run — no baseline, don't false-alarm
+        try:
+            last_dt = datetime.fromisoformat(last_iso.replace("Z", "+00:00"))
+            age_hours = (datetime.now(timezone.utc) - last_dt).total_seconds() / 3600.0
+        except (ValueError, TypeError):
+            return None
+        if age_hours > 25:
+            return (
+                f"⚠️ Scheduler watchdog: last brief was {age_hours:.0f}h ago "
+                f"(expected ≤25h). Check Windows Task Scheduler — it may be dark.\n"
+                f"Run manually: python scripts/telegram_bridge.py --send-morning-brief"
+            )
+        return None
+
+    # ------------------------------------------------------------------ #
+    #  Compact brief helpers                                              #
+    # ------------------------------------------------------------------ #
+
+    _METRIC_SHORT: dict[str, str] = {
+        "mt5 dependencies": "MT5 deps",
+        "mt5 cycle": "MT5 cycle",
+        "active validated strategies": "MT5 strategies",
+        "best active strategy": "MT5 PF",
+        "polymarket resolved trades": "Poly resolved",
+        "polymarket trade data": "Poly data",
+        "website snapshot uptime": "uptime",
+        "website latency": "latency",
+        "sitemap freshness": "Sitemap",
+        "research report freshness": "FTH brief",
+    }
+
+    @classmethod
+    def _shorten_metric(cls, metric: str) -> str:
+        m = metric.lower()
+        for key, short in cls._METRIC_SHORT.items():
+            if key in m:
+                return short
+        return " ".join(metric.split()[:3])
+
+    def _compact_division_line(self, div: dict[str, Any]) -> str:
+        scorecard = div.get("scorecard") or {}
+        items = scorecard.get("items") or []
+        priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        sorted_items = sorted(
+            [i for i in items if isinstance(i, dict)],
+            key=lambda i: priority.get(str(i.get("status", "")).upper(), 3),
+        )
+        if not sorted_items or all(str(i.get("status", "")).upper() == "GREEN" for i in sorted_items):
+            return "All metrics healthy"
+        concerns = [i for i in sorted_items if str(i.get("status", "")).upper() in ("RED", "AMBER")][:2]
+        parts = []
+        for item in concerns:
+            short = self._shorten_metric(str(item.get("metric", "?")))
+            actual = str(item.get("actual", "")).strip()
+            if actual and actual not in ("n/a", "None", ""):
+                parts.append(f"{short} {actual}")
+            else:
+                parts.append(short)
+        return " | ".join(parts)
+
+    def _cross_check_line(self, divisions: list[dict[str, Any]]) -> str:
+        div_map = {
+            str(d.get("division", "")).lower(): str((d.get("scorecard") or {}).get("status", "")).upper()
+            for d in divisions if isinstance(d, dict)
+        }
+        t_status = div_map.get("trading", "")
+        w_status = div_map.get("websites", "")
+        if t_status == "GREEN" and w_status == "GREEN":
+            return ""
+        if t_status == "RED" and w_status == "RED":
+            return "Trading + Websites both RED (independent issues — no shared cause found)"
+        if t_status == "RED":
+            return "Trading ↔ MD (Websites healthy — not shared infrastructure)"
+        if w_status == "RED":
+            return "Websites ↔ MD (Trading healthy — not shared infrastructure)"
+        return "Trading ↔ MD"
+
+    def _pick_decision_item(
+        self, divisions: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], str] | tuple[None, None]:
+        """Return the single worst RED/AMBER item with an action, plus its division name."""
+        priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
+        candidates: list[tuple[int, dict[str, Any], str]] = []
         for div in divisions:
             if not isinstance(div, dict):
                 continue
-            scorecard = div.get("scorecard", {})
-            scorecard = scorecard if isinstance(scorecard, dict) else {}
-            div_status = str(scorecard.get("status", "UNKNOWN")).upper()
-            div_name = str(div.get("division", "division")).title()
-            lines.append(f"{div_name}    {self._status_emoji(div_status)} {div_status}")
-            div_items = sorted(
-                [i for i in scorecard.get("items", []) if isinstance(i, dict)],
-                key=lambda i: priority_order.get(str(i.get("status", "")).upper(), 3),
-            )
-            if div_items:
-                top = div_items[0]
-                lines.append(
-                    f"  {self._status_emoji(top.get('status', ''))} {top.get('metric')}   "
-                    f"{top.get('actual')}  vs  {top.get('target')}"
-                )
+            div_name = str(div.get("division", "?"))
+            scorecard = div.get("scorecard") or {}
+            for item in scorecard.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                st = str(item.get("status", "")).upper()
+                if st in ("RED", "AMBER") and item.get("action"):
+                    candidates.append((priority.get(st, 3), item, div_name))
+        if not candidates:
+            return None, None
+        candidates.sort(key=lambda x: x[0])
+        _, item, div_name = candidates[0]
+        return item, div_name
 
-        # — Decisions block (RED/AMBER items with actions)
-        decisions = [
-            (item, div)
-            for div in divisions if isinstance(div, dict)
-            for item in (div.get("scorecard", {}) or {}).get("items", []) if isinstance(item, dict)
-            if str(item.get("status", "")).upper() in ("RED", "AMBER")
-        ]
-        company_decisions = [
-            item for item in ranked_company
-            if str(item.get("status", "")).upper() in ("RED", "AMBER") and item.get("action")
-        ]
-        if company_decisions:
-            lines.append("")
-            lines.append(f"DECISIONS REQUIRED  ({count_red} RED · {count_amber} AMBER)")
-            for n, item in enumerate(company_decisions[:4], 1):
-                deadline = "today" if str(item.get("status", "")).upper() == "RED" else "+7 days"
-                lines.append(
-                    f"{n}. {self._status_emoji(item.get('status', ''))} {item.get('metric')}: "
-                    f"{item.get('action', '').rstrip('.')}"
-                )
-                lines.append(f"   Owner: Trading  ·  Deadline: {deadline}")
-
-        if mode in ("board_review", "board_pack"):
-            lines.append("")
-            mode_label = "Board Pack" if mode == "board_pack" else "Board Review"
-            board = payload.get("board_review", {})
-            board = board if isinstance(board, dict) else {}
-
-            if board.get("gate_blocked"):
-                lines.append("🔴 GATE BLOCKED — CEO review cannot proceed")
-                incomplete = [
-                    f"  • {item.get('topic', '?')}: missing {', '.join(item.get('validation_warnings', []))}"
-                    for item in board.get("approvals", [])
-                    if isinstance(item, dict) and item.get("validation_warnings")
-                ]
-                lines.extend(incomplete)
-                lines.append("")
-                lines.append("→ /brief to force a fresh scorecard run")
-            else:
-                lines.append(f"{mode_label} Approvals")
-                approvals = board.get("approvals", [])
-                approvals = approvals if isinstance(approvals, list) else []
-                if not approvals:
-                    lines.append("  None required")
-                else:
-                    for n, item in enumerate(approvals[:5], 1):
-                        if not isinstance(item, dict):
-                            continue
-                        pri = str(item.get("priority", "")).upper()
-                        deadline = item.get("deadline", "—")
-                        owner = str(item.get("owner", "—")).title()
-                        dissent = str(item.get("dissent", "")).strip()
-                        dissent_label = "PENDING review" if dissent.startswith("PENDING") else dissent[:60]
-                        measure = str(item.get("measurement_plan", "")).strip()
-                        lines.append(f"\n{n}. {self._status_emoji(pri)} {item.get('topic')}")
-                        lines.append(f"   Owner: {owner}  ·  Deadline: {deadline}")
-                        lines.append(f"   Dissent: {dissent_label}")
-                        if measure:
-                            lines.append(f"   Measure: {measure}")
-                lines.append("")
-                lines.append("Approve, defer, or reject each item explicitly.")
-
-        report_path = payload.get("files", {}).get("latest_markdown") if isinstance(payload.get("files"), dict) else None
-        if report_path:
-            lines.append("")
-            lines.append(f"Report: {report_path}")
-
-        if mode in ("board_review", "board_pack"):
-            lines.append("→ /brief to re-run scorecard after changes")
-        else:
-            lines.append("→ /board review to formalise approvals")
-        return "\n".join(lines).strip()
+    @staticmethod
+    def _approve_command_for(metric: str) -> str:
+        """Derive a /approve_* slug from a metric name."""
+        m = metric.lower()
+        if "research" in m or "fth" in m:
+            return "approve_fth_run"
+        if "polymarket" in m or "poly" in m:
+            return "approve_polymarket_review"
+        if "mt5" in m or "cycle" in m or "strategy" in m:
+            return "approve_mt5_investigate"
+        if "sitemap" in m:
+            return "approve_sitemap_refresh"
+        if "uptime" in m or "website" in m:
+            return "approve_website_check"
+        slug = re.sub(r"[^a-z0-9]+", "_", m).strip("_")[:30]
+        return f"approve_{slug}"
 
     def _search_memory(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
         """Search vector memory for query. Returns [] on any failure."""
@@ -1104,6 +1193,19 @@ class TelegramBridge:
             return str(action.get("message"))
         if action.get("type") == "freetext":
             return self._answer_freetext(action["text"])
+        if action.get("type") == "approve":
+            slug = str(action.get("slug", ""))
+            try:
+                task_id = _md_state.log_task(command=f"/approve_{slug}", source="CEO")
+            except Exception:  # noqa: BLE001
+                task_id = "?"
+            return f"✅ Task logged [{task_id}]: /approve_{slug}\nStatus: PENDING — will be confirmed on completion."
+        if action.get("type") == "skip":
+            try:
+                _md_state.log_task(command="/skip", source="CEO")
+            except Exception:  # noqa: BLE001
+                pass
+            return "⏭ Skipped — logged for audit."
         tool_name = str(action.get("name"))
         args = action.get("args", [])
         result = self._run_tool_router(args)
@@ -1127,6 +1229,8 @@ class TelegramBridge:
             ok = bool(fallback.get("ok"))
 
         self.send_message(self.owner_chat_id, text)
+        self.state["last_morning_brief_utc"] = _utc_now()
+        _state_write(self.state_file, self.state)
         self._audit(
             {
                 "mode": "send_morning_brief",
@@ -1218,6 +1322,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and push morning brief to owner.")
     parser.add_argument("--simulate-text", default="", help="Run parser+tool flow locally without Telegram API.")
     parser.add_argument("--discover-ids", action="store_true", help="Print chat_id/user_id values from recent updates.")
+    parser.add_argument("--check-watchdog", action="store_true", help="Check if scheduler ran recently; send alert if stale.")
     return parser
 
 
@@ -1240,6 +1345,13 @@ def main() -> None:
         print(json.dumps({"ok": True, "count": len(ids), "ids": ids}, indent=2))
         return
 
+    if args.check_watchdog:
+        warning = bridge._check_scheduler_watchdog()
+        if warning and bridge.owner_chat_id:
+            bridge.send_message(bridge.owner_chat_id, warning)
+        print(json.dumps({"ok": True, "warning": warning}))
+        return
+
     if args.send_morning_brief:
         bridge.send_morning_brief()
         print(json.dumps({"ok": True, "mode": "send_morning_brief"}))
@@ -1249,6 +1361,14 @@ def main() -> None:
         count = bridge.run_once()
         print(json.dumps({"ok": True, "mode": "once", "processed": count}))
         return
+
+    # Watchdog check on startup — alert CEO if scheduler has been dark
+    try:
+        watchdog_warning = bridge._check_scheduler_watchdog()
+        if watchdog_warning and bridge.owner_chat_id:
+            bridge.send_message(bridge.owner_chat_id, watchdog_warning)
+    except Exception:  # noqa: BLE001
+        pass
 
     while True:
         try:
