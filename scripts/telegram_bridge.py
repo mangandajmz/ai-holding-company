@@ -22,6 +22,7 @@ DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
 
 from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
 import md_agent_state as _md_state  # noqa: E402
+import wiki as _wiki  # noqa: E402
 
 
 def _state_read(path: Path) -> dict[str, Any]:
@@ -331,6 +332,33 @@ class TelegramBridge:
             }
         if "board review" in lowered:
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
+
+        if re.match(r"^/pending$", raw, re.I):
+            return {"type": "pending_review"}
+
+        merge_approve = re.match(r"^/approve_merge_([a-zA-Z0-9_]+)$", raw, re.I)
+        if merge_approve:
+            return {"type": "merge_approve", "init_id": f"init_{merge_approve.group(1)}"}
+
+        merge_reject = re.match(r"^/reject_merge_([a-zA-Z0-9_]+)$", raw, re.I)
+        if merge_reject:
+            return {"type": "merge_reject", "init_id": f"init_{merge_reject.group(1)}"}
+
+        wiki_approve = re.match(r"^/approve_wiki_([a-zA-Z0-9_]+)$", raw, re.I)
+        if wiki_approve:
+            return {"type": "wiki_approve", "slug": wiki_approve.group(1)}
+
+        wiki_reject = re.match(r"^/reject_wiki_([a-zA-Z0-9_]+)$", raw, re.I)
+        if wiki_reject:
+            return {"type": "wiki_reject", "slug": wiki_reject.group(1)}
+
+        init_approve = re.match(r"^/approve_init_([a-zA-Z0-9_]+)$", raw, re.I)
+        if init_approve:
+            return {"type": "init_approve", "init_id": f"init_{init_approve.group(1)}"}
+
+        init_reject = re.match(r"^/reject_init_([a-zA-Z0-9_]+)$", raw, re.I)
+        if init_reject:
+            return {"type": "init_reject", "init_id": f"init_{init_reject.group(1)}"}
 
         approve_match = re.match(r"^/approve_([a-zA-Z0-9_]+)$", raw, re.I)
         if approve_match:
@@ -738,6 +766,20 @@ class TelegramBridge:
         if isinstance(board, dict) and board.get("approvals"):
             lines.append("")
             lines.append("→ /board review  to see board approvals")
+
+        # Surface pending wiki entries and initiatives if any
+        try:
+            pending_wiki = _wiki.get_pending()
+            pending_inits = _md_state.get_proposed_initiatives()
+            if pending_wiki or pending_inits:
+                lines.append("")
+                if pending_wiki:
+                    lines.append(f"📖 {len(pending_wiki)} wiki entry pending approval")
+                if pending_inits:
+                    lines.append(f"🔧 {len(pending_inits)} initiative(s) awaiting approval")
+                lines.append("→ /pending  to review")
+        except Exception:  # noqa: BLE001
+            pass
 
         return "\n".join(lines).strip()
 
@@ -1193,6 +1235,72 @@ class TelegramBridge:
             return str(action.get("message"))
         if action.get("type") == "freetext":
             return self._answer_freetext(action["text"])
+        if action.get("type") == "merge_approve":
+            init_id = str(action.get("init_id", ""))
+            try:
+                from dev_pipeline import merge_initiative  # noqa: PLC0415
+                success, msg = merge_initiative(init_id)
+            except Exception as exc:  # noqa: BLE001
+                success, msg = False, str(exc)
+            return ("✅ " if success else "❌ ") + msg
+
+        if action.get("type") == "merge_reject":
+            init_id = str(action.get("init_id", ""))
+            try:
+                _md_state.update_initiative(init_id, "REJECTED", detail="CEO rejected merge")
+            except Exception:  # noqa: BLE001
+                pass
+            return f"🗑 Initiative {init_id} merge rejected — worktree will be cleaned up on next pipeline run."
+
+        if action.get("type") == "pending_review":
+            parts: list[str] = []
+            try:
+                for entry in _wiki.get_pending():
+                    parts.append(_wiki.format_pending_for_telegram(entry))
+                for init in _md_state.get_proposed_initiatives():
+                    parts.append(_md_state.format_initiative_for_telegram(init))
+            except Exception:  # noqa: BLE001
+                pass
+            return "\n\n".join(parts) if parts else "No pending wiki entries or initiatives."
+
+        if action.get("type") == "wiki_approve":
+            slug = str(action.get("slug", ""))
+            try:
+                found = _wiki.approve_entry(slug)
+            except Exception:  # noqa: BLE001
+                found = False
+            if found:
+                return f"📖 Wiki entry '{slug}' approved and added to institutional memory."
+            return f"⚠️ No pending wiki entry found for slug '{slug}'."
+
+        if action.get("type") == "wiki_reject":
+            slug = str(action.get("slug", ""))
+            try:
+                found = _wiki.reject_entry(slug)
+            except Exception:  # noqa: BLE001
+                found = False
+            return f"🗑 Wiki entry '{slug}' discarded." if found else f"⚠️ No pending entry '{slug}'."
+
+        if action.get("type") == "init_approve":
+            init_id = str(action.get("init_id", ""))
+            try:
+                _md_state.update_initiative(init_id, "APPROVED", detail="CEO approved via Telegram")
+            except Exception:  # noqa: BLE001
+                pass
+            return (
+                f"✅ Initiative {init_id} approved.\n"
+                f"Dev pipeline will run in the background.\n"
+                f"You'll receive a diff + test results for final merge approval when done."
+            )
+
+        if action.get("type") == "init_reject":
+            init_id = str(action.get("init_id", ""))
+            try:
+                _md_state.update_initiative(init_id, "REJECTED", detail="CEO rejected via Telegram")
+            except Exception:  # noqa: BLE001
+                pass
+            return f"🗑 Initiative {init_id} rejected — logged for audit."
+
         if action.get("type") == "approve":
             slug = str(action.get("slug", ""))
             try:

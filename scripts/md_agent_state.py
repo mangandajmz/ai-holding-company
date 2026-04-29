@@ -187,3 +187,91 @@ def get_pending_tasks(log_path: Path = DEFAULT_TASK_LOG) -> list[dict[str, Any]]
     """Return all PENDING tasks sorted by log time (oldest first)."""
     records = _load(log_path)
     return [r for r in records if r.get("status") == "PENDING"]
+
+
+# ── initiative log ────────────────────────────────────────────────────────────
+
+DEFAULT_INITIATIVE_LOG = ROOT / "state" / "md_initiative_log.json"
+
+_INITIATIVE_STATUSES = ("PROPOSED", "APPROVED", "IN_PROGRESS", "DONE", "REJECTED")
+
+
+def propose_initiative(
+    title: str,
+    problem: str,
+    proposed_change: str,
+    success_criteria: str,
+    source: str = "md_agent",
+    log_path: Path = DEFAULT_INITIATIVE_LOG,
+) -> str:
+    """Log a new initiative proposal. Returns initiative_id."""
+    records = _load(log_path)
+    init_id = f"init_{len(records) + 1:04d}"
+    records.append(
+        {
+            "initiative_id": init_id,
+            "title": title,
+            "problem": problem,
+            "proposed_change": proposed_change,
+            "success_criteria": success_criteria,
+            "source": source,
+            "status": "PROPOSED",
+            "proposed_at": _now_utc(),
+            "updated_at": _now_utc(),
+            "detail": None,
+        }
+    )
+    _save(log_path, records)
+    return init_id
+
+
+def update_initiative(
+    initiative_id: str,
+    status: str,
+    detail: str | None = None,
+    log_path: Path = DEFAULT_INITIATIVE_LOG,
+) -> bool:
+    """Update initiative status. Returns True if found."""
+    if status not in _INITIATIVE_STATUSES:
+        raise ValueError(f"Invalid initiative status: {status}")
+    records = _load(log_path)
+    for rec in records:
+        if rec.get("initiative_id") == initiative_id:
+            rec["status"] = status
+            rec["updated_at"] = _now_utc()
+            if detail is not None:
+                rec["detail"] = detail
+            _save(log_path, records)
+            return True
+    return False
+
+
+def get_proposed_initiatives(log_path: Path = DEFAULT_INITIATIVE_LOG) -> list[dict[str, Any]]:
+    """Return all PROPOSED initiatives awaiting CEO approval."""
+    return [r for r in _load(log_path) if r.get("status") == "PROPOSED"]
+
+
+def get_initiative(
+    initiative_id: str, log_path: Path = DEFAULT_INITIATIVE_LOG
+) -> dict[str, Any] | None:
+    """Return a specific initiative by ID, or None."""
+    return next(
+        (r for r in _load(log_path) if r.get("initiative_id") == initiative_id), None
+    )
+
+
+def format_initiative_for_telegram(rec: dict[str, Any]) -> str:
+    """Format an initiative proposal for CEO review via Telegram."""
+    init_id = rec.get("initiative_id", "?")
+    slug = init_id.replace("init_", "")
+    return (
+        f"🔧 Initiative proposed\n"
+        f"ID: {init_id}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Problem: {rec.get('problem', '?')}\n"
+        f"Change:  {rec.get('proposed_change', '?')}\n"
+        f"Done when: {rec.get('success_criteria', '?')}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"→ /approve_init_{slug}  to queue for dev pipeline\n"
+        f"→ /reject_init_{slug}   to discard"
+    )
