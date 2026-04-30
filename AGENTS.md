@@ -1,4 +1,4 @@
-# AI Holding Company — Claude Code Rules
+# AI Holding Company — Codex Rules
 
 ## Automation & Scheduling
 

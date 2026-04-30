@@ -2,6 +2,15 @@ company:
   name: "AI Holding Company"
   timezone: "America/Vancouver"
   owner_role: "Owner/CEO"
+  delivery_owners:
+    holding: "Owner/CEO"
+    operations: "Operations Lead"
+    finance: "Finance Lead"
+    marketing: "Marketing Lead"
+    product: "Product Lead"
+    commercial: "Commercial Lead"
+    trading: "Trading Lead"
+    websites: "Websites Lead"
 
 chat:
   preferred_app: "telegram" # Change to "slack" if needed
@@ -30,6 +39,15 @@ memory:
   enabled: true
   ollama_base_url: "http://127.0.0.1:11434"
   embedding_model: "nomic-embed-text"
+
+hermes:
+  enabled: true
+  base_url: "http://127.0.0.1:9000"
+  health_path: "/health"
+  chat_path: "/chat"
+  timeout_sec: 30
+  use_for_general_chat: true
+  api_key_env: "HERMES_API_KEY"
 
 trading_bots:
   - id: "mt5_desk"
@@ -136,6 +154,18 @@ projects:
     status: "light"
     enabled: true
     notes: "Brief-driven content creation. All drafts require CEO approval before publishing (R3/R4)."
+  mt5_desk:
+    project_name: "MT5 Agentic Trading Desk"
+    project_type: "capital_risk"
+    enabled: true
+    source_bot_id: "mt5_desk"
+    notes: "Always include this live trading system in Phase 3 portfolio health while enabled."
+  polymarket:
+    project_name: "Polymarket Copy Trading Bot"
+    project_type: "capital_risk"
+    enabled: true
+    source_bot_id: "polymarket"
+    notes: "Always include this live trading system in Phase 3 portfolio health while enabled."
 
 property_charters:
   freetraderhub:
@@ -148,6 +178,23 @@ property_charters:
       internal_rate_usd_hr: 75
       r12_formula_version: website_v1
       charter_file: "FREETRADERHUB_CHARTER_v1.md"
+    promotion:
+      promoted: true
+      business_case_defined: true
+      target_product_defined: true
+      feasibility_validated: true
+      roi_case_defined: true
+      metrics_defined:
+        - "sessions_7d"
+        - "waft_7d"
+        - "tool_completion_rate_pct"
+        - "total_mrr_usd"
+      metrics_trackable: true
+      tracked_metrics:
+        - "latency_ms"
+        - "research_brief_age_days"
+      live_metrics_count: 2
+      notes: "Reference implementation used to define the promotion framework."
   freeghosttools:
     charter:
       version: v0-stub
@@ -157,6 +204,17 @@ property_charters:
       value_readiness_date: 2026-04-18
       internal_rate_usd_hr: 75
       r12_formula_version: website_v1
+    promotion:
+      promoted: false
+      business_case_defined: false
+      target_product_defined: false
+      feasibility_validated: false
+      roi_case_defined: false
+      metrics_defined: []
+      metrics_trackable: false
+      tracked_metrics: []
+      live_metrics_count: 0
+      notes: ""
   mt5_forex_bot:
     charter:
       version: v0-stub
@@ -166,6 +224,17 @@ property_charters:
       value_readiness_date: 2026-01-01
       internal_rate_usd_hr: 75
       r12_formula_version: trading_bot_v1
+    promotion:
+      promoted: false
+      business_case_defined: false
+      target_product_defined: false
+      feasibility_validated: false
+      roi_case_defined: false
+      metrics_defined: []
+      metrics_trackable: false
+      tracked_metrics: []
+      live_metrics_count: 0
+      notes: ""
   polymarket_bot:
     charter:
       version: v0-stub
@@ -175,6 +244,29 @@ property_charters:
       value_readiness_date: 2026-01-01
       internal_rate_usd_hr: 75
       r12_formula_version: trading_bot_v1
+    promotion:
+      promoted: false
+      business_case_defined: false
+      target_product_defined: false
+      feasibility_validated: false
+      roi_case_defined: false
+      metrics_defined: []
+      metrics_trackable: false
+      tracked_metrics: []
+      live_metrics_count: 0
+      notes: ""
+
+promotion_framework:
+  reference_property: "freetraderhub"
+  required_gates:
+    - "business_case_defined"
+    - "target_product_defined"
+    - "feasibility_validated"
+    - "roi_case_defined"
+    - "metrics_defined"
+    - "metrics_trackable"
+  min_live_metrics: 2
+  promotion_policy: "Promote when all required gates pass and at least two live metrics are actively tracked."
 
 kpis:
   heartbeat:
@@ -233,6 +325,10 @@ phase3:
   targets_file: "config/targets.yaml"
   baseline_state_file: "state/phase3_company_baseline.json"
   r12_counter_state_file: "state/r12_property_counters.json"
+  property_metric_feed_file: "state/property_metric_feed.json"
+  property_metric_sources_dir: "state/property_metrics"
+  property_metric_memory_file: "state/property_metric_memory.json"
+  property_kpi_history_file: "state/property_kpi_history.jsonl"
   reports:
     markdown_latest: "reports/phase3_holding_latest.md"
     json_latest: "reports/phase3_holding_latest.json"

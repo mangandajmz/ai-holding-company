@@ -181,6 +181,38 @@ def test_freetext_commercial_question_returns_clear_message_when_not_available()
     assert "[context]" not in response
 
 
+def test_freetext_marketing_question_prefers_phase3_department_briefs() -> None:
+    bridge = _build_bridge()
+    original_loader = bridge._load_latest_report_json
+
+    def _report_loader(filename: str) -> dict[str, Any] | None:
+        if filename == "phase3_holding_latest.json":
+            return {
+                "property_department_briefs": [
+                    {
+                        "property_id": "freetraderhub",
+                        "property_name": "FreeTraderHub",
+                        "departments": {
+                            "marketing": {
+                                "status": "AMBER",
+                                "headline": "sessions below green target",
+                                "signals": ["sessions below green target", "WAFT below green target"],
+                                "proposal": "tighten demand capture on highest-intent pages",
+                            }
+                        },
+                    }
+                    ]
+                }
+        return original_loader(filename)
+
+    bridge._load_latest_report_json = _report_loader
+    response = bridge._answer_freetext("How is marketing?")
+
+    assert "Marketing status by operating property:" in response
+    assert "FreeTraderHub: [AMBER]" in response
+    assert "tighten demand capture on highest-intent pages" in response
+
+
 def test_freetext_direction_is_logged_cleanly() -> None:
     bridge = _build_bridge()
     calls: list[list[str]] = []
@@ -195,6 +227,103 @@ def test_freetext_direction_is_logged_cleanly() -> None:
 
     assert "Direction logged." in response
     assert calls == [["log_direction", "--text", "Focus on trading first and ignore website issues for now", "--source", "telegram_freetext"]]
+
+
+def test_handle_text_status_runs_live_holding_heartbeat() -> None:
+    bridge = _build_bridge()
+    calls: list[tuple[list[str], int]] = []
+
+    def _run_tool_router(args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append((args, timeout_sec))
+        return {
+            "ok": True,
+            "payload": {
+                "company_name": "AI Holding Company",
+                "mode": "heartbeat",
+                "generated_at_utc": "2026-04-23T00:00:00Z",
+                "base_summary": {"pnl_total": -7.5, "trades_total": 0, "websites_up": 3, "websites_total": 3},
+                "company_scorecard": {"status": "RED", "items": []},
+                "divisions": [],
+                "base_alerts": [],
+            },
+        }
+
+    bridge._run_tool_router = _run_tool_router
+    response = bridge.handle_text("status")
+
+    assert calls[0][0] == ["run_holding", "--mode", "heartbeat", "--force"]
+    assert "CEO Heartbeat" in response
+
+
+def test_handle_text_approvals_lists_board_and_developer_items(monkeypatch) -> None:
+    bridge = _build_bridge()
+
+    def _run_tool_router(args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        assert args == ["run_holding", "--mode", "board_review", "--force"]
+        return {
+            "ok": True,
+            "payload": {
+                "board_review": {
+                    "approvals": [
+                        {
+                            "priority": "RED",
+                            "topic": "Trading KPI: MT5 cycle freshness",
+                            "decision": "Restart scheduler and verify cadence",
+                            "owner": "trading",
+                        }
+                    ]
+                }
+            },
+        }
+
+    bridge._run_tool_router = _run_tool_router
+
+    import developer_tool
+
+    monkeypatch.setattr(
+        developer_tool,
+        "run_developer_tool",
+        lambda config, action, **kwargs: {
+            "pending_count": 1,
+            "pending": [{"approval_id": "dev_123", "task": "Patch telegram status routing"}],
+        }
+        if action == "status"
+        else {},
+    )
+    response = bridge.handle_text("I want a list of all items that need approval")
+
+    assert "Board approvals:" in response
+    assert "Trading KPI: MT5 cycle freshness" in response
+    assert "Developer approvals (1):" in response
+    assert "dev_123" in response
+
+
+def test_handle_text_mt5_research_request_runs_checks_without_fake_restart() -> None:
+    bridge = _build_bridge()
+    calls: list[list[str]] = []
+
+    def _run_tool_router(args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "bot_id": "mt5_desk",
+                "command_key": args[-1],
+                "return_code": 0,
+                "elapsed_ms": 20,
+                "stdout": "",
+            },
+        }
+
+    bridge._run_tool_router = _run_tool_router
+    response = bridge.handle_text("Restart mt5 scheduler and run research")
+
+    assert calls == [
+        ["run_trading_script", "--bot", "mt5_desk", "--command-key", "health"],
+        ["run_trading_script", "--bot", "mt5_desk", "--command-key", "report"],
+    ]
+    assert "no scheduler restart was executed" in response.lower()
 
 
 def test_handle_text_ceo_alias_returns_company_summary() -> None:

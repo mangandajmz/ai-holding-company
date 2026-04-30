@@ -9,6 +9,7 @@ import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from monitoring import ROOT, daily_brief
 from utils import (
@@ -56,6 +57,60 @@ def _reports_dir(config: dict[str, Any]) -> Path:
     return _reports_dir_util(config)
 
 
+def _property_charters(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("property_charters", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _resolve_property_website_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    website_id = str(tracking.get("website_id", "")).strip()
+    if website_id:
+        return website_id
+    defaults = {
+        "freetraderhub": "freetraderhub_website",
+        "freeghosttools": "freeghosttools",
+    }
+    return defaults.get(property_id)
+
+
+def _resolve_property_research_id(property_id: str, charter_entry: dict[str, Any]) -> str | None:
+    tracking = charter_entry.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    research_id = str(tracking.get("research_website_id", "")).strip()
+    if research_id:
+        return research_id
+    defaults = {
+        "freetraderhub": "freetraderhub_research",
+    }
+    return defaults.get(property_id)
+
+
+def _operating_website_ids(config: dict[str, Any]) -> set[str]:
+    website_ids: set[str] = set()
+    for property_id, entry in _property_charters(config).items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("active", True) is False:
+            continue
+        charter = entry.get("charter", {})
+        charter = charter if isinstance(charter, dict) else {}
+        version = str(charter.get("version", "")).strip().lower()
+        if version.startswith("v0-stub"):
+            continue
+        property_type = str(charter.get("property_type", "")).strip().lower()
+        if property_type != "website":
+            continue
+        website_id = _resolve_property_website_id(property_id, entry)
+        if website_id:
+            website_ids.add(website_id)
+        research_id = _resolve_property_research_id(property_id, entry)
+        if research_id:
+            website_ids.add(research_id)
+    return website_ids
+
+
 def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
     latest = _reports_dir(config) / "daily_brief_latest.json"
     if not latest.exists():
@@ -67,11 +122,36 @@ def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _load_targets(config: dict[str, Any]) -> dict[str, Any]:
+    phase3 = config.get("phase3", {})
+    phase3 = phase3 if isinstance(phase3, dict) else {}
+    rel = str(phase3.get("targets_file", "config/targets.yaml")).strip() or "config/targets.yaml"
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    payload = _load_yaml(path)
+    return payload if isinstance(payload, dict) else {}
+
+
+def _brief_freshness_threshold_hours(config: dict[str, Any]) -> float:
+    targets = _load_targets(config)
+    freshness = targets.get("freshness", {})
+    freshness = freshness if isinstance(freshness, dict) else {}
+    return _to_float(freshness.get("daily_brief_max_age_hours")) or 6.0
+
+
 def _ensure_brief_payload(config: dict[str, Any], force: bool) -> tuple[dict[str, Any], str]:
     fresh = daily_brief(config=config, force=force)
-    if not fresh.get("skipped"):
-        return fresh, "fresh"
-    return _load_latest_brief_payload(config=config), "cached_latest"
+    payload = fresh if not fresh.get("skipped") else _load_latest_brief_payload(config=config)
+    payload = dict(payload) if isinstance(payload, dict) else {}
+    source_mode = "fresh" if not fresh.get("skipped") else "cached_latest"
+    generated = _parse_iso_utc(str(payload.get("generated_at_utc", "")).strip())
+    age_hours: float | None = None
+    if generated is not None:
+        age_hours = max((datetime.now(timezone.utc) - generated).total_seconds() / 3600.0, 0.0)
+    threshold_hours = _brief_freshness_threshold_hours(config)
+    payload["stale_input"] = bool(age_hours is not None and age_hours > threshold_hours)
+    payload["stale_input_age_hours"] = round(age_hours, 2) if age_hours is not None else None
+    payload["stale_input_threshold_hours"] = threshold_hours
+    return payload, source_mode
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -162,7 +242,27 @@ def _is_allowlisted_tool_router_command(command: str) -> bool:
     if not (router_token == "scripts/tool_router.py" or router_token.endswith("/scripts/tool_router.py")):
         return False
 
-    subcommand = tokens[2].strip("\"'")
+    tail = tokens[2:]
+    subcommand = ""
+    arg_tokens: list[str] = []
+    index = 0
+    while index < len(tail):
+        token = tail[index]
+        if not token.startswith("--"):
+            subcommand = token.strip("\"'")
+            arg_tokens = tail[index + 1 :]
+            break
+        flag = token.split("=", 1)[0]
+        if flag != "--config":
+            return False
+        if "=" not in token:
+            if index + 1 >= len(tail):
+                return False
+            index += 2
+            continue
+        index += 1
+    if not subcommand:
+        return False
     spec = _ALLOWED_TOOL_ROUTER_SUBCOMMANDS.get(subcommand)
     if spec is None:
         return False
@@ -170,7 +270,7 @@ def _is_allowlisted_tool_router_command(command: str) -> bool:
     required = set(spec.get("required", set()))
     allowed_flags = set(spec.get("allowed_flags", set()))
     seen_flags: set[str] = set()
-    for token in tokens[3:]:
+    for token in arg_tokens:
         if not token.startswith("--"):
             continue
         flag = token.split("=", 1)[0]
@@ -588,12 +688,22 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
     generated_at = _parse_iso_utc(brief_payload.get("generated_at_utc")) or datetime.now(timezone.utc)
     websites = brief_payload.get("websites", [])
     websites = websites if isinstance(websites, list) else []
+    operating_ids = _operating_website_ids(config)
+    scored_websites = websites
+    if operating_ids:
+        filtered = [
+            site
+            for site in websites
+            if isinstance(site, dict) and str(site.get("id", "")).strip() in operating_ids
+        ]
+        if filtered:
+            scored_websites = filtered
     items: list[dict[str, str]] = []
     risks: list[str] = []
     actions: list[str] = []
 
-    total = len([w for w in websites if isinstance(w, dict)])
-    up = len([w for w in websites if isinstance(w, dict) and bool(w.get("ok"))])
+    total = len([w for w in scored_websites if isinstance(w, dict)])
+    up = len([w for w in scored_websites if isinstance(w, dict) and bool(w.get("ok"))])
     ratio = (up / total) if total else None
     if ratio is None:
         uptime_status = "RED"
@@ -621,7 +731,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("One or more managed websites are down in the current snapshot.")
         actions.append("Prioritize incident triage for down sites before content/feature work.")
 
-    latencies = [_to_float(w.get("latency_ms")) for w in websites if isinstance(w, dict)]
+    latencies = [_to_float(w.get("latency_ms")) for w in scored_websites if isinstance(w, dict)]
     latencies = [v for v in latencies if v is not None]
     max_latency = max(latencies) if latencies else None
     if max_latency is None:
@@ -650,7 +760,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("Website latency is materially above target.")
 
     dns_tcp_all = True
-    for site in websites:
+    for site in scored_websites:
         if not isinstance(site, dict):
             continue
         network = site.get("network_diag", {})
@@ -673,78 +783,91 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("Network reachability issue detected for at least one website.")
         actions.append("Escalate DNS/TCP remediation for impacted domain.")
 
-    freeghost = next((w for w in websites if isinstance(w, dict) and str(w.get("id")) == "freeghosttools"), None)
-    freeghost_age_days = None
-    if isinstance(freeghost, dict):
-        lastmod = freeghost.get("local_diag", {})
-        lastmod = lastmod if isinstance(lastmod, dict) else {}
-        lastmod_text = lastmod.get("sitemap_latest_lastmod")
-        parsed = _parse_iso_utc(lastmod_text)
-        if parsed is None and lastmod_text:
-            try:
-                parsed = datetime.strptime(str(lastmod_text), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            except ValueError:
-                parsed = None
-        if parsed is not None:
-            freeghost_age_days = (generated_at - parsed).total_seconds() / 86400.0
-    if freeghost_age_days is None:
-        ghost_status = "AMBER"
-        ghost_variance = "missing"
-    elif freeghost_age_days <= max_sitemap_age_days:
-        ghost_status = "GREEN"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    elif freeghost_age_days <= max_sitemap_age_days * 1.5:
-        ghost_status = "AMBER"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    else:
-        ghost_status = "RED"
-        ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
-    items.append(
-        _as_status_line(
-            metric="FreeGhostTools sitemap freshness",
-            target=f"latest sitemap lastmod age <= {max_sitemap_age_days:.0f}d",
-            actual=_fmt_age_minutes((freeghost_age_days * 24 * 60) if freeghost_age_days is not None else None),
-            variance=ghost_variance,
-            status=ghost_status,
-            action="If stale, refresh sitemap/deploy pipeline so content updates are indexed promptly.",
-        )
+    include_freeghost = any(
+        isinstance(site, dict) and str(site.get("id", "")).strip() == "freeghosttools"
+        for site in scored_websites
     )
-    if ghost_status == "RED":
-        risks.append("FreeGhostTools sitemap metadata is stale.")
+    if include_freeghost:
+        freeghost = next((w for w in scored_websites if isinstance(w, dict) and str(w.get("id")) == "freeghosttools"), None)
+        freeghost_age_days = None
+        if isinstance(freeghost, dict):
+            lastmod = freeghost.get("local_diag", {})
+            lastmod = lastmod if isinstance(lastmod, dict) else {}
+            lastmod_text = lastmod.get("sitemap_latest_lastmod")
+            parsed = _parse_iso_utc(lastmod_text)
+            if parsed is None and lastmod_text:
+                try:
+                    parsed = datetime.strptime(str(lastmod_text), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    parsed = None
+            if parsed is not None:
+                freeghost_age_days = (generated_at - parsed).total_seconds() / 86400.0
+        if freeghost_age_days is None:
+            ghost_status = "AMBER"
+            ghost_variance = "missing"
+        elif freeghost_age_days <= max_sitemap_age_days:
+            ghost_status = "GREEN"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        elif freeghost_age_days <= max_sitemap_age_days * 1.5:
+            ghost_status = "AMBER"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        else:
+            ghost_status = "RED"
+            ghost_variance = f"{freeghost_age_days - max_sitemap_age_days:+.1f}d"
+        items.append(
+            _as_status_line(
+                metric="FreeGhostTools sitemap freshness",
+                target=f"latest sitemap lastmod age <= {max_sitemap_age_days:.0f}d",
+                actual=_fmt_age_minutes((freeghost_age_days * 24 * 60) if freeghost_age_days is not None else None),
+                variance=ghost_variance,
+                status=ghost_status,
+                action="If stale, refresh sitemap/deploy pipeline so content updates are indexed promptly.",
+            )
+        )
+        if ghost_status == "RED":
+            risks.append("FreeGhostTools sitemap metadata is stale.")
 
-    fth = next((w for w in websites if isinstance(w, dict) and str(w.get("id")) == "freetraderhub"), None)
-    report_age_days = None
-    if isinstance(fth, dict):
-        diag = fth.get("local_diag", {})
+    freetraderhub_research = next(
+        (
+            w
+            for w in scored_websites
+            if isinstance(w, dict)
+            and str(w.get("id", "")).strip() in {"freetraderhub_research", "freetraderhub"}
+        ),
+        None,
+    )
+    if isinstance(freetraderhub_research, dict):
+        report_age_days = None
+        diag = freetraderhub_research.get("local_diag", {})
         diag = diag if isinstance(diag, dict) else {}
         latest_mtime = _parse_iso_utc(diag.get("local_reports_latest_mtime_utc"))
         if latest_mtime is not None:
             report_age_days = (generated_at - latest_mtime).total_seconds() / 86400.0
-    if report_age_days is None:
-        report_status = "AMBER"
-        report_variance = "missing"
-    elif report_age_days <= max_research_age_days:
-        report_status = "GREEN"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    elif report_age_days <= max_research_age_days * 2:
-        report_status = "AMBER"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    else:
-        report_status = "RED"
-        report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
-    items.append(
-        _as_status_line(
-            metric="FreeTraderHub research brief freshness",
-            target=f"latest executive brief age <= {max_research_age_days:.0f}d (weekly cadence)",
-            actual=_fmt_age_minutes((report_age_days * 24 * 60) if report_age_days is not None else None),
-            variance=report_variance,
-            status=report_status,
-            action="If stale, run free-traderhub weekly crew and publish fresh brief/output package.",
+        if report_age_days is None:
+            report_status = "AMBER"
+            report_variance = "missing"
+        elif report_age_days <= max_research_age_days:
+            report_status = "GREEN"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        elif report_age_days <= max_research_age_days * 2:
+            report_status = "AMBER"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        else:
+            report_status = "RED"
+            report_variance = f"{report_age_days - max_research_age_days:+.1f}d"
+        items.append(
+            _as_status_line(
+                metric="FreeTraderHub research brief freshness",
+                target=f"latest executive brief age <= {max_research_age_days:.0f}d (weekly cadence)",
+                actual=_fmt_age_minutes((report_age_days * 24 * 60) if report_age_days is not None else None),
+                variance=report_variance,
+                status=report_status,
+                action="If stale, run free-traderhub weekly crew and publish fresh brief/output package.",
+            )
         )
-    )
-    if report_status != "GREEN":
-        risks.append("FreeTraderHub research reports are stale relative to weekly operating cadence.")
-        actions.append("Run `free-traderhub-research-team` weekly pipeline to refresh strategy/content signals.")
+        if report_status != "GREEN":
+            risks.append("FreeTraderHub research reports are stale relative to weekly operating cadence.")
+            actions.append("Run `free-traderhub-research-team` weekly pipeline to refresh strategy/content signals.")
 
     statuses = [item["status"] for item in items]
     summary_status = _status_worst(statuses)
@@ -878,6 +1001,14 @@ def _build_llm(config: dict[str, Any]) -> tuple[Any | None, str | None]:
     if temperature is None:
         temperature = 0.1
 
+    if not model.strip().lower().startswith("ollama/"):
+        return None, f"Non-local LLM model blocked by R1: {model}"
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "host.docker.internal"}:
+        return None, f"Non-local Ollama base URL blocked by R1: {base_url}"
+    openai_base = f"{base_url.rstrip('/')}/v1"
+
     storage_dir = ROOT / "state" / "crewai"
     storage_dir.mkdir(parents=True, exist_ok=True)
     os.environ["CREWAI_STORAGE_DIR"] = str(storage_dir)
@@ -885,6 +1016,13 @@ def _build_llm(config: dict[str, Any]) -> tuple[Any | None, str | None]:
     os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
     os.environ["CREWAI_TRACING_ENABLED"] = "false"
     os.environ["OTEL_SDK_DISABLED"] = "true"
+    # Force OpenAI-compatible clients to local Ollama endpoint (R1).
+    os.environ["OPENAI_API_KEY"] = "ollama-local"
+    os.environ["OPENAI_BASE_URL"] = openai_base
+    os.environ["OPENAI_API_BASE"] = openai_base
+    os.environ["OLLAMA_BASE_URL"] = base_url
+    for cloud_env in ["ANTHROPIC_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "TOGETHER_API_KEY"]:
+        os.environ.pop(cloud_env, None)
 
     try:
         from crewai import LLM  # pylint: disable=import-outside-toplevel
@@ -1090,7 +1228,21 @@ def _run_division_crew(
         verbose=bool(spec.get("verbose", False)),
     )
 
-    kickoff_result = crew.kickoff()
+    try:
+        kickoff_result = crew.kickoff()
+    except Exception as exc:  # noqa: BLE001
+        fallback = _fallback_division_report(division=division, brief_payload=brief_payload, scorecard=scorecard)
+        return {
+            "division": division,
+            "ok": True,
+            "engine": "fallback_local_rules",
+            "status": scorecard.get("status", "attention").lower(),
+            "spec_file": str(spec_path),
+            "final_output": fallback,
+            "task_outputs": [],
+            "scorecard": scorecard,
+            "warnings": [f"Crew execution failed ({exc}); used local fallback report."],
+        }
 
     task_outputs = []
     blocked_command_detected = False
@@ -1158,6 +1310,11 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Generated (UTC): {payload['generated_at_utc']}")
     lines.append(f"- Source brief mode: {payload['source_brief_mode']}")
     lines.append(f"- Divisions executed: {', '.join(payload['divisions_ran'])}")
+    if payload.get("stale_input"):
+        lines.append(
+            f"- STALE DATA: base telemetry is {payload.get('stale_input_age_hours')}h old "
+            f"(threshold {payload.get('stale_input_threshold_hours')}h)."
+        )
     lines.append("")
     lines.append("## Summary")
     summary = payload.get("base_summary", {})
@@ -1166,10 +1323,29 @@ def _build_phase2_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Bot trades total: {summary.get('trades_total')}")
     lines.append(f"- Websites up: {summary.get('websites_up')}/{summary.get('websites_total')}")
     lines.append(f"- Alerts in base brief: {len(payload.get('base_alerts', []))}")
+    base_remote_sync = payload.get("base_remote_sync", {})
+    base_remote_sync = base_remote_sync if isinstance(base_remote_sync, dict) else {}
+    sync_bots = base_remote_sync.get("bots", [])
+    sync_bots = sync_bots if isinstance(sync_bots, list) else []
+    cached_syncs = [item for item in sync_bots if isinstance(item, dict) and item.get("used_cached_state")]
+    if cached_syncs:
+        lines.append("- Remote cache fallback detected:")
+        for sync in cached_syncs:
+            lines.append(
+                f"  {sync.get('bot_id')}: cache_age_minutes={sync.get('cache_age_minutes')} "
+                f"last_live_check_utc={sync.get('last_live_check_utc') or 'unknown'}"
+            )
     brief_payload = {
         "bots": payload.get("base_bots", []),
         "websites": payload.get("base_websites", []),
     }
+    warnings = payload.get("warnings", [])
+    warnings = warnings if isinstance(warnings, list) else []
+    if warnings:
+        lines.append("")
+        lines.append("## Warnings")
+        for warning in warnings[:10]:
+            lines.append(f"- {warning}")
 
     for division in payload.get("divisions", []):
         if not isinstance(division, dict):
@@ -1282,6 +1458,23 @@ def run_phase2_divisions(config: dict[str, Any], division: str = "all", force: b
     warnings: list[str] = []
     if llm_error:
         warnings.append(llm_error)
+    if brief_payload.get("stale_input"):
+        warnings.append(
+            "Phase 2 is running on stale daily brief telemetry "
+            f"({brief_payload.get('stale_input_age_hours')}h old; threshold "
+            f"{brief_payload.get('stale_input_threshold_hours')}h)."
+        )
+    remote_sync = brief_payload.get("remote_sync", {})
+    remote_sync = remote_sync if isinstance(remote_sync, dict) else {}
+    sync_bots = remote_sync.get("bots", [])
+    sync_bots = sync_bots if isinstance(sync_bots, list) else []
+    for sync in sync_bots:
+        if not isinstance(sync, dict) or not sync.get("used_cached_state"):
+            continue
+        warnings.append(
+            f"{sync.get('bot_id')}: remote bot state fell back to cache "
+            f"({sync.get('cache_age_minutes')}m old; last live check {sync.get('last_live_check_utc') or 'unknown'})."
+        )
 
     for division_id in divisions_to_run:
         try:
@@ -1330,6 +1523,10 @@ def run_phase2_divisions(config: dict[str, Any], division: str = "all", force: b
         "base_alerts": brief_payload.get("alerts", []),
         "base_bots": brief_payload.get("bots", []),
         "base_websites": brief_payload.get("websites", []),
+        "base_remote_sync": remote_sync,
+        "stale_input": bool(brief_payload.get("stale_input")),
+        "stale_input_age_hours": brief_payload.get("stale_input_age_hours"),
+        "stale_input_threshold_hours": brief_payload.get("stale_input_threshold_hours"),
         "warnings": warnings,
         "divisions": division_payloads,
     }

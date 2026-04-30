@@ -1,7 +1,7 @@
-# Telegram Bridge Runbook (Local-Only, Minimal, Secure)
+# Telegram Bridge Runbook (Aiogram Production Bridge)
 
-This bridge replaces OpenClaw with a thin local polling service.
-It only runs allowlisted commands against your existing `scripts/tool_router.py`.
+Use `scripts/aiogram_bridge.py` as the sole production Telegram bridge.
+`scripts/telegram_bridge.py` is deprecated and exits immediately.
 
 ## 1) Configure bot token + owner IDs
 
@@ -15,16 +15,7 @@ setx TELEGRAM_OWNER_USER_ID "REPLACE_WITH_NUMERIC_USER_ID"
 
 Close and reopen terminal after `setx`.
 
-If you do not know the numeric IDs yet:
-
-1. Send `/start` to your bot in Telegram.
-2. Run:
-
-```powershell
-python scripts/telegram_bridge.py --discover-ids
-```
-
-Then use returned `chat_id` and `user_id` in the `setx` commands above.
+Restart your terminal after `setx` so the bridge inherits the new values.
 
 ## 2) Confirm bridge is in Observer Mode
 
@@ -34,35 +25,38 @@ Check in [config/projects.yaml](C:/Users/james/OneDrive/Documents/Manganda%20LTD
 
 Observer mode blocks `/bot <id> execute ...`.
 
-## 3) Local dry-run tests (no Telegram call)
+## 3) Local dry-run tests (no Telegram polling)
 
 ```powershell
 cd "C:\Users\james\OneDrive\Documents\Manganda LTD\AI Models\ai-holding-company"
-python scripts/telegram_bridge.py --simulate-text "/help"
-python scripts/telegram_bridge.py --simulate-text "/status"
-python scripts/telegram_bridge.py --simulate-text "/bot mt5_desk report"
+python scripts/aiogram_bridge.py --simulate-text "/help"
+python scripts/aiogram_bridge.py --simulate-text "/status"
+python scripts/aiogram_bridge.py --simulate-text "/bot mt5_desk report"
 ```
 
-## 4) Telegram one-shot poll test
+## 4) Continuous bridge
 
-Send `/help` to your bot in Telegram, then run:
+Start the production bridge:
 
 ```powershell
-python scripts/telegram_bridge.py --once
+python scripts/aiogram_bridge.py
 ```
 
-If configured correctly, you should receive a reply in Telegram.
+The Windows startup scripts and scheduled tasks in this repository already use
+`aiogram_bridge.py` only.
 
-## 5) Continuous bridge
+## 5) Morning brief push test (manual trigger)
 
 ```powershell
-python scripts/telegram_bridge.py
+python scripts/aiogram_bridge.py --send-morning-brief
 ```
 
-## 6) Morning brief push test (manual trigger)
+## 6) Local board and approval checks
 
 ```powershell
-python scripts/telegram_bridge.py --send-morning-brief
+python scripts/aiogram_bridge.py --simulate-text "/approvals"
+python scripts/aiogram_bridge.py --simulate-text "/board review"
+python scripts/aiogram_bridge.py --simulate-text "/content_status"
 ```
 
 ## 7) Allowed commands in chat
@@ -70,18 +64,67 @@ python scripts/telegram_bridge.py --send-morning-brief
 - `/status`
 - `/brief` (Phase 3: runs CEO heartbeat; fallback Phase 2: division brief)
 - `/board review` (Phase 3 board review pack with approval items)
+- `/approvals`
+- `/approve <board_approval_id>`
+- `/deny <board_approval_id>`
+- `/assign <board_approval_id>`
+- `/start <board_approval_id>`
+- `/done <board_approval_id> <completion_note>`
 - `/site <website_id>`
 - `/bot <bot_id> health`
 - `/bot <bot_id> report`
 - `/bot <bot_id> logs [lines]`
+- `/bot <bot_id> execute`
+- `/bot <bot_id> execute confirm`
 - `/divisions [all|trading|websites]`
+- `/content <brief text>`
+- `/content_status`
+- `/content_approve <draft_id>`
+- `/content_deny <draft_id> [note]`
+- `/develop <task_description>`
+- `/develop_approve <approval_id>`
+- `/develop_deny <approval_id>`
+- `/develop_status`
 - `/note <text>`
 - `/memory <query>`
 - `/help`
 
 ## 8) Audit + state files
 
-- `state/telegram_bridge_state.json`
-- `state/bridge_audit.jsonl`
+- `logs/aiogram_bridge.log`
+- `state/conversation_history.jsonl`
+- `state/board_approval_decisions.json`
 
 These stay local on your machine.
+
+## 9) Content approval loop
+
+Create a draft:
+
+```powershell
+python scripts/aiogram_bridge.py --simulate-text "/content Write an article about MT5 signal accuracy. Target audience: traders."
+```
+
+Review current draft buckets:
+
+```powershell
+python scripts/aiogram_bridge.py --simulate-text "/content_status"
+```
+
+Approve or deny a draft by ID:
+
+```powershell
+python scripts/aiogram_bridge.py --simulate-text "/content_approve <draft_id>"
+python scripts/aiogram_bridge.py --simulate-text "/content_deny <draft_id> Needs tighter sourcing"
+```
+
+## 10) Board execution queue
+
+Approve work through the board as usual, then progress the execution state explicitly:
+
+```powershell
+python scripts/aiogram_bridge.py --simulate-text "/approvals"
+python scripts/aiogram_bridge.py --simulate-text "/assign <board_approval_id>"
+python scripts/aiogram_bridge.py --simulate-text "/start <board_approval_id>"
+python scripts/aiogram_bridge.py --simulate-text "/done <board_approval_id> Completed remediation and validation notes"
+```

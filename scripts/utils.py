@@ -2,7 +2,7 @@
 
 Single source of truth for helpers that were previously duplicated across
 monitoring.py, phase2_crews.py, phase3_holding.py, project_reports.py,
-telegram_bridge.py, and local_vector_memory.py.
+aiogram_bridge.py, and local_vector_memory.py.
 """
 
 from __future__ import annotations

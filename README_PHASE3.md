@@ -40,12 +40,11 @@ Board review mode adds explicit approval items for Owner/CEO decisions.
 ## 5) Telegram test
 
 ```powershell
-python scripts/telegram_bridge.py --simulate-text "/brief"
-python scripts/telegram_bridge.py --simulate-text "/board review"
+python scripts/aiogram_bridge.py --simulate-text "/brief"
+python scripts/aiogram_bridge.py --simulate-text "/board review"
 ```
 
 Live chat:
 1. Send `/brief` in Telegram.
-2. Run `python scripts/telegram_bridge.py --once`.
-3. Send `/board review` and run `--once` again.
-
+2. Run `python scripts/aiogram_bridge.py`.
+3. Send `/board review` in the same chat while the bridge is running.

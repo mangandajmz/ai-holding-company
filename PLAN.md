@@ -1,13 +1,14 @@
 ﻿# AI Holding Company â€” Master Plan
-**Version:** 5.6  
+**Version:** 5.7  
 **Owner:** J (CEO)  
-**Last updated:** 2026-04-17  
+**Last updated:** 2026-04-18  
 **Supersedes:** All previous plan versions (v1â€“v4).  
 **v5.2 change:** Stage D updated â€” portfolio analysis complete, Integration Readiness Sprint defined. Stage D execution tasks documented in Â§11.1. Property charters written for all four portfolio properties.  
 **v5.3 change:** Stage D closed. Trading=GREEN, Websites=GREEN. 23/23 tests passing, commit e533073. G1 unblocked. Stage G (Commercial Division) now active â€” prompts in STAGE_G_PROMPTS.md.  
 **v5.4 change:** Stage G closed. Commercial Division live, 45/45 tests passing, commit 1367323. Codex review: 8 issues found and resolved (including HIGH â€” inverted risk thresholds). Stage H (Holding Board v2) now active â€” prompts in STAGE_H_PROMPTS.md.
 **v5.5 change:** Stage J closed. Content Studio (light) is now live as brief-driven only with CEO approval gating (R3/R4). Added `crews/content_studio.yaml`, `scripts/content_studio.py`, phase2 integration, Telegram `/content` + `/content_status`, and 14 passing Content Studio tests. Two consecutive phase2 runs confirmed `content_studio=GREEN`.
 **v5.6 change:** Stage I closed. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and CEO approval workflow, semantic memory initialization (`nomic-embed-text`), and time-saved tracking with R9 guardrail proof at 6.25 hours/week.
+**v5.7 change:** Stage L opened - FreeTraderHub Prop-Firm Pivot (Prop Cockpit) approved. G8 Wedge Guard adopted (§6). R12 Net-Negative Value Halt adopted (§2). R12 Applicability Matrix added (per-property-type formulas: website, trading_bot, internal_tool, b2b_service). Websites Division Charter expanded to include product + revenue + pipeline KPIs. Board Pack v2 Property P&L Block activated (§8.1). FreeTraderHub charter v1 active with all six required R12 fields.
 
 ---
 
@@ -50,6 +51,7 @@ These rules cannot be overridden by any agent, plan, or tool.
 | R9 | **Two net-negative weeks = halt** | If Time Saved sheet shows net-negative CEO hours for two consecutive weeks, all new work halts. Review the operating model before adding anything. |
 | R10 | **Silence by default** | No unsolicited messages unless: (a) decision pending for CEO, (b) status colour changed, or (c) seven days passed with no communication. |
 | R11 | **No OpenClaw â€” python-telegram-bot only** | OpenClaw is prohibited. The Telegram gateway must use the `python-telegram-bot` library (direct Bot API polling, pure Python, no Docker, no intermediate broker). The bot token is stored in the local `.env` file only and never transmitted to a third-party service. Compliance Guardian blocks any plan that introduces OpenClaw, a message broker, or any Docker-based Telegram gateway. |
+| R12 | **Net-negative value halt (per property)** | If a portfolio property's Commercial-tracked value delta (revenue + quantified value - time invested x internal_rate - direct costs) is net-negative for 4 consecutive weeks while in an R12-eligible phase, all new investment in that property halts. CEO + Commercial conduct a wedge and operating-model review before work resumes. Formula varies by property_type (see Applicability Matrix in `RULE_CHANGE_PROPOSAL_R12_NET_NEGATIVE_VALUE_HALT.md`). Mirrors R9 at the property level. |
 
 ---
 
@@ -83,7 +85,7 @@ Trading Â· Websites/Product Â· Research Â· Commercial Â· Content Studio 
 | Division | Status | Notes |
 |----------|--------|-------|
 | Trading | LIVE (GREEN) | MT5 + Polymarket. Monitoring stable. |
-| Websites | LIVE (GREEN) | FreeTraderHub. Uptime stable. |
+| Websites | LIVE (GREEN) | FreeTraderHub. Uptime stable. Charter v2 (2026-04-18): mandate expanded from uptime+Lighthouse to include product KPIs (sessions, WAFT, tool completion, returning rate), revenue KPIs (via Commercial), and pipeline health (Content drafts, pages indexed, backlinks acquired). Primary owner of Stage L. |
 | Research | PLANNED (Stage E) | On-demand first, weekly opt-in â€” wait for Stage H |
 | Commercial | LIVE (GREEN) | Finance reporting, risk check, initiative scoring â€” commit 1367323 |
 | Content Studio | LIVE (GREEN) | Brief-driven only. CEO approval gate enforced (R3/R4). Stage J complete 2026-04-17. |
@@ -156,6 +158,7 @@ These guardrails apply to all new division rollouts and initiatives.
 | G5 | **KPI guard** | No new initiative enters execution without: named owner, expected upside, expected effort/cost, KPI or success metric, review date, post-launch measurement plan. |
 | G6 | **Silence guard** | New divisions obey R10 (silence by default). They surface only: pending decisions, colour/status changes, scheduled digest outputs explicitly allowed by policy. |
 | G7 | **Complexity stop-rule** | If two consecutive weeks show net-negative time saved (R9), pause all new division rollout and review the operating model before adding anything. |
+| G8 | **Wedge guard** | No initiative on a portfolio property may be scored, approved, or executed unless it demonstrably serves that property's defined wedge. Each property's wedge is recorded in its charter and may be changed only through the Â§10 rule-change process. Compliance Guardian blocks initiatives that fail this test before they reach the Board Pack. Applied per-property; never cross-applied. |
 
 ---
 
@@ -188,6 +191,26 @@ Every proposed decision in the weekly Board Pack must include all eight fields. 
 | **Post-launch measurement plan** | How success will be measured after execution |
 
 **Commercial must score any new initiative** (upside, effort, confidence, go/no-go) before it reaches the Board Pack. Unscored initiatives are blocked by MA.
+
+### 8.1  Property P&L Block (v2, added 2026-04-18)
+
+Every active property renders a **Property P&L Block** at the top of the
+weekly Board Pack. Six stacked sections: Audience, Revenue, Pipeline,
+Top Movers, Status, plus R12 counter. Reads in 30 seconds. Uses the
+formula dictated by R12 Applicability Matrix for the property's
+declared `property_type`.
+
+Full specification and ASCII template:
+`STAGE_L_BOARD_PACK_V2_PROPERTY_PNL_TEMPLATE.md`
+
+Activation schedule:
+- **FreeTraderHub:** 2026-04-21 (Monday after Stage L approval)
+- **Free Utility Tools:** on wedge declaration + charter completion
+- **MT5 Forex Bot:** on charter completion - formula `trading_bot_v1` (trading P&L excluded from R12)
+- **Polymarket Bot:** on charter completion - formula `trading_bot_v1`
+
+MA renders one block per active property, ordered by strategic priority.
+If data source is unavailable for a field, render `-` and log in cover note.
 
 ---
 
@@ -247,11 +270,12 @@ Locked. Do not re-open without a CEO directive.
 | E | Research Division (on-demand first) | ðŸ”´ NOT STARTED | P2 | G2 â€” wait for H |
 | H | Holding Board v2 + Board Pack upgrade | ðŸŸ¡ IN PROGRESS â€” see Â§11.3 | P2 | â€” |
 | J | Content Studio (light) | âœ… COMPLETE â€” 2026-04-17. Brief-driven only, CEO gate enforced, 14 tests passing, commit 9e7323d. | P2 | G1, G2, G3, G4 |
-| I | Steady State + Developer Tool + Time-Saved Proof | âœ… COMPLETE â€” 2026-04-17. Developer Tool + semantic memory + R9 proof (6.25 h/week). | P3 | â€” |
-| K | Marketing Division | ðŸ”´ NOT STARTED | P3 | G1 (A+B+D must be green), G2, G3 |
+| I | Steady State + Developer Tool + Time-Saved Proof | âœ… COMPLETE â€” 2026-04-17. Developer Tool (/develop, R8/R5 gates), semantic memory (nomic-embed-text), R9 GREEN (6.25 h/week), 35 tests, commit 4b9fc36. | P3 | â€” |
+| K | Marketing Division | âœ… COMPLETE — 2026-04-17. G3 guardrail (max 1 campaign/week), Commercial scoring integration, R3/R4 CEO approval gates, 10 tests passing, commit 272eab2. | P3 | G1 (A+B+D must be green), G2, G3 |
+| L | Stage L â€” FreeTraderHub Prop-Firm Pivot (Prop Cockpit) | ðŸŸ¡ IN PROGRESS â€” 2026-04-18. G8 + R12 adopted. 90-day sprint. Value readiness Day 60 (2026-06-17). | P2 | G1, G2, G3, G4, G5, G8 |
 | F | Ideas Division | âšª OPTIONAL | P3 | Reconsider once G+K exist |
 
-**Critical path:** A â†’ B â†’ D â†’ G â†’ H â†’ J â†’ I  
+**Critical path:** A â†’ B â†’ D â†’ G â†’ H â†’ J â†’ I â†’ L  
 **Parallel:** C alongside A/B  
 **Gated:** K only after A, B, D green  
 **Optional:** F
@@ -268,6 +292,7 @@ Locked. Do not re-open without a CEO directive.
 - Stage D (Operational Signals â†’ GREEN): âœ… COMPLETE â€” 2026-04-15. Diagnosed 5 false-RED/AMBER signals. Patched phase2_crews.py (off-hours logic, log fallbacks, watching-vs-trading distinction). Updated targets.yaml research cadence. Added health/division_health.py. Two consecutive GREEN briefs confirmed. 23/23 tests passing.
 - Stage G (Commercial Division): âœ… COMPLETE â€” 2026-04-15. commercial.py (finance_report, risk_check, score_initiative, run_commercial_division). commercial_division.yaml. /commercial + /score_initiative Telegram commands. Codex review: 8 issues resolved including HIGH inverted-threshold bug. 45/45 tests passing. commit 1367323.
 - Stage J (Content Studio - light): âœ… COMPLETE â€” 2026-04-17. Added content_studio crew + orchestration, phase2 division integration, Telegram `/content` + `/content_status`, strict `PENDING_CEO_APPROVAL` gating, and content_studio KPI targets. Two consecutive phase2 runs returned content_studio=GREEN. 14/14 new tests passing. Commit 9e7323d.
+- Stage I (Steady State + Developer Tool + Time-Saved Proof): âœ… COMPLETE â€” 2026-04-17. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and R5 CEO approval workflow, semantic memory initialization (nomic-embed-text), time-saved tracking with R9 guardrail proof at 6.25 hours/week (GREEN). 35/35 tests passing. Commit 4b9fc36.
 - Stage I (Steady State + Developer Tool): âœ… COMPLETE â€” 2026-04-17. Added `scripts/developer_tool.py`, Telegram developer commands, semantic memory initialization, and time-saved tracking (`scripts/time_tracking.py`). Two-week simulation confirms 6.25 hours/week saved (R9 threshold 5 hours/week).
 
 ---
@@ -394,18 +419,33 @@ Locked. Do not re-open without a CEO directive.
 
 ---
 
+### 11.8  Stage L â€” FreeTraderHub Prop-Firm Pivot
+
+**Status:** ðŸŸ¡ IN PROGRESS â€” approved 2026-04-18.  
+**Duration:** 90 days. **Value readiness:** 2026-06-17 (Day 60).  
+**Property:** FreeTraderHub (house brand) / Prop Cockpit (product wordmark).  
+**Wedge:** Prop firm traders â€” pass the challenge and keep the funded account.  
+**Launch firms:** FTMO, MyFundedFX, FundedNext. Rolling expansion M4+.  
+**Pro tier:** Month 5 (deferred from Day 1 waitlist).
+
+Full sprint plan, definition of done, success criteria, rolling expansion
+schedule, and guardrail matrix:
+`STAGE_L_FREETRADERHUB_PIVOT_PLAN.md`
+
+Linked artifacts:
+- Property charter (v1): `FREETRADERHUB_CHARTER_v1.md`
+- Commercial scoring (SL-FTH-001): `STAGE_L_COMMERCIAL_SCORING_SL-FTH-001.yaml`
+- Content Studio brief (CS-L-001): `STAGE_L_CONTENT_BRIEF_CS-L-001.md`
+- Board Pack v2 template: `STAGE_L_BOARD_PACK_V2_PROPERTY_PNL_TEMPLATE.md`
+
+Day-90 Go/Kill review: 2026-07-17.
+
+---
+
 ## 12. File Structure
 
 ```
 ai-holding-company/
 â”œâ”€â”€ PLAN.md                          â† THIS FILE â€” read first, always
 â”œâ”€â”€ SOUL.md                          â† company identity and personality
-â”œâ”€â”€ HEARTBEAT.md                     â† scheduled task instructions
-â”œâ”€â”€ heartbeat.yaml                   â† scheduler config
-â”œâ”€â”€ telegram_bot.py                  â† Telegram gateway (python-telegram-bot, no Docker)
-â”œâ”€â”€ config/
-â”‚   â”œâ”€â”€ .env.example                 â† environment template (copy to .env, add BOT_TOKEN)
-â”‚   â””â”€â”€ .env                         â† local only â€” never commit â€” contains BOT_TOKEN
-â”œâ”€â”€ tools/
-â”‚   â”œâ”€â”€ read_bot_logs.py
-â”‚   â”œâ”€â”€ c
+â”œâ”€â”€ HEAR

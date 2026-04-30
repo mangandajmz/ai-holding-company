@@ -1,4 +1,5 @@
 company:
+  # Enabled capital-risk projects always count toward portfolio health.
   monthly_pnl_growth_pct:
     target_min: 10.0
     amber_min: 0.0
@@ -14,6 +15,18 @@ company:
   max_alerts_per_heartbeat:
     target_max: 0
     amber_max: 2
+
+property_maturity:
+  ready_ratio:
+    target_min: 1.0
+    amber_min: 0.67
+  live_metrics_ratio:
+    target_min: 1.0
+    amber_min: 0.67
+
+freshness:
+  daily_brief_max_age_hours: 6
+  remote_bot_check_max_age_hours: 6
 
 trading:
   mt5:
@@ -71,6 +84,55 @@ semantic_memory:
   search_latency_ms:
     target: 100 # Semantic search should return in <100ms
     alert_threshold: 500
+
+freetraderhub:
+  # Master KPI Dashboard targets from roadmap.md
+  # Traffic milestones gate revenue — email list is the #1 leading indicator.
+  #
+  # Phase 1 (D30):  baseline measured, 50+ email subs, first affiliate commission
+  # Phase 2 (D90):  5,000 visitors/mo, 500 email subs, $3,660 MRR
+  # Phase 3 (D180): 15,000 visitors/mo, 2,500 email subs, $7,300 MRR
+
+  monthly_visitors:
+    d30_target: null        # baseline measure — no numeric target yet
+    d90_target: 5000
+    d180_target: 15000
+    amber_below_pct: 0.7    # AMBER if <70% of milestone target
+
+  email_list_size:
+    d30_target: 50
+    d90_target: 500
+    d180_target: 2500
+    # Unlock gates (from roadmap):
+    #   50  → affiliate program apply (Day 1 action — no-traffic required)
+    #   100 → rule alert demand survey
+    #   250 → launch rule alert paid tier ($7/mo)
+    #   500 → Pro tool waitlist launch email
+    # 1,000 → course pre-sell
+    # 2,500 → media kit for sponsored listings
+
+  total_mrr_usd:
+    d30_target: 300         # first affiliate commissions
+    d60_target: 1320
+    d90_target: 3660
+    d180_target: 7300
+    amber_below_pct: 0.7
+
+  # Stream-level MRR targets (from Master KPI Dashboard)
+  affiliate_mrr_usd:
+    d30_target: 300
+    d90_target: 1500
+    d180_target: 2500
+
+  alert_mrr_usd:
+    d30_target: 0
+    d90_target: 700
+    d180_target: 1200
+
+  pro_mrr_usd:
+    d30_target: 0
+    d90_target: 960
+    d180_target: 1500
 
 time_saved:
   weekly_hours:

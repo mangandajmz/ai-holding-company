@@ -364,7 +364,7 @@ SUCCESS CRITERIA:
 Read PLAN.md and CLAUDE.md completely before doing anything.
 Blocks 1–4 must be complete before starting this block.
 
-Edit one existing file: scripts/telegram_bridge.py (or tool_router.py — check which
+Edit one existing file: scripts/aiogram_bridge.py (or tool_router.py — check which
 file handles Telegram command routing for the existing /scheduler and /violations commands,
 then edit that file).
 
@@ -407,7 +407,7 @@ SUCCESS CRITERIA:
 - All existing commands (/scheduler, /violations, etc.) still work
 ```
 
-> **→ CODEX REVIEW GATE** — run on modified `telegram_bridge.py` (or `tool_router.py`) before Block 6.
+> **→ CODEX REVIEW GATE** — run on modified `aiogram_bridge.py` (or `tool_router.py`) before Block 6.
 > Check: R10 silence-by-default respected, R5 CEO approval flag present on NO-GO responses,
 > shell=False, no secrets logged, existing commands untouched. Full gate in CLAUDE.md.
 

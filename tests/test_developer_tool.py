@@ -86,6 +86,23 @@ class TestApprovalWorkflow:
         assert out["status"] == "DEPLOYED"
         assert target.exists()
 
+    def test_approve_rejected_syntax_does_not_write_target(self, monkeypatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(developer_tool, "ROOT", tmp_path)
+        pending = tmp_path / "pending.jsonl"
+        audit = tmp_path / "audit.jsonl"
+        target = tmp_path / "generated.py"
+        monkeypatch.setattr(developer_tool, "_PENDING_FILE", pending)
+        monkeypatch.setattr(developer_tool, "_AUDIT_FILE", audit)
+        monkeypatch.setattr(developer_tool, "_DEFAULT_DEPLOY_FILE", target)
+        monkeypatch.setattr(developer_tool, "_infer_target_file", lambda _task: target)
+
+        sub = developer_tool.submit_for_approval("test task", "def broken(:\n    pass\n")
+        out = developer_tool.run_developer_tool({}, approval_id=sub["approval_id"], action="approve")
+
+        assert out["ok"] is False
+        assert out["status"] == "REJECTED_SYNTAX"
+        assert not target.exists()
+
     def test_run_developer_tool_deny_action(self, monkeypatch, tmp_path: Path) -> None:
         monkeypatch.setattr(developer_tool, "_PENDING_FILE", tmp_path / "pending.jsonl")
         monkeypatch.setattr(developer_tool, "_AUDIT_FILE", tmp_path / "audit.jsonl")

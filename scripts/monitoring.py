@@ -31,6 +31,15 @@ def load_config(config_path: str | Path = DEFAULT_CONFIG) -> dict[str, Any]:
     return _load_yaml(path)
 
 
+def _load_targets(config: dict[str, Any]) -> dict[str, Any]:
+    phase3 = config.get("phase3", {})
+    phase3 = phase3 if isinstance(phase3, dict) else {}
+    rel = str(phase3.get("targets_file", "config/targets.yaml")).strip() or "config/targets.yaml"
+    path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
+    payload = _load_yaml(path)
+    return payload if isinstance(payload, dict) else {}
+
+
 def _resolve_path(base: Path, value: str) -> Path:
     path = Path(value)
     if path.is_absolute():
@@ -313,6 +322,10 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             "enabled": True,
             "ok": False,
             "cache_repo": str(cache_repo),
+            "checked_at_utc": _now_utc_iso(),
+            "used_cached_state": False,
+            "cache_age_minutes": None,
+            "last_live_check_utc": "",
             "copied_files": [],
             "errors": [],
             "service_check": None,
@@ -412,6 +425,7 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
 
             ssh_args = ["ssh", *ssh_base, f"{user}@{host}", service_cmd]
             status_file = cache_repo / "remote_service_status.txt"
+            live_check_utc = _now_utc_iso()
             previous_status = ""
             try:
                 previous_status = status_file.read_text(encoding="utf-8", errors="replace").strip()
@@ -443,10 +457,26 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
                 service_result["stdout"] = previous_status
                 service_result["note"] = "Using cached last-known active service state after live check failure."
                 service_result["cached_last_known"] = True
+                record["used_cached_state"] = True
+                record["last_live_check_utc"] = live_check_utc
+                service_result["last_live_check_utc"] = live_check_utc
+                try:
+                    cache_age_minutes = (time.time() - status_file.stat().st_mtime) / 60.0
+                except OSError:
+                    cache_age_minutes = None
+                if cache_age_minutes is not None and cache_age_minutes >= 0:
+                    record["cache_age_minutes"] = round(cache_age_minutes, 2)
+                    service_result["cache_age_minutes"] = round(cache_age_minutes, 2)
+            elif "active" in stdout_text:
+                record["last_live_check_utc"] = live_check_utc
+                service_result["last_live_check_utc"] = live_check_utc
 
             service_result["attempt_count"] = len(attempts)
             service_result["attempts"] = attempts
             record["service_check"] = service_result
+            if record["used_cached_state"]:
+                service_result["last_live_check_utc"] = record["last_live_check_utc"]
+                service_result["cache_age_minutes"] = record["cache_age_minutes"]
 
             status_text = (service_result.get("stdout") or service_result.get("stderr") or "").strip()
             if status_text:
@@ -860,6 +890,9 @@ def _build_markdown_brief(payload: dict[str, Any]) -> str:
     lines.append(f"# {payload['company_name']} - Daily Heartbeat")
     lines.append("")
     lines.append(f"- Generated (UTC): {payload['generated_at_utc']}")
+    used_cached_state = any(bool(bot.get("used_cached_state")) for bot in payload.get("bots", []) if isinstance(bot, dict))
+    if used_cached_state:
+        lines.append("- STALE DATA: at least one bot is using cached remote service state.")
     lines.append(f"- Trading bots monitored: {payload['summary']['bots_total']}")
     lines.append(f"- Websites monitored: {payload['summary']['websites_total']}")
     lines.append(f"- Websites up: {payload['summary']['websites_up']}/{payload['summary']['websites_total']}")
@@ -880,6 +913,11 @@ def _build_markdown_brief(payload: dict[str, Any]) -> str:
         lines.append(
             f"  data_source={bot.get('data_source')} repo_used={bot.get('repo_used')}"
         )
+        if bot.get("used_cached_state"):
+            lines.append(
+                f"  used_cached_state=True cache_age_minutes={bot.get('cache_age_minutes')} "
+                f"last_live_check_utc={bot.get('last_live_check_utc') or 'unknown'}"
+            )
         if bot.get("health_command"):
             lines.append(
                 f"  health={bot['health_command']['command_key']} "
@@ -946,6 +984,11 @@ def _build_markdown_brief(payload: dict[str, Any]) -> str:
                     lines.append(
                         f"  service_check_rc={service.get('return_code')} ok={service.get('ok')}"
                     )
+                lines.append(
+                    f"  used_cached_state={sync.get('used_cached_state')} "
+                    f"cache_age_minutes={sync.get('cache_age_minutes')} "
+                    f"last_live_check_utc={sync.get('last_live_check_utc') or 'unknown'}"
+                )
                 for err in sync.get("errors", []):
                     lines.append(f"  error={err}")
     lines.append("")
@@ -1005,14 +1048,20 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
             "generated_at_utc": _now_utc_iso(),
         }
 
+    targets = _load_targets(config)
+    freshness = targets.get("freshness", {})
+    freshness = freshness if isinstance(freshness, dict) else {}
+    remote_bot_check_max_age_hours = _parse_float(freshness.get("remote_bot_check_max_age_hours")) or 6.0
     bots_payload: list[dict[str, Any]] = []
     alerts: list[str] = []
     repo_overrides: dict[str, Path] = {}
     remote_sync = _sync_remote_readonly_bots(config=config)
+    bot_sync_by_id: dict[str, dict[str, Any]] = {}
     for bot_sync in remote_sync.get("bots", []):
         if not isinstance(bot_sync, dict):
             continue
         bot_id = str(bot_sync.get("bot_id", ""))
+        bot_sync_by_id[bot_id] = bot_sync
         if bot_sync.get("ok") and bot_sync.get("cache_repo"):
             repo_overrides[bot_id] = Path(str(bot_sync["cache_repo"]))
         else:
@@ -1021,6 +1070,15 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
         service_check = bot_sync.get("service_check")
         if isinstance(service_check, dict) and not service_check.get("ok", True):
             alerts.append(f"{bot_id}: remote service check returned rc={service_check.get('return_code')}.")
+        if bot_sync.get("used_cached_state"):
+            cache_age_minutes = bot_sync.get("cache_age_minutes")
+            age_suffix = f" ({cache_age_minutes}m old)" if cache_age_minutes is not None else ""
+            alerts.append(f"{bot_id}: using cached remote service state{age_suffix}.")
+            if cache_age_minutes is not None and cache_age_minutes > remote_bot_check_max_age_hours * 60:
+                alerts.append(
+                    f"{bot_id}: cached remote service state exceeds freshness threshold "
+                    f"({cache_age_minutes}m > {remote_bot_check_max_age_hours * 60:.0f}m)."
+                )
 
     summary_pnl = 0.0
     summary_trades = 0
@@ -1030,6 +1088,8 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     for bot in config.get("trading_bots", []):
         bot_id = str(bot.get("id"))
         repo_override = repo_overrides.get(bot_id)
+        bot_sync = bot_sync_by_id.get(bot_id, {})
+        bot_sync = bot_sync if isinstance(bot_sync, dict) else {}
         log_report = read_bot_logs(config=config, bot_id=bot_id, lines=200, repo_override=repo_override)
         health_result = run_trading_script(
             config=config,
@@ -1089,6 +1149,10 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
                 "report_payload": report_payload,
                 "data_source": "remote_cache" if repo_override else "local_repo",
                 "repo_used": str(repo_override) if repo_override else str(Path(bot.get("repo_path", ""))),
+                "used_cached_state": bool(bot_sync.get("used_cached_state")),
+                "cache_age_minutes": bot_sync.get("cache_age_minutes"),
+                "last_live_check_utc": bot_sync.get("last_live_check_utc"),
+                "remote_check_threshold_hours": remote_bot_check_max_age_hours,
             }
         )
         summary_pnl += bot_pnl
