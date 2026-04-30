@@ -9,6 +9,7 @@
 **v5.5 change:** Stage J closed. Content Studio (light) is now live as brief-driven only with CEO approval gating (R3/R4). Added `crews/content_studio.yaml`, `scripts/content_studio.py`, phase2 integration, Telegram `/content` + `/content_status`, and 14 passing Content Studio tests. Two consecutive phase2 runs confirmed `content_studio=GREEN`.
 **v5.6 change:** Stage I closed. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and CEO approval workflow, semantic memory initialization (`nomic-embed-text`), and time-saved tracking with R9 guardrail proof at 6.25 hours/week.
 **v5.7 change:** Stage L opened - FreeTraderHub Prop-Firm Pivot (Prop Cockpit) approved. G8 Wedge Guard adopted (§6). R12 Net-Negative Value Halt adopted (§2). R12 Applicability Matrix added (per-property-type formulas: website, trading_bot, internal_tool, b2b_service). Websites Division Charter expanded to include product + revenue + pipeline KPIs. Board Pack v2 Property P&L Block activated (§8.1). FreeTraderHub charter v1 active with all six required R12 fields.
+**v5.8 change:** Efficiency LLM exception adopted. Core runtime operations remain Ollama-local, while DeepSeek and `scripts/free_llm_client.py` may be used as opt-in efficiency tooling for development, analysis, summarisation, and research support when explicitly configured. External LLMs are still barred from live trading, board decisions, scoring truth, owner chat autonomy, memory truth, and unattended execution.
 
 ---
 
@@ -40,7 +41,7 @@ These rules cannot be overridden by any agent, plan, or tool.
 
 | # | Rule | Detail |
 |---|------|--------|
-| R1 | **100% local** | All inference via Ollama only. No cloud APIs. No OpenAI, Anthropic Claude API, Grok, Gemini, or equivalent. |
+| R1 | **Runtime local; efficiency LLM exception** | Operational inference stays Ollama-local for briefs, scoring, board decisions, memory truth, owner chat, and live-money workflows. DeepSeek and `scripts/free_llm_client.py` are allowed only as opt-in efficiency tooling for development, review, research support, and summarisation when explicitly configured by environment variables. No external LLM may make unattended operational decisions, execute trades, move money, publish AI prose, alter source outside approved gates, or become canonical truth. |
 | R2 | **Bots stay untouched** | MT5 and Polymarket bot source is read-only. No writes, no deploys, no parameter changes without explicit CEO approval via the Loop. |
 | R3 | **Website source is protected** | Website source is read-only for all agents except the Developer Tool, and only after CEO approval via the Loop. |
 | R4 | **No auto-publish of AI prose** | Deterministic data may auto-publish after plan approval. AI-generated prose requires CEO review before any publish. All external content and website changes escalate under R4 and R3 combined. |
@@ -164,7 +165,7 @@ These guardrails apply to all new division rollouts and initiatives.
 
 ## 7. Model Architecture
 
-All inference local via Ollama. Zero cloud APIs.
+Operational inference is local via Ollama. External LLMs are allowed only under the R1 efficiency exception.
 
 | Model | Tag | Role | Notes |
 |-------|-----|------|-------|
@@ -172,6 +173,8 @@ All inference local via Ollama. Zero cloud APIs.
 | Llama 3.2 3B | `llama3.2:latest` | Telegram Router / NLU Intake | Fast intent parser. Translates plain-English CEO messages into structured Goals. |
 | Qwen2.5 Coder 7B | `qwen2.5-coder:7b` | Developer Tool (Stage I) | `ai-holding-company/` scope only. CEO reviews diff before deploy. |
 | nomic-embed-text | `nomic-embed-text:latest` | Semantic Memory (Stage I+) | Embedding only. Not generative. Future semantic search. |
+| DeepSeek V3 | `deepseek-chat` | Dev pipeline builder/reviewer | External API exception. Requires `DEEPSEEK_API_KEY`. Never used for live operations, board truth, memory truth, or money actions. |
+| Free-provider router | `scripts/free_llm_client.py` | Optional efficiency experiments | External API exception. Provider keys are opt-in only. Output is advisory and must not bypass approval gates. |
 
 ---
 
@@ -252,7 +255,8 @@ Locked. Do not re-open without a CEO directive.
 | Developer Tool (internal scripts only) | âœ… IN (Stage I) | `ai-holding-company/` scope; CEO reviews diff |
 | Developer Agent for bot/website source | â¸ DEFER | Re-evaluate after Stage I |
 | Full code autonomy | âŒ OUT | Quality insufficient for production logic |
-| Grok / Claude API / any cloud LLM | âŒ OUT (hard) | Violates R1. Non-negotiable. |
+| External LLMs for runtime control | âŒ OUT (hard) | Violates R1. No external model may control live operations, trading, board truth, memory truth, owner chat autonomy, or publishing. |
+| External LLMs for efficiency tooling | âœ… IN (restricted) | DeepSeek and `scripts/free_llm_client.py` are allowed only as opt-in advisory tools for development/review/research/summarisation; CEO gates still apply. |
 | OpenClaw / Docker Telegram gateway | âŒ OUT (hard) | Violates R11. Use python-telegram-bot only. |
 | Ideas Division | âšª OPTIONAL | Reconsider once Commercial + Marketing exist. 1/week cap + Critic. |
 

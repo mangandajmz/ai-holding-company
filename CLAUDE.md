@@ -39,6 +39,12 @@ Specifically:
 - Observer mode ON by default — execute commands require explicit `/bot <id> execute confirm`.
 - SSH connections use pinned known_hosts (`state/remote_known_hosts`), not `accept-new`.
 
+- Runtime company operations stay Ollama-local. DeepSeek and `scripts/free_llm_client.py`
+  are approved only as opt-in efficiency tooling for development, review, research
+  support, and summarisation when explicit env vars are configured. They must not
+  make unattended operational decisions, control trading, publish AI prose, own
+  board/memory truth, or bypass CEO approval gates.
+
 ## Code Review Gate
 
 **Every block of work must pass a Codex review before the next block starts.**
@@ -63,7 +69,9 @@ and return clean before work continues:
 - `shell=False` on every subprocess call — no exceptions
 - `shlex.split()` on every config-sourced command string
 - No hardcoded secrets, tokens, API keys, or credentials anywhere
-- No cloud API calls — no openai, anthropic, or external AI endpoints (R1)
+- No external AI endpoint calls for runtime operations. DeepSeek and
+  `scripts/free_llm_client.py` are allowed only under the documented R1 efficiency
+  exception, with env-var secrets and advisory output only.
 - No file writes outside `ai-holding-company/` (R8)
 - No new network connections without explicit CEO approval
 

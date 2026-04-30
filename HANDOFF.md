@@ -102,3 +102,11 @@ MA gate (Block 4): if any board_pack item lacks rationale, owner, or measurement
 ---
 
 *HANDOFF.md — updated 2026-04-16 — regenerate this file at the end of each stage.*
+
+## Efficiency LLM Exception
+
+DeepSeek and `scripts/free_llm_client.py` are intentionally kept as opt-in
+advisory tooling for development, review, research support, and summarisation.
+They must not own board/memory truth, runtime scoring, trading, publishing,
+owner chat autonomy, or unattended execution. Core company operations stay
+Ollama-local unless a later CEO rule change says otherwise.
