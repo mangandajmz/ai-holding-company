@@ -3835,6 +3835,20 @@ async def _send_owner_brief() -> None:
     else:
         text = "Morning brief generation ran, but I only have a partial payload to summarize."
 
+    # Append FTH live KPI line (Umami + Loops)
+    try:
+        import fth_monitor as _fth  # noqa: PLC0415
+        _fth_kpis = _fth.collect_fth_kpis()
+        _fth_line = _fth.build_brief_line(_fth_kpis)
+        text += f"\n\n{_fth_line}"
+        # Also ingest so the feed stays current
+        try:
+            _fth._ingest(_fth_kpis, _runtime().config_path)  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
     # Append pending wiki / initiative footer
     try:
         import wiki as _wiki  # noqa: PLC0415
