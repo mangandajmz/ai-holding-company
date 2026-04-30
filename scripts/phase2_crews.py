@@ -22,6 +22,9 @@ from utils import (
     reports_dir as _reports_dir_util,
 )
 
+MODULE_CANONICAL_SOURCE = "reports/phase2_divisions_latest.json"
+UPSTREAM_CANONICAL_SOURCE = "reports/daily_brief_latest.json"
+
 
 class _SafeDict(dict):
     def __missing__(self, key: str) -> str:  # noqa: D401
@@ -112,6 +115,8 @@ def _operating_website_ids(config: dict[str, Any]) -> set[str]:
 
 
 def _load_latest_brief_payload(config: dict[str, Any]) -> dict[str, Any]:
+    # Phase 2 consumes the canonical telemetry truth only.
+    # Timestamped daily brief files are derived snapshots and should not be used as live input.
     latest = _reports_dir(config) / "daily_brief_latest.json"
     if not latest.exists():
         raise FileNotFoundError(f"Missing latest brief payload: {latest}")
@@ -360,6 +365,58 @@ def _score_trading(brief_payload: dict[str, Any], config: dict[str, Any]) -> dic
     items: list[dict[str, str]] = []
     risks: list[str] = []
     actions: list[str] = []
+
+    def _bot_data_source_item(bot_payload: dict[str, Any] | None, label: str) -> None:
+        payload = bot_payload if isinstance(bot_payload, dict) else {}
+        data_source = str(payload.get("data_source", "")).strip().lower() or "unknown"
+        live_check_ok = payload.get("live_check_ok")
+        service_age = _to_float(payload.get("service_check_age_minutes"))
+        cache_repo = str(payload.get("cache_repo", "")).strip()
+        cache_updated = str(payload.get("cache_updated_at_utc", "")).strip()
+        actual = (
+            f"source={data_source} | live_check_ok={live_check_ok} | "
+            f"service_age={int(service_age) if service_age is not None else 'n/a'}m | "
+            f"cache_updated={cache_updated or 'n/a'}"
+        )
+        if data_source == "live" and (live_check_ok in {True, None}):
+            status = "GREEN"
+            variance = "fresh"
+        elif data_source == "cached":
+            age_limit_minutes = max_trade_age_h * 60.0
+            if service_age is not None and service_age <= age_limit_minutes:
+                status = "AMBER"
+                variance = f"cache age {int(service_age)}m"
+            else:
+                status = "RED"
+                variance = f"cache age {int(service_age) if service_age is not None else 'n/a'}m"
+        elif data_source == "partial":
+            status = "AMBER"
+            variance = "partial live coverage"
+        else:
+            status = "AMBER"
+            variance = "source unknown"
+        items.append(
+            _as_status_line(
+                metric=f"{label} data source integrity",
+                target="source=live with fresh service check",
+                actual=actual,
+                variance=variance,
+                status=status,
+                action="Restore live bot checks and refresh cache inputs before leaning on stale trading telemetry.",
+            )
+        )
+        if status != "GREEN":
+            risks.append(f"{label} is running on {data_source} telemetry.")
+            action = (
+                f"Re-establish live {label.lower()} checks before the next trading review."
+                if not cache_repo
+                else f"Re-establish live {label.lower()} checks and confirm cache repo {cache_repo} is refreshing."
+            )
+            if action not in actions:
+                actions.append(action)
+
+    _bot_data_source_item(mt5_bot, "MT5")
+    _bot_data_source_item(poly_bot, "Polymarket")
 
     mt5_report = mt5_bot.get("report_payload", {}) if isinstance(mt5_bot, dict) else {}
     mt5_report = mt5_report if isinstance(mt5_report, dict) else {}
@@ -929,6 +986,10 @@ def _compact_trading_bots(brief_payload: dict[str, Any]) -> list[dict[str, Any]]
                 "pnl_total": bot.get("pnl_total"),
                 "trades_total": bot.get("trades_total"),
                 "error_lines_total": bot.get("error_lines_total"),
+                "live_check_ok": bot.get("live_check_ok"),
+                "cache_repo": bot.get("cache_repo"),
+                "cache_updated_at_utc": bot.get("cache_updated_at_utc"),
+                "service_check_age_minutes": bot.get("service_check_age_minutes"),
                 "report_status": report.get("status"),
                 "report_headline": report.get("headline"),
                 "trade_events_24h": report.get("trade_events_24h"),
@@ -1425,6 +1486,8 @@ def _persist_phase2_report(config: dict[str, Any], payload: dict[str, Any], mark
     latest_md.parent.mkdir(parents=True, exist_ok=True)
     latest_json.parent.mkdir(parents=True, exist_ok=True)
 
+    # `phase2_divisions_latest.json` is the canonical division truth.
+    # Timestamped JSON and markdown siblings are derived run artifacts only.
     md_path.write_text(markdown, encoding="utf-8")
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     latest_md.write_text(markdown, encoding="utf-8")

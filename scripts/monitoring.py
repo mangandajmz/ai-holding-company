@@ -22,6 +22,7 @@ from utils import fmt_money as _fmt_money, load_yaml as _load_yaml, now_utc_iso 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config" / "projects.yaml"
+MODULE_CANONICAL_SOURCE = "reports/daily_brief_latest.json"
 
 
 def load_config(config_path: str | Path = DEFAULT_CONFIG) -> dict[str, Any]:
@@ -45,6 +46,14 @@ def _resolve_path(base: Path, value: str) -> Path:
     if path.is_absolute():
         return path
     return base / path
+
+
+def _mtime_iso(path: Path) -> str | None:
+    try:
+        timestamp = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
 def _tail_lines(path: Path, lines: int = 200) -> list[str]:
@@ -323,13 +332,18 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             "ok": False,
             "cache_repo": str(cache_repo),
             "checked_at_utc": _now_utc_iso(),
+            "live_check_ok": False,
             "used_cached_state": False,
             "cache_age_minutes": None,
+            "cache_updated_at_utc": "",
             "last_live_check_utc": "",
+            "service_check_age_minutes": None,
+            "data_source": "partial",
             "copied_files": [],
             "errors": [],
             "service_check": None,
         }
+        cache_paths: list[Path] = []
 
         if not host or not user or not ssh_key_path:
             record["errors"].append("remote_readonly missing host/user/ssh_key_path.")
@@ -405,6 +419,8 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
                 "stderr": result.get("stderr", "")[-300:],
             }
             record["copied_files"].append(copied)
+            if result.get("ok"):
+                cache_paths.append(local_dest)
             if not result.get("ok") and required:
                 required_failures += 1
 
@@ -467,9 +483,12 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
                 if cache_age_minutes is not None and cache_age_minutes >= 0:
                     record["cache_age_minutes"] = round(cache_age_minutes, 2)
                     service_result["cache_age_minutes"] = round(cache_age_minutes, 2)
+                    record["service_check_age_minutes"] = int(round(cache_age_minutes))
             elif "active" in stdout_text:
                 record["last_live_check_utc"] = live_check_utc
                 service_result["last_live_check_utc"] = live_check_utc
+                record["live_check_ok"] = True
+                record["service_check_age_minutes"] = 0
 
             service_result["attempt_count"] = len(attempts)
             service_result["attempts"] = attempts
@@ -481,10 +500,22 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
             status_text = (service_result.get("stdout") or service_result.get("stderr") or "").strip()
             if status_text:
                 status_file.write_text(status_text, encoding="utf-8")
+                cache_paths.append(status_file)
+
+        if cache_paths:
+            timestamps = [stamp for stamp in (_mtime_iso(path) for path in cache_paths) if stamp]
+            if timestamps:
+                record["cache_updated_at_utc"] = max(timestamps)
 
         record["ok"] = required_failures == 0
         if not record["ok"] and required_failures > 0:
             record["errors"].append(f"{required_failures} required remote file(s) failed to sync.")
+        if record["used_cached_state"]:
+            record["data_source"] = "cached"
+        elif record["errors"]:
+            record["data_source"] = "partial"
+        elif record["live_check_ok"] or record["ok"]:
+            record["data_source"] = "live"
         output["bots"].append(record)
 
     return output
@@ -802,6 +833,8 @@ def _persist_brief_reports(config: dict[str, Any], payload: dict[str, Any], mark
     json_path = reports_dir / f"daily_brief_{stamp}.json"
     latest_md = reports_dir / "daily_brief_latest.md"
     latest_json = reports_dir / "daily_brief_latest.json"
+    # `daily_brief_latest.json` is the canonical telemetry truth.
+    # Timestamped JSON and markdown siblings are derived history/readout artifacts only.
     md_path.write_text(markdown, encoding="utf-8")
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     latest_md.write_text(markdown, encoding="utf-8")
@@ -911,12 +944,17 @@ def _build_markdown_brief(payload: dict[str, Any]) -> str:
             f"errors={bot['error_lines_total']}"
         )
         lines.append(
-            f"  data_source={bot.get('data_source')} repo_used={bot.get('repo_used')}"
+            f"  data_source={bot.get('data_source')} live_check_ok={bot.get('live_check_ok')} "
+            f"service_check_age_minutes={bot.get('service_check_age_minutes')} repo_used={bot.get('repo_used')}"
         )
         if bot.get("used_cached_state"):
             lines.append(
                 f"  used_cached_state=True cache_age_minutes={bot.get('cache_age_minutes')} "
                 f"last_live_check_utc={bot.get('last_live_check_utc') or 'unknown'}"
+            )
+        if bot.get("cache_repo") or bot.get("cache_updated_at_utc"):
+            lines.append(
+                f"  cache_repo={bot.get('cache_repo') or 'n/a'} cache_updated_at_utc={bot.get('cache_updated_at_utc') or 'n/a'}"
             )
         if bot.get("health_command"):
             lines.append(
@@ -988,6 +1026,11 @@ def _build_markdown_brief(payload: dict[str, Any]) -> str:
                     f"  used_cached_state={sync.get('used_cached_state')} "
                     f"cache_age_minutes={sync.get('cache_age_minutes')} "
                     f"last_live_check_utc={sync.get('last_live_check_utc') or 'unknown'}"
+                )
+                lines.append(
+                    f"  data_source={sync.get('data_source')} live_check_ok={sync.get('live_check_ok')} "
+                    f"service_check_age_minutes={sync.get('service_check_age_minutes')} "
+                    f"cache_updated_at_utc={sync.get('cache_updated_at_utc') or 'n/a'}"
                 )
                 for err in sync.get("errors", []):
                     lines.append(f"  error={err}")
@@ -1088,6 +1131,7 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     for bot in config.get("trading_bots", []):
         bot_id = str(bot.get("id"))
         repo_override = repo_overrides.get(bot_id)
+        has_remote_sync = bot_id in bot_sync_by_id
         bot_sync = bot_sync_by_id.get(bot_id, {})
         bot_sync = bot_sync if isinstance(bot_sync, dict) else {}
         log_report = read_bot_logs(config=config, bot_id=bot_id, lines=200, repo_override=repo_override)
@@ -1147,7 +1191,11 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
                 "health_command": health_result,
                 "report_command": report_result,
                 "report_payload": report_payload,
-                "data_source": "remote_cache" if repo_override else "local_repo",
+                "data_source": str(bot_sync.get("data_source", "")).strip() or "live",
+                "live_check_ok": bool(bot_sync.get("live_check_ok")) if has_remote_sync else True,
+                "cache_repo": bot_sync.get("cache_repo") if has_remote_sync else None,
+                "cache_updated_at_utc": bot_sync.get("cache_updated_at_utc") if has_remote_sync else None,
+                "service_check_age_minutes": bot_sync.get("service_check_age_minutes") if has_remote_sync else None,
                 "repo_used": str(repo_override) if repo_override else str(Path(bot.get("repo_path", ""))),
                 "used_cached_state": bool(bot_sync.get("used_cached_state")),
                 "cache_age_minutes": bot_sync.get("cache_age_minutes"),

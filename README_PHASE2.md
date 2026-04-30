@@ -2,6 +2,16 @@
 
 Phase 2 introduces hierarchical CrewAI divisions on top of the Phase 1 telemetry stack.
 
+## Canonical Source Map
+
+- Telemetry truth: `reports/daily_brief_latest.json`
+- Division truth: `reports/phase2_divisions_latest.json`
+- CEO truth: `reports/phase3_holding_latest.json`
+- Approval/work truth: `state/board_approval_decisions.json`
+- Metric truth: `state/property_metric_feed.json`
+
+Phase 2 should read the latest telemetry JSON only and treat timestamped report siblings as derived run snapshots.
+
 ## 1) Install/upgrade dependencies
 
 ```powershell

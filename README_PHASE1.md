@@ -9,6 +9,16 @@ This folder is the local command center for Phase 1:
 Preferred chat option for this workspace:
 - [README_TELEGRAM_BRIDGE.md](C:/Users/james/OneDrive/Documents/Manganda%20LTD/AI%20Models/ai-holding-company/README_TELEGRAM_BRIDGE.md)
 
+## Canonical Source Map
+
+- Telemetry truth: `reports/daily_brief_latest.json`
+- Division truth: `reports/phase2_divisions_latest.json`
+- CEO truth: `reports/phase3_holding_latest.json`
+- Approval/work truth: `state/board_approval_decisions.json`
+- Metric truth: `state/property_metric_feed.json`
+
+Timestamped reports and markdown files are derived artifacts for history and human readout, not the canonical machine-readable state.
+
 ## 1) Confirm Local Prerequisites
 
 ```powershell

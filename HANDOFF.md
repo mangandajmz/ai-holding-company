@@ -4,32 +4,30 @@ Read PLAN.md and CLAUDE.md completely before doing anything else.
 
 ---
 
-## Current State (as of 2026-04-16)
+## Current State (auto-generated from live state at 2026-04-25T05:49:47.070133+00:00)
 
 | Item | Status |
 |------|--------|
-| PLAN.md version | 5.4 |
-| Latest commit | 1367323 |
-| Tests | 45/45 passing |
-| Trading division | GREEN |
-| Websites division | GREEN |
-| Commercial division | GREEN |
-| Stage A | ✅ Complete |
-| Stage B | ✅ Complete |
-| Stage C | ✅ Complete |
-| Stage D | ✅ Complete |
-| Stage G | ✅ Complete (commit 1367323, Codex CLEAN) |
-| Stage H | 🟡 In progress — see STAGE_H_PROMPTS.md |
-
----
+| Latest commit | `962a105` |
+| Latest commit timestamp | 2026-04-24T22:46:14-07:00 |
+| Phase 2 report generated | 2026-04-25T05:49:47.043300+00:00 |
+| Phase 3 mode | board_review |
+| Company score | RED |
+| Trading division | RED |
+| Websites division | RED |
+| Content Studio | GREEN |
+| Commercial division | Not emitted by Phase 2 |
+| Live divisions in Phase 2 | trading, websites, content_studio |
+| Enabled tracked projects | content_studio (internal_division), mt5_desk (capital_risk), polymarket (capital_risk) |
+| Bridge provider | telegram |
 
 ## Two Active Work Lanes
 
 ### Lane 1 — Holding Company Build (STAGE_H_PROMPTS.md)
 Holding Board v2 + Board Pack upgrade. Five blocks in order:
 - Block 1: `crews/holding_ceo.yaml` — add dissent_agent + dissent_task
-- Block 2: `scripts/phase3_holding.py` — upgrade `_build_board_review()` to 10-field output, add `commercial_result` parameter
-- Block 3: Wire Commercial into `_score_company()`, add `board_pack` mode to `_run_ceo_brief()`, upgrade `_build_phase3_markdown()`, extend `_ALLOWED_PHASE3_SUBCOMMANDS`
+- Block 2: `scripts/phase3_holding.py` — upgrade `_build_board_review()` to 10-field output
+- Block 3: Add `board_pack` mode to `_run_ceo_brief()`, upgrade `_build_phase3_markdown()`, extend `_ALLOWED_PHASE3_SUBCOMMANDS`
 - Block 4: Add `_validate_board_pack_item()` pure function + MA gate enforcement with ⚠️ Telegram prefix
 - Block 5: 11 new tests + two GREEN board_pack runs saved as `stage_h_brief_1/2.json` + PLAN.md → v5.5
 
@@ -69,7 +67,7 @@ If a previous tool completed some blocks:
 | scripts/aiogram_bridge.py | Sole production Telegram bridge for commands, approvals, and scheduling |
 | scripts/utils.py | Shared helpers — use existing ones, add none |
 | crews/holding_ceo.yaml | CEO crew spec — Stage H Block 1 target |
-| crews/commercial_division.yaml | Commercial crew spec (Stage G, complete) |
+| crews/commercial_division.yaml | Historical commercial crew spec — not a live Phase 3 lane unless Phase 2 emits it |
 | reports/ | Generated output — do not edit manually |
 
 ---

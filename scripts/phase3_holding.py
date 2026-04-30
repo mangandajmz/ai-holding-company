@@ -7,14 +7,29 @@ import logging
 import os
 import re
 import shlex
-from datetime import datetime, timezone
+import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from monitoring import ROOT
 from phase2_crews import run_phase2_divisions
-from utils import fmt_money as _fmt_money, load_yaml as _load_yaml, now_utc_iso as _now_utc_iso, parse_float as _to_float
+from utils import fmt_money as _fmt_money, load_yaml as _load_yaml, now_utc_iso as _now_utc_iso, parse_float as _to_float, parse_iso_utc as _parse_iso_utc
+
+MODULE_CANONICAL_SOURCE = "reports/phase3_holding_latest.json"
+UPSTREAM_DIVISION_CANONICAL_SOURCE = "reports/phase2_divisions_latest.json"
+APPROVAL_WORK_CANONICAL_SOURCE = "state/board_approval_decisions.json"
+METRIC_CANONICAL_SOURCE = "state/property_metric_feed.json"
+PROPERTY_METRIC_FIELD_SECTIONS = {
+    "sessions_7d": ("audience", "sessions_7d"),
+    "tool_completion_rate_pct": ("audience", "tool_completion_rate_pct"),
+    "total_mrr_usd": ("revenue", "total_mrr_usd"),
+    "hours_invested_7d": ("ops", "hours_invested_7d"),
+    "direct_costs_usd_7d": ("ops", "direct_costs_usd_7d"),
+    "quantified_value_usd_7d": ("ops", "quantified_value_usd_7d"),
+    "day90_mrr_usd": ("targets", "day90_mrr_usd"),
+}
 
 
 def _phase3_cfg(config: dict[str, Any]) -> dict[str, Any]:
@@ -80,6 +95,12 @@ def _project_registry(config: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _degraded_ops_mode(config: dict[str, Any]) -> bool:
+    bridge = config.get("bridge", {})
+    bridge = bridge if isinstance(bridge, dict) else {}
+    return bool(bridge.get("degraded_ops_mode", False))
+
+
 def _has_enabled_capital_risk_project(config: dict[str, Any]) -> bool:
     tracked_types = {"trading", "bot", "capital_risk", "trading_bot"}
     for _, entry in _project_registry(config).items():
@@ -94,6 +115,8 @@ def _has_enabled_capital_risk_project(config: dict[str, Any]) -> bool:
 
 
 def _property_metric_feed_path(config: dict[str, Any]) -> Path:
+    # `state/property_metric_feed.json` is the canonical metric truth.
+    # Any sibling metric files are derived inputs/caches only.
     phase3 = _phase3_cfg(config)
     rel = str(phase3.get("property_metric_feed_file", "state/property_metric_feed.json")).strip()
     path = ROOT / rel if not Path(rel).is_absolute() else Path(rel)
@@ -125,7 +148,58 @@ def _persist_json_mapping(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _board_approval_state_path() -> Path:
+    # Approval/work state lives canonically in `state/board_approval_decisions.json`.
     return ROOT / "state" / "board_approval_decisions.json"
+
+
+def _delivery_owner_directory(config: dict[str, Any]) -> dict[str, str]:
+    company = config.get("company", {})
+    company = company if isinstance(company, dict) else {}
+    owner_role = str(company.get("owner_role", "Owner/CEO")).strip() or "Owner/CEO"
+    mapping: dict[str, str] = {
+        "holding": owner_role,
+        "operations": "Operations Lead",
+        "finance": "Finance Lead",
+        "marketing": "Marketing Lead",
+        "product": "Product Lead",
+        "commercial": "Commercial Lead",
+        "content_studio": "Marketing Lead",
+        "trading": "Trading Lead",
+        "websites": "Websites Lead",
+    }
+    configured = company.get("delivery_owners", {})
+    configured = configured if isinstance(configured, dict) else {}
+    for raw_key, raw_value in configured.items():
+        key = str(raw_key).strip().lower()
+        value = str(raw_value).strip()
+        if key and value:
+            mapping[key] = value
+    return mapping
+
+
+def _resolve_delivery_owner(config: dict[str, Any], owner: Any, topic: Any = "") -> tuple[str, str]:
+    owner_key = str(owner or "").strip().lower()
+    mapping = _delivery_owner_directory(config)
+    if owner_key in mapping:
+        return owner_key, mapping[owner_key]
+    topic_text = str(topic or "").strip().lower()
+    for candidate in ("trading", "websites", "content_studio", "operations", "finance", "marketing", "product", "holding"):
+        if candidate in topic_text and candidate in mapping:
+            return candidate, mapping[candidate]
+    return "holding", mapping.get("holding", "Owner/CEO")
+
+
+def _approval_sla(priority: Any, reference_time: datetime | None = None) -> tuple[str, int, str]:
+    normalized = str(priority or "").strip().upper()
+    if normalized == "RED":
+        tier, hours = "Critical", 24
+    elif normalized == "AMBER":
+        tier, hours = "High", 72
+    else:
+        tier, hours = "Medium", 168
+    base = reference_time or datetime.now(timezone.utc)
+    due_at_utc = (base + timedelta(hours=hours)).replace(microsecond=0).isoformat()
+    return tier, hours, due_at_utc
 
 
 def _normalize_execution_status(value: Any, completion_reason: str = "") -> str:
@@ -140,6 +214,7 @@ def _normalize_execution_status(value: Any, completion_reason: str = "") -> str:
 
 
 def _build_approval_execution_snapshot(
+    config: dict[str, Any],
     board_review: dict[str, Any] | None,
 ) -> dict[str, Any]:
     state = _load_json_mapping(_board_approval_state_path())
@@ -167,7 +242,10 @@ def _build_approval_execution_snapshot(
                 "priority": str(item.get("priority", "")).strip().upper() or "AMBER",
                 "topic": str(item.get("topic", "")).strip(),
                 "owner": str(item.get("owner", "")).strip(),
+                "delivery_owner": str(item.get("delivery_owner", "")).strip(),
                 "decision": str(item.get("decision", "")).strip(),
+                "sla_hours": _to_int(item.get("sla_hours")),
+                "due_at_utc": str(item.get("due_at_utc", "")).strip(),
             }
         )
 
@@ -183,11 +261,22 @@ def _build_approval_execution_snapshot(
             "status": status,
             "topic": str(raw_row.get("topic", "")).strip(),
             "owner": str(raw_row.get("owner", "")).strip(),
+            "delivery_owner": str(raw_row.get("delivery_owner", "")).strip(),
             "decision": str(raw_row.get("decision", "")).strip(),
             "approved_at_utc": str(raw_row.get("approved_at_utc", "")).strip(),
+            "due_at_utc": str(raw_row.get("due_at_utc", "")).strip(),
+            "sla_hours": _to_int(raw_row.get("sla_hours")),
             "done_at_utc": str(raw_row.get("done_at_utc", "")).strip(),
             "validated_at_utc": str(raw_row.get("validated_at_utc", "")).strip(),
         }
+        if not row["delivery_owner"]:
+            _, row["delivery_owner"] = _resolve_delivery_owner(config, row.get("owner"), row.get("topic"))
+        if not row["sla_hours"]:
+            row["sla_hours"] = 72
+        if not row["due_at_utc"]:
+            approved = _parse_iso_utc(row.get("approved_at_utc"))
+            _, _, fallback_due = _approval_sla("AMBER", reference_time=approved or datetime.now(timezone.utc))
+            row["due_at_utc"] = fallback_due
         if status == "VALIDATED":
             validated_complete.append(row)
         else:
@@ -213,6 +302,117 @@ def _merge_non_null(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, 
         else:
             merged[key] = value
     return merged
+
+
+def _property_metric_tracking_defaults() -> dict[str, Any]:
+    return {
+        "audience": {
+            "sessions_7d": None,
+            "waft_7d": None,
+            "returning_user_rate_pct": None,
+            "tool_completion_rate_pct": None,
+        },
+        "revenue": {
+            "affiliate_usd_7d": None,
+            "ad_usd_7d": None,
+            "subscription_mrr_usd": None,
+            "total_mrr_usd": None,
+            "gross_margin_pct": None,
+            "top_partner": None,
+        },
+        "pipeline": {
+            "drafts_pending": None,
+            "pages_indexed_7d": None,
+            "backlinks_dr30_7d": None,
+            "backlinks_dr30_total": None,
+            "sitemap_lastmod_age_days": None,
+            "active_campaign": None,
+        },
+        "movers": {
+            "top_revenue_line": None,
+            "top_growth_lever": None,
+            "biggest_risk": None,
+        },
+        "targets": {
+            "day90_mrr_usd": None,
+        },
+        "ops": {
+            "hours_invested_7d": None,
+            "direct_costs_usd_7d": None,
+            "quantified_value_usd_7d": None,
+            "research_brief_age_days": None,
+        },
+    }
+
+
+def _apply_property_metric_values(base_tracking: dict[str, Any], metric_values: dict[str, Any]) -> dict[str, Any]:
+    tracking = _merge_non_null(_property_metric_tracking_defaults(), base_tracking)
+    for raw_key, raw_value in metric_values.items():
+        key = str(raw_key).strip()
+        if key not in PROPERTY_METRIC_FIELD_SECTIONS:
+            continue
+        section_name, metric_name = PROPERTY_METRIC_FIELD_SECTIONS[key]
+        section = tracking.get(section_name, {})
+        section = dict(section) if isinstance(section, dict) else {}
+        if metric_name.endswith("_pct"):
+            section[metric_name] = _to_float(raw_value)
+        elif metric_name.endswith("_usd"):
+            section[metric_name] = _to_float(raw_value)
+        else:
+            section[metric_name] = _to_int(raw_value)
+        tracking[section_name] = section
+    return tracking
+
+
+def ingest_property_metric_values(
+    config: dict[str, Any],
+    property_slug: str,
+    metric_values: dict[str, Any],
+    source: str = "manual_metric_ingest",
+) -> dict[str, Any]:
+    slug = str(property_slug).strip().lower()
+    if not slug:
+        return {"ok": False, "error": "missing_property_slug", "message": "Provide a property slug."}
+    if slug not in _property_charters(config):
+        return {
+            "ok": False,
+            "error": "unknown_property",
+            "message": f"Property slug `{slug}` is not defined in config/projects.yaml.",
+        }
+    if not isinstance(metric_values, dict):
+        return {
+            "ok": False,
+            "error": "invalid_metric_payload",
+            "message": "Metric values must be a JSON object of property metrics.",
+        }
+
+    feed_path = _property_metric_feed_path(config)
+    payload = _load_json_mapping(feed_path)
+    properties = payload.get("properties", payload)
+    properties = dict(properties) if isinstance(properties, dict) else {}
+    prior_entry = properties.get(slug, {})
+    prior_entry = prior_entry if isinstance(prior_entry, dict) else {}
+    prior_tracking = _extract_tracking_payload(prior_entry)
+    updated_tracking = _apply_property_metric_values(prior_tracking, metric_values)
+    updated_entry = dict(prior_entry)
+    updated_entry["tracking"] = updated_tracking
+    updated_entry["updated_at_utc"] = _now_utc_iso()
+    updated_entry["source"] = str(source or "manual_metric_ingest").strip() or "manual_metric_ingest"
+    properties[slug] = updated_entry
+
+    next_payload = {
+        "generated_at_utc": _now_utc_iso(),
+        "producer": "phase3_holding",
+        "properties": properties,
+    }
+    _persist_json_mapping(feed_path, next_payload)
+    return {
+        "ok": True,
+        "property_slug": slug,
+        "updated_at_utc": updated_entry["updated_at_utc"],
+        "feed_file": str(feed_path),
+        "tracking": updated_tracking,
+    }
 
 
 def _extract_tracking_payload(entry: dict[str, Any]) -> dict[str, Any]:
@@ -684,7 +884,7 @@ def _build_property_metric_feed_from_phase2(
         if not _is_operating_property(raw_entry):
             continue
 
-        tracking: dict[str, Any] = {}
+        tracking: dict[str, Any] = _property_metric_tracking_defaults()
         pipeline: dict[str, Any] = {}
         ops: dict[str, Any] = {}
         movers: dict[str, Any] = {}
@@ -716,14 +916,9 @@ def _build_property_metric_feed_from_phase2(
             if research_age_days > 8.0 and "biggest_risk" not in movers:
                 movers["biggest_risk"] = "research brief stale"
 
-        if pipeline:
-            tracking["pipeline"] = pipeline
-        if ops:
-            tracking["ops"] = ops
-        if movers:
-            tracking["movers"] = movers
-        if not tracking:
-            continue
+        tracking["pipeline"] = _merge_non_null(tracking.get("pipeline", {}), pipeline)
+        tracking["ops"] = _merge_non_null(tracking.get("ops", {}), ops)
+        tracking["movers"] = _merge_non_null(tracking.get("movers", {}), movers)
 
         output[property_id] = {
             "updated_at_utc": _now_utc_iso(),
@@ -750,6 +945,21 @@ def _refresh_property_metric_feed_from_phase2(
         phase2_payload=phase2_payload,
         generated_at=generated_at,
     )
+    for property_id, raw_entry in _property_charters(config).items():
+        if not isinstance(raw_entry, dict) or not _is_operating_property(raw_entry):
+            continue
+        prior_entry = merged_properties.get(property_id, {})
+        prior_entry = prior_entry if isinstance(prior_entry, dict) else {}
+        baseline_entry = dict(prior_entry)
+        baseline_entry["tracking"] = _merge_non_null(
+            _property_metric_tracking_defaults(),
+            _extract_tracking_payload(prior_entry),
+        )
+        if not baseline_entry.get("updated_at_utc"):
+            baseline_entry["updated_at_utc"] = _now_utc_iso()
+        if not baseline_entry.get("source"):
+            baseline_entry["source"] = "phase2_system_telemetry"
+        merged_properties[property_id] = baseline_entry
     for property_id, produced_entry in produced.items():
         if not isinstance(produced_entry, dict):
             continue
@@ -1147,6 +1357,12 @@ def _render_property_pnl_blocks_markdown(blocks: list[dict[str, Any]]) -> list[s
         operations = block.get("operations", {})
         operations = operations if isinstance(operations, dict) else {}
         lines.append(f"- Value Delta (7d): {_fmt_optional_money(_to_float(operations.get('value_delta_usd')))}")
+        lines.append(
+            "- Forecast Attainment: {forecast} | Forecast Target MRR: {target}".format(
+                forecast=_fmt_optional_pct(_to_float(block.get("status", {}).get("pct_to_forecast_mrr"))),
+                target=_fmt_optional_money(_to_float(block.get("status", {}).get("forecast_target_mrr_usd"))),
+            )
+        )
 
         status = block.get("status", {})
         status = status if isinstance(status, dict) else {}
@@ -1429,7 +1645,7 @@ def _build_property_department_briefs(
 
         departments = {
             "finance": {
-                "audience": "Finance + Commercial",
+                "audience": "Finance + Revenue",
                 "status": finance_status,
                 "score": _status_to_score(finance_status),
                 "headline": (
@@ -1799,7 +2015,6 @@ def _score_company(
     scoped_divisions = set(scored_divisions or [])
     green_divisions = 0
     counted_divisions = 0
-    commercial_status: str | None = None
     for division in divisions:
         if not isinstance(division, dict):
             continue
@@ -1807,8 +2022,6 @@ def _score_company(
         scorecard = division.get("scorecard", {})
         scorecard = scorecard if isinstance(scorecard, dict) else {}
         status = str(division.get("status", scorecard.get("status", ""))).upper()
-        if division_name == "commercial" and status in {"GREEN", "AMBER", "RED"}:
-            commercial_status = status
         if scoped_divisions and division_name not in scoped_divisions:
             continue
         if status not in {"GREEN", "AMBER", "RED"}:
@@ -1987,18 +2200,6 @@ def _score_company(
             "action": "Reduce recurrent alerts by fixing root causes, not by suppressing checks.",
         }
     )
-    if commercial_status in {"RED", "AMBER"}:
-        commercial_variance = "-2 levels from GREEN" if commercial_status == "RED" else "-1 level from GREEN"
-        items.append(
-            {
-                "metric": "commercial_health",
-                "target": "GREEN",
-                "actual": commercial_status,
-                "variance": commercial_variance,
-                "status": commercial_status,
-                "action": "Review Commercial risk verdict and exposure flags; restore GREEN before new initiatives.",
-            }
-        )
 
     risks: list[str] = []
     actions: list[str] = []
@@ -2014,8 +2215,6 @@ def _score_company(
         actions.append("Company-level KPIs are within target range; continue current operating cadence.")
 
     status_inputs = [str(item.get("status", "")).upper() for item in items]
-    if commercial_status in {"GREEN", "AMBER", "RED"}:
-        status_inputs.append(commercial_status)
     status = _status_worst(status_inputs)
     return {
         "goal": "Maximize resilient, compounding performance across divisions while protecting downside risk.",
@@ -2033,6 +2232,88 @@ def _score_company(
             "counted_divisions": counted_divisions,
             "forced_trading_scope": force_trading_scope,
         },
+    }
+
+
+def _average_status_score(items: list[dict[str, Any]]) -> int | None:
+    scored = [
+        _status_to_score(str(item.get("status", "")).upper())
+        for item in items
+        if isinstance(item, dict) and str(item.get("status", "")).upper() in {"GREEN", "AMBER", "RED"}
+    ]
+    if not scored:
+        return None
+    return int(round(sum(scored) / len(scored)))
+
+
+def _score_property_maturity(config: dict[str, Any], targets: dict[str, Any]) -> dict[str, Any]:
+    framework = _promotion_framework_config(config)
+    charters = _property_charters(config)
+    eligible: list[dict[str, Any]] = []
+    ready_count = 0
+    live_metrics_ready_count = 0
+    for property_id, entry in charters.items():
+        if not isinstance(entry, dict) or entry.get("active", True) is False:
+            continue
+        readiness = _evaluate_promotion_readiness(entry=entry, framework=framework)
+        promotion = entry.get("promotion", {})
+        promotion = promotion if isinstance(promotion, dict) else {}
+        if not bool(promotion.get("promoted", False)) and not bool(readiness.get("live_metrics_ready", False)):
+            continue
+        eligible.append({"property_id": property_id, "readiness": readiness})
+        if bool(readiness.get("ready", False)):
+            ready_count += 1
+        if bool(readiness.get("live_metrics_ready", False)):
+            live_metrics_ready_count += 1
+
+    maturity_targets = targets.get("property_maturity", {})
+    maturity_targets = maturity_targets if isinstance(maturity_targets, dict) else {}
+    items: list[dict[str, Any]] = []
+    readiness_ratio = (ready_count / len(eligible)) if eligible else None
+    readiness_cfg = maturity_targets.get("ready_ratio", {})
+    readiness_cfg = readiness_cfg if isinstance(readiness_cfg, dict) else {}
+    readiness_target = _to_float(readiness_cfg.get("target_min")) or 1.0
+    readiness_amber = _to_float(readiness_cfg.get("amber_min")) or 0.67
+    readiness_status, readiness_variance = _status_from_min(readiness_ratio, readiness_target, readiness_amber)
+    items.append(
+        {
+            "metric": "Eligible property readiness ratio",
+            "target": f">= {readiness_target*100:.0f}%",
+            "actual": _fmt_ratio(readiness_ratio),
+            "variance": readiness_variance,
+            "status": readiness_status,
+        }
+    )
+
+    live_metrics_ratio = (live_metrics_ready_count / len(eligible)) if eligible else None
+    live_metrics_cfg = maturity_targets.get("live_metrics_ratio", {})
+    live_metrics_cfg = live_metrics_cfg if isinstance(live_metrics_cfg, dict) else {}
+    live_metrics_target = _to_float(live_metrics_cfg.get("target_min")) or 1.0
+    live_metrics_amber = _to_float(live_metrics_cfg.get("amber_min")) or 0.67
+    live_metrics_status, live_metrics_variance = _status_from_min(
+        live_metrics_ratio,
+        live_metrics_target,
+        live_metrics_amber,
+    )
+    items.append(
+        {
+            "metric": "Eligible properties with live metric coverage",
+            "target": f">= {live_metrics_target*100:.0f}%",
+            "actual": _fmt_ratio(live_metrics_ratio),
+            "variance": live_metrics_variance,
+            "status": live_metrics_status,
+        }
+    )
+
+    statuses = [str(item.get("status", "")).upper() for item in items]
+    status = _status_worst(statuses)
+    score = _average_status_score(items)
+    return {
+        "legend": "Property maturity covers promoted or fully instrumented properties only.",
+        "eligible_properties": [item["property_id"] for item in eligible],
+        "status": status,
+        "score": score,
+        "items": items,
     }
 
 
@@ -2496,11 +2777,12 @@ def _run_ceo_brief(
 
 
 def _build_board_review(
+    config: dict[str, Any],
     company_scorecard: dict[str, Any],
     divisions: list[dict[str, Any]],
-    commercial_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     approvals: list[dict[str, Any]] = []
+    degraded_ops = _degraded_ops_mode(config)
     rank = {"RED": 0, "AMBER": 1, "GREEN": 2}
     red_deadline = datetime.now(timezone.utc).date().isoformat()
     seen_ids: dict[str, int] = {}
@@ -2519,19 +2801,27 @@ def _build_board_review(
         status = str(item.get("status", "")).upper()
         if status == "GREEN":
             continue
+        if degraded_ops and status != "RED":
+            continue
         metric = str(item.get("metric", "n/a"))
         actual = str(item.get("actual", "n/a"))
         target = str(item.get("target", "n/a"))
         action = str(item.get("action", "")).strip()
         action_suffix = action if action else "Immediate review required."
+        owner_key, delivery_owner = _resolve_delivery_owner(config, "holding", f"Company KPI: {metric}")
+        sla_priority, sla_hours, due_at_utc = _approval_sla(status)
         approvals.append(
             {
                 "rationale": f"KPI {metric} is {status} (actual={actual}, target={target}). {action_suffix}",
                 "expected_upside": f"Restores {metric} to target ({target})",
                 "effort_cost": "n/a",
                 "confidence": "Medium - derived from telemetry; LLM scoring not yet applied",
-                "owner": "holding",
+                "owner": owner_key,
+                "delivery_owner": delivery_owner,
                 "deadline": red_deadline if status == "RED" else "+7d",
+                "due_at_utc": due_at_utc,
+                "sla_priority": sla_priority,
+                "sla_hours": sla_hours,
                 "dissent": "PENDING - dissent_agent review required",
                 "measurement_plan": f"Monitor {metric} in next daily brief. GREEN for 2 consecutive runs.",
                 "approval_id": _next_approval_id(f"company-kpi-{metric}"),
@@ -2555,19 +2845,27 @@ def _build_board_review(
             status = str(item.get("status", "")).upper()
             if status == "GREEN":
                 continue
+            if degraded_ops and status != "RED":
+                continue
             metric = str(item.get("metric", "n/a"))
             actual = str(item.get("actual", "n/a"))
             target = str(item.get("target", "n/a"))
             action = str(item.get("action", "")).strip()
             action_suffix = action if action else "Immediate review required."
+            owner_key, delivery_owner = _resolve_delivery_owner(config, division_name.lower(), f"{division_name.title()} KPI: {metric}")
+            sla_priority, sla_hours, due_at_utc = _approval_sla(status)
             approvals.append(
                 {
                     "rationale": f"KPI {metric} is {status} (actual={actual}, target={target}). {action_suffix}",
                     "expected_upside": f"Restores {metric} to target ({target})",
                     "effort_cost": "n/a",
                     "confidence": "Medium - derived from telemetry; LLM scoring not yet applied",
-                    "owner": division_name.lower(),
+                    "owner": owner_key,
+                    "delivery_owner": delivery_owner,
                     "deadline": red_deadline if status == "RED" else "+7d",
+                    "due_at_utc": due_at_utc,
+                    "sla_priority": sla_priority,
+                    "sla_hours": sla_hours,
                     "dissent": "PENDING - dissent_agent review required",
                     "measurement_plan": f"Monitor {metric} in next daily brief. GREEN for 2 consecutive runs.",
                     "approval_id": _next_approval_id(f"{division_name}-kpi-{metric}"),
@@ -2577,43 +2875,13 @@ def _build_board_review(
                 }
             )
 
-    if isinstance(commercial_result, dict):
-        commercial_status = str(commercial_result.get("status", "")).upper()
-        if commercial_status and commercial_status != "GREEN":
-            risk = commercial_result.get("risk", {})
-            risk = risk if isinstance(risk, dict) else {}
-            exposure_flags = risk.get("exposure_flags", [])
-            first_flag = ""
-            if isinstance(exposure_flags, list):
-                for flag in exposure_flags:
-                    if isinstance(flag, str) and flag.strip():
-                        first_flag = flag.strip()
-                        break
-            topic_tail = first_flag if first_flag else "Commercial risk check"
-            rationale = str(risk.get("risk_verdict", "")).strip() or "n/a"
-            recommended_action = str(risk.get("recommended_action", "")).strip()
-            if not recommended_action:
-                recommended_action = "Review commercial exposure and approve mitigation plan."
-            approvals.append(
-                {
-                    "rationale": rationale,
-                    "expected_upside": "",
-                    "effort_cost": "n/a",
-                    "confidence": "",
-                    "owner": "commercial",
-                    "deadline": red_deadline if commercial_status == "RED" else "+7d",
-                    "dissent": "PENDING - dissent_agent review required",
-                    "measurement_plan": "Review commercial KPI in next daily brief. GREEN for 2 consecutive runs.",
-                    "approval_id": _next_approval_id(f"commercial-{topic_tail}"),
-                    "decision": recommended_action,
-                    "priority": commercial_status,
-                    "topic": f"Commercial: {topic_tail}",
-                }
-            )
-
     return {
         "approvals": approvals[:10],
-        "notes": "Approve, defer, or reject each item explicitly to keep accountability clear.",
+        "notes": (
+            "DEGRADED OPS MODE: only RED board items are surfaced; content and lower-priority approvals are paused."
+            if degraded_ops
+            else "Approve, defer, or reject each item explicitly to keep accountability clear."
+        ),
     }
 
 
@@ -2689,6 +2957,8 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     lines.append(f"- Generated (UTC): {payload.get('generated_at_utc')}")
     lines.append(f"- Mode: {payload.get('mode')}")
     lines.append(f"- Source brief mode: {payload.get('source_brief_mode')}")
+    if payload.get("degraded_ops_mode"):
+        lines.append("- DEGRADED OPS MODE ACTIVE: capital-risk executes are blocked; content and low-priority approval prompts are paused.")
     if payload.get("stale_input"):
         lines.append(
             f"- STALE DATA: Phase 3 is running on telemetry that is {payload.get('stale_input_age_hours')}h old "
@@ -2705,6 +2975,23 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
 
     company = payload.get("company_scorecard", {})
     company = company if isinstance(company, dict) else {}
+    portfolio_health = payload.get("portfolio_health_score", company)
+    portfolio_health = portfolio_health if isinstance(portfolio_health, dict) else {}
+    property_maturity = payload.get("property_maturity_score", {})
+    property_maturity = property_maturity if isinstance(property_maturity, dict) else {}
+    score_legend = str(payload.get("score_legend", "")).strip()
+    if score_legend:
+        lines.append("## Score Legend")
+        lines.append(f"- {score_legend}")
+        lines.append("")
+    lines.append("## Score Split")
+    lines.append(
+        f"- Portfolio health score: {portfolio_health.get('score', 'n/a')}/100 | status={portfolio_health.get('status', 'n/a')}"
+    )
+    lines.append(
+        f"- Property maturity score: {property_maturity.get('score', 'n/a')}/100 | status={property_maturity.get('status', 'n/a')}"
+    )
+    lines.append("")
     lines.append("## Company Scorecard")
     lines.append(f"- Goal: {company.get('goal')}")
     lines.append(f"- Desired Outcome: {company.get('desired_outcome')}")
@@ -2810,8 +3097,9 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
                 lines.append(f"- **Upside:** {item.get('expected_upside') or 'n/a'}")
                 lines.append(f"- **Effort/Cost:** {item.get('effort_cost') or 'n/a'}")
                 lines.append(f"- **Confidence:** {item.get('confidence') or 'n/a'}")
-                lines.append(f"- **Owner:** {item.get('owner') or 'n/a'}")
-                lines.append(f"- **Deadline:** {item.get('deadline') or 'n/a'}")
+                lines.append(f"- **Owner:** {item.get('delivery_owner') or item.get('owner') or 'n/a'}")
+                lines.append(f"- **Due:** {item.get('due_at_utc') or item.get('deadline') or 'n/a'}")
+                lines.append(f"- **SLA:** {item.get('sla_hours') or 'n/a'}h")
                 lines.append(f"- **Dissent:** {item.get('dissent') or 'n/a'}")
                 lines.append(f"- **Measurement:** {item.get('measurement_plan') or 'n/a'}")
         lines.append(f"- Notes: {board.get('notes')}")
@@ -2828,17 +3116,31 @@ def _build_phase3_markdown(payload: dict[str, Any]) -> str:
     lines.append("## Approval Execution Snapshot")
     lines.append(f"- Pending approval: {len(pending_approval)}")
     for item in pending_approval[:3]:
-        lines.append(f"  {item.get('approval_id')}: {item.get('topic')} | owner={item.get('owner')}")
+        lines.append(
+            f"  {item.get('approval_id')}: {item.get('topic')} | owner={item.get('delivery_owner') or item.get('owner')} | due={item.get('due_at_utc')}"
+        )
     lines.append(f"- Approved awaiting execution: {len(approved_awaiting)}")
     for item in approved_awaiting[:3]:
         lines.append(
-            f"  {item.get('approval_id')} [{item.get('status')}]: {item.get('topic')} | owner={item.get('owner')}"
+            f"  {item.get('approval_id')} [{item.get('status')}]: {item.get('topic')} | owner={item.get('delivery_owner') or item.get('owner')} | due={item.get('due_at_utc')}"
         )
     lines.append(f"- Validated complete: {len(validated_complete)}")
     for item in validated_complete[:3]:
         lines.append(
             f"  {item.get('approval_id')}: {item.get('topic')} | validated_at={item.get('validated_at_utc') or item.get('done_at_utc')}"
         )
+
+    trading_bots_summary = payload.get("trading_bots_summary", [])
+    trading_bots_summary = [item for item in trading_bots_summary if isinstance(item, dict)] if isinstance(trading_bots_summary, list) else []
+    if trading_bots_summary:
+        lines.append("")
+        lines.append("## Trading Data Source Summary")
+        for bot in trading_bots_summary:
+            lines.append(
+                f"- {bot.get('id')}: source={bot.get('data_source')} live_check_ok={bot.get('live_check_ok')} "
+                f"service_check_age_minutes={bot.get('service_check_age_minutes')} cache_repo={bot.get('cache_repo') or 'n/a'} "
+                f"cache_updated_at_utc={bot.get('cache_updated_at_utc') or 'n/a'}"
+            )
 
     lines.append("")
     lines.append("## Owner Command Reminder")
@@ -2864,6 +3166,8 @@ def _persist_phase3_reports(config: dict[str, Any], payload: dict[str, Any], mar
     latest_md.parent.mkdir(parents=True, exist_ok=True)
     latest_json.parent.mkdir(parents=True, exist_ok=True)
 
+    # `phase3_holding_latest.json` is the canonical CEO truth.
+    # Timestamped JSON and markdown siblings are derived history/readout artifacts only.
     md_path.write_text(markdown, encoding="utf-8")
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     latest_md.write_text(markdown, encoding="utf-8")
@@ -2873,6 +3177,115 @@ def _persist_phase3_reports(config: dict[str, Any], payload: dict[str, Any], mar
         "json": str(json_path),
         "latest_markdown": str(latest_md),
         "latest_json": str(latest_json),
+    }
+
+
+def generate_handoff(config: dict[str, Any]) -> dict[str, Any]:
+    handoff_path = ROOT / "HANDOFF.md"
+    if not handoff_path.exists():
+        return {"ok": False, "error": "handoff_missing", "message": f"Missing HANDOFF.md at {handoff_path}"}
+
+    phase3_payload = _load_json_mapping(ROOT / MODULE_CANONICAL_SOURCE)
+    if not phase3_payload:
+        return {
+            "ok": False,
+            "error": "phase3_missing",
+            "message": f"Missing or invalid Phase 3 report at {ROOT / MODULE_CANONICAL_SOURCE}",
+        }
+    phase2_payload = _load_json_mapping(ROOT / UPSTREAM_DIVISION_CANONICAL_SOURCE)
+    if not phase2_payload:
+        return {
+            "ok": False,
+            "error": "phase2_missing",
+            "message": f"Missing or invalid Phase 2 report at {ROOT / UPSTREAM_DIVISION_CANONICAL_SOURCE}",
+        }
+
+    commit_hash = "unknown"
+    commit_timestamp = "unknown"
+    try:
+        commit_hash = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip() or "unknown"
+        commit_timestamp = subprocess.run(
+            ["git", "log", "-1", "--format=%cI"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout.strip() or "unknown"
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    division_statuses: dict[str, str] = {}
+    live_divisions: list[str] = []
+    for division in phase2_payload.get("divisions", []):
+        if not isinstance(division, dict):
+            continue
+        division_name = str(division.get("division", "")).strip().lower()
+        if not division_name:
+            continue
+        status = str(division.get("status", "")).strip().upper() or "UNKNOWN"
+        division_statuses[division_name] = status
+        live_divisions.append(division_name)
+
+    enabled_projects: list[str] = []
+    for project_id, entry in _project_registry(config).items():
+        if not isinstance(entry, dict) or entry.get("enabled", True) is False:
+            continue
+        project_type = str(entry.get("project_type", "")).strip().lower() or "unknown"
+        enabled_projects.append(f"{project_id} ({project_type})")
+
+    company_scorecard = phase3_payload.get("company_scorecard", {})
+    company_scorecard = company_scorecard if isinstance(company_scorecard, dict) else {}
+    generated_at = str(phase3_payload.get("generated_at_utc", "")).strip() or _now_utc_iso()
+    phase2_generated_at = str(phase2_payload.get("generated_at_utc", "")).strip() or "unknown"
+    company_status = str(company_scorecard.get("status", "")).strip().upper() or "UNKNOWN"
+    phase3_mode = str(phase3_payload.get("mode", "")).strip() or "unknown"
+    bridge_provider = str(config.get("bridge", {}).get("provider", "")).strip() or "unknown"
+    commercial_lane = division_statuses.get("commercial", "Not emitted by Phase 2")
+
+    current_state_lines = [
+        f"## Current State (auto-generated from live state at {generated_at})",
+        "",
+        "| Item | Status |",
+        "|------|--------|",
+        f"| Latest commit | `{commit_hash}` |",
+        f"| Latest commit timestamp | {commit_timestamp} |",
+        f"| Phase 2 report generated | {phase2_generated_at} |",
+        f"| Phase 3 mode | {phase3_mode} |",
+        f"| Company score | {company_status} |",
+        f"| Trading division | {division_statuses.get('trading', 'Not emitted by Phase 2')} |",
+        f"| Websites division | {division_statuses.get('websites', 'Not emitted by Phase 2')} |",
+        f"| Content Studio | {division_statuses.get('content_studio', 'Not emitted by Phase 2')} |",
+        f"| Commercial division | {commercial_lane} |",
+        f"| Live divisions in Phase 2 | {', '.join(live_divisions) if live_divisions else 'none'} |",
+        f"| Enabled tracked projects | {', '.join(enabled_projects) if enabled_projects else 'none'} |",
+        f"| Bridge provider | {bridge_provider} |",
+    ]
+    current_state_block = "\n".join(current_state_lines)
+
+    original = handoff_path.read_text(encoding="utf-8")
+    pattern = r"## Current State\b.*?(?=\n## Two Active Work Lanes\b)"
+    if re.search(pattern, original, flags=re.DOTALL):
+        updated = re.sub(pattern, current_state_block + "\n", original, count=1, flags=re.DOTALL)
+    else:
+        updated = original.rstrip() + "\n\n---\n\n" + current_state_block + "\n"
+    handoff_path.write_text(updated, encoding="utf-8")
+    return {
+        "ok": True,
+        "handoff_path": str(handoff_path),
+        "generated_at_utc": generated_at,
+        "company_status": company_status,
+        "live_divisions": live_divisions,
+        "commercial_division": commercial_lane,
+        "commit_hash": commit_hash,
+        "commit_timestamp": commit_timestamp,
     }
 
 
@@ -2894,23 +3307,6 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
 
     divisions = phase2_payload.get("divisions", [])
     divisions = divisions if isinstance(divisions, list) else []
-    commercial_result: dict[str, Any] | None = None
-    for division in divisions:
-        if not isinstance(division, dict):
-            continue
-        if str(division.get("division", "")).strip().lower() != "commercial":
-            continue
-        scorecard = division.get("scorecard", {})
-        scorecard = scorecard if isinstance(scorecard, dict) else {}
-        final_output = division.get("final_output", {})
-        final_output = final_output if isinstance(final_output, dict) else {}
-        risk = final_output.get("risk", {})
-        risk = risk if isinstance(risk, dict) else {}
-        commercial_result = {
-            "status": str(division.get("status", scorecard.get("status", ""))).upper(),
-            "risk": risk,
-        }
-        break
 
     targets = _load_targets(config)
     soul_text = _load_soul(config)
@@ -2960,13 +3356,15 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         property_pnl_blocks=property_pnl_blocks,
         scored_divisions=scored_divisions,
     )
+    property_maturity_score = _score_property_maturity(config=config, targets=targets)
+    degraded_ops = _degraded_ops_mode(config)
 
     board_review: dict[str, Any] | None = None
     if mode in {"board_review", "board_pack"}:
         board_review = _build_board_review(
+            config=config,
             company_scorecard=company_scorecard,
             divisions=operating_divisions,
-            commercial_result=commercial_result,
         )
 
     llm, llm_warning = _build_llm(config=config)
@@ -2989,13 +3387,16 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
                     item["dissent"] = "Dissent agent unavailable - manual review required"
 
     approval_execution_snapshot = _build_approval_execution_snapshot(
-        board_review
-        if isinstance(board_review, dict)
-        else _build_board_review(
-            company_scorecard=company_scorecard,
-            divisions=operating_divisions,
-            commercial_result=commercial_result,
-        )
+        config=config,
+        board_review=(
+            board_review
+            if isinstance(board_review, dict)
+            else _build_board_review(
+                config=config,
+                company_scorecard=company_scorecard,
+                divisions=operating_divisions,
+            )
+        ),
     )
 
     payload: dict[str, Any] = {
@@ -3009,6 +3410,7 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "stale_input_threshold_hours": phase2_payload.get("stale_input_threshold_hours"),
         "targets_file": str((_phase3_cfg(config).get("targets_file") or "config/targets.yaml")),
         "soul_file": str((_phase3_cfg(config).get("soul_file") or "SOUL.md")),
+        "degraded_ops_mode": degraded_ops,
         "base_summary": phase2_payload.get("base_summary", {}),
         "base_alerts": phase2_payload.get("base_alerts", []),
         "base_remote_sync": phase2_payload.get("base_remote_sync", {}),
@@ -3024,10 +3426,25 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
                 ceo_result.get("warning"),
                 history_warning,
                 feed_refresh_warning,
+                (
+                    "DEGRADED OPS MODE active: capital-risk executes are blocked; content and lower-priority approval prompts are paused."
+                    if degraded_ops
+                    else None
+                ),
             ]
             if warning
         ],
         "company_scorecard": company_scorecard,
+        "portfolio_health_score": {
+            **company_scorecard,
+            "legend": "Portfolio health covers all active operated assets, including capital-at-risk bots.",
+            "score": _average_status_score(company_scorecard.get("items", [])),
+        },
+        "property_maturity_score": property_maturity_score,
+        "score_legend": (
+            "Portfolio health covers all active operated assets, including capital-at-risk bots. "
+            "Property maturity covers promoted or fully instrumented properties only."
+        ),
         "property_pnl_blocks": property_pnl_blocks,
         "property_department_briefs": property_department_briefs,
         "revamp_queue": revamp_queue,
@@ -3041,6 +3458,20 @@ def run_phase3_holding(config: dict[str, Any], mode: str = "heartbeat", force: b
         "approval_execution_snapshot": approval_execution_snapshot,
         "phase2_files": phase2_payload.get("files", {}),
         "phase2_payload_ref": phase2_payload.get("files", {}).get("latest_json"),
+        "trading_bots_summary": [
+            {
+                "id": bot.get("id"),
+                "name": bot.get("name"),
+                "status": bot.get("status"),
+                "data_source": bot.get("data_source"),
+                "live_check_ok": bot.get("live_check_ok"),
+                "cache_repo": bot.get("cache_repo"),
+                "cache_updated_at_utc": bot.get("cache_updated_at_utc"),
+                "service_check_age_minutes": bot.get("service_check_age_minutes"),
+            }
+            for bot in phase2_payload.get("base_bots", [])
+            if isinstance(bot, dict)
+        ],
     }
 
     if mode in {"board_review", "board_pack"}:

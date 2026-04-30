@@ -8,9 +8,17 @@ company:
     finance: "Finance Lead"
     marketing: "Marketing Lead"
     product: "Product Lead"
-    commercial: "Commercial Lead"
+    commercial: "Commercial Lead" # Reserved for future use; not a live routed division unless Phase 2 emits it.
+    content_studio: "Marketing Lead"
     trading: "Trading Lead"
     websites: "Websites Lead"
+
+canonical_sources:
+  telemetry_truth: "reports/daily_brief_latest.json"
+  division_truth: "reports/phase2_divisions_latest.json"
+  ceo_truth: "reports/phase3_holding_latest.json"
+  approval_work_truth: "state/board_approval_decisions.json"
+  metric_truth: "state/property_metric_feed.json"
 
 chat:
   preferred_app: "telegram" # Change to "slack" if needed
@@ -19,12 +27,19 @@ chat:
 bridge:
   provider: "telegram"
   observer_mode: true
+  degraded_ops_mode: false
   state_file: "state/telegram_bridge_state.json"
   audit_log_path: "state/bridge_audit.jsonl"
+  backup_approver_policy:
+    allowed_actions:
+      - "view_status"
+      - "view_approvals"
   telegram:
     bot_token_env: "TELEGRAM_BOT_TOKEN"
     owner_chat_id_env: "TELEGRAM_OWNER_CHAT_ID"
     owner_user_id_env: "TELEGRAM_OWNER_USER_ID"
+    backup_chat_id_env: "TELEGRAM_BACKUP_CHAT_ID"
+    backup_user_id_env: "TELEGRAM_BACKUP_USER_ID"
     poll_interval_sec: 3
     allowed_chat_ids: []
     allowed_user_ids: []
@@ -195,6 +210,10 @@ property_charters:
         - "research_brief_age_days"
       live_metrics_count: 2
       notes: "Reference implementation used to define the promotion framework."
+    tracking:
+      targets:
+        day90_mrr_usd: 500.0
+      notes: "Commercial metrics are ingested into state/property_metric_feed.json via scripts/tool_router.py ingest_property_metrics."
   freeghosttools:
     charter:
       version: v0-stub
@@ -338,3 +357,4 @@ phase3:
     ollama_model: "ollama/llama3.2:latest"
     ollama_base_url: "http://127.0.0.1:11434"
     temperature: 0.1
+

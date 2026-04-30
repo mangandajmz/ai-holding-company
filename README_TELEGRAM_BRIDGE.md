@@ -11,6 +11,8 @@ Set environment variables in PowerShell:
 setx TELEGRAM_BOT_TOKEN "REPLACE_WITH_BOT_TOKEN"
 setx TELEGRAM_OWNER_CHAT_ID "REPLACE_WITH_NUMERIC_CHAT_ID"
 setx TELEGRAM_OWNER_USER_ID "REPLACE_WITH_NUMERIC_USER_ID"
+setx TELEGRAM_BACKUP_CHAT_ID "OPTIONAL_NUMERIC_CHAT_ID"
+setx TELEGRAM_BACKUP_USER_ID "OPTIONAL_NUMERIC_USER_ID"
 ```
 
 Close and reopen terminal after `setx`.
@@ -22,8 +24,14 @@ Restart your terminal after `setx` so the bridge inherits the new values.
 Check in [config/projects.yaml](C:/Users/james/OneDrive/Documents/Manganda%20LTD/AI%20Models/ai-holding-company/config/projects.yaml):
 
 - `bridge.observer_mode: true`
+- `bridge.backup_approver_policy.allowed_actions: ["view_status", "view_approvals"]` by default
 
 Observer mode blocks `/bot <id> execute ...`.
+
+Backup approver mode is opt-in. When `TELEGRAM_BACKUP_CHAT_ID` and/or `TELEGRAM_BACKUP_USER_ID`
+are set, the backup identity can only run the action types listed in
+`bridge.backup_approver_policy.allowed_actions`. The default policy is read-only:
+`/status`, `/brief`, `/board review`, `/content_status`, and `/approvals`.
 
 ## 3) Local dry-run tests (no Telegram polling)
 
@@ -88,6 +96,9 @@ python scripts/aiogram_bridge.py --simulate-text "/content_status"
 - `/note <text>`
 - `/memory <query>`
 - `/help`
+
+If backup approver IDs are configured, only the policy-allowed subset is available to that backup user.
+Owner behavior is unchanged.
 
 ## 8) Audit + state files
 

@@ -65,6 +65,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
 
+    sub.add_parser("generate_handoff", help="Rewrite the HANDOFF current-state section from live reports.")
+
+    metric_ingest = sub.add_parser("ingest_property_metrics", help="Upsert manual property metrics into the canonical feed.")
+    metric_ingest.add_argument("--property", required=True, help="Property slug from config/projects.yaml.")
+    metric_ingest.add_argument(
+        "--metrics-json",
+        default="",
+        help="JSON object with metric keys such as sessions_7d, tool_completion_rate_pct, total_mrr_usd, "
+        "hours_invested_7d, direct_costs_usd_7d, quantified_value_usd_7d, and optional day90_mrr_usd.",
+    )
+    metric_ingest.add_argument(
+        "--metric",
+        action="append",
+        default=[],
+        help="Single metric override in key=value form. Repeat for multiple values.",
+    )
+    metric_ingest.add_argument("--source", default="manual_metric_ingest", help="Audit source label for this upsert.")
+
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
     mem_add.add_argument("--source", default="owner_chat", help="Source label for metadata.")
@@ -176,6 +194,58 @@ def main() -> None:
         from phase3_holding import run_phase3_holding  # pylint: disable=import-outside-toplevel
 
         _emit(run_phase3_holding(config=config, mode=args.mode, force=args.force))
+        return
+
+    if args.command == "generate_handoff":
+        from phase3_holding import generate_handoff  # pylint: disable=import-outside-toplevel
+
+        _emit(generate_handoff(config=config))
+        return
+
+    if args.command == "ingest_property_metrics":
+        from phase3_holding import ingest_property_metric_values  # pylint: disable=import-outside-toplevel
+
+        metric_values: dict[str, object] = {}
+        if args.metrics_json:
+            try:
+                parsed_metrics = json.loads(args.metrics_json)
+            except json.JSONDecodeError as exc:
+                _emit({"ok": False, "error": "invalid_metrics_json", "message": str(exc)})
+                return
+            if not isinstance(parsed_metrics, dict):
+                _emit({"ok": False, "error": "invalid_metrics_json", "message": "metrics-json must decode to an object."})
+                return
+            metric_values.update(parsed_metrics)
+        for raw_metric in args.metric:
+            token = str(raw_metric).strip()
+            if "=" not in token:
+                _emit(
+                    {
+                        "ok": False,
+                        "error": "invalid_metric_argument",
+                        "message": f"Metric `{token}` must use key=value form.",
+                    }
+                )
+                return
+            key, raw_value = token.split("=", 1)
+            metric_values[key.strip()] = raw_value.strip()
+        if not metric_values:
+            _emit(
+                {
+                    "ok": False,
+                    "error": "missing_metrics",
+                    "message": "Provide --metrics-json or one or more --metric key=value arguments.",
+                }
+            )
+            return
+        _emit(
+            ingest_property_metric_values(
+                config=config,
+                property_slug=args.property,
+                metric_values=metric_values,
+                source=args.source,
+            )
+        )
         return
 
     if args.command == "log_direction":
