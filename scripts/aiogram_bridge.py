@@ -31,12 +31,17 @@ CONVERSATION_HISTORY_FILE = ROOT / "state" / "conversation_history.jsonl"
 LOG_FILE = ROOT / "logs" / "aiogram_bridge.log"
 REPORTS_DIR = ROOT / "reports"
 BOARD_APPROVAL_STATE_FILE = ROOT / "state" / "board_approval_decisions.json"
+MODULE_CANONICAL_SOURCE = "state/board_approval_decisions.json"
+TELEMETRY_CANONICAL_SOURCE = "reports/daily_brief_latest.json"
+DIVISION_CANONICAL_SOURCE = "reports/phase2_divisions_latest.json"
+CEO_CANONICAL_SOURCE = "reports/phase3_holding_latest.json"
 EXECUTION_ALLOWED_STATUSES = {"APPROVED", "ASSIGNED", "STARTED", "DONE", "VALIDATED"}
 EXECUTION_OPEN_STATUSES = {"APPROVED", "ASSIGNED", "STARTED", "DONE"}
 DEFAULT_FALLBACK_REPLY = (
     "I can still answer at a high level, but my local language model is offline right now. "
     "The latest reports show attention is needed in trading, while websites are up and reachable."
 )
+DEFAULT_BACKUP_APPROVER_ACTIONS = {"view_status", "view_approvals"}
 
 LOGGER = logging.getLogger("aiogram_bridge")
 _EMBEDDING_CACHE: dict[str, list[float]] = {}
@@ -188,8 +193,21 @@ def _normalize_execution_status(value: Any, completion_reason: str = "") -> str:
 def _normalize_execution_row(raw_state: dict[str, Any]) -> dict[str, Any]:
     completion_reason = str(raw_state.get("completion_reason", "")).strip()
     status = _normalize_execution_status(raw_state.get("status", ""), completion_reason=completion_reason)
+    priority = str(raw_state.get("priority", "")).strip().upper()
+    sla_raw = _safe_float(raw_state.get("sla_hours"))
+    sla_hours = int(sla_raw) if sla_raw is not None and sla_raw > 0 else _priority_to_sla_hours(priority)
+    due_at_utc = str(raw_state.get("due_at_utc", "")).strip()
+    if not due_at_utc:
+        due_at_utc = _derive_due_at_utc(
+            raw_state.get("approved_at_utc") or raw_state.get("updated_at_utc"),
+            sla_hours,
+        )
+    delivery_owner = str(raw_state.get("delivery_owner", "")).strip()
+    if not delivery_owner:
+        delivery_owner = _resolve_delivery_owner(raw_state.get("owner"))
     row = {
         "status": status,
+        "priority": priority,
         "updated_at_utc": str(raw_state.get("updated_at_utc", "")).strip(),
         "approved_at_utc": str(raw_state.get("approved_at_utc", "")).strip(),
         "assigned_at_utc": str(raw_state.get("assigned_at_utc", "")).strip(),
@@ -204,8 +222,10 @@ def _normalize_execution_row(raw_state: dict[str, Any]) -> dict[str, Any]:
         "completion_reason": completion_reason,
         "topic": str(raw_state.get("topic", "")).strip(),
         "owner": str(raw_state.get("owner", "")).strip(),
+        "delivery_owner": delivery_owner,
         "decision": str(raw_state.get("decision", "")).strip(),
-        "due_at_utc": str(raw_state.get("due_at_utc", "")).strip(),
+        "sla_hours": sla_hours,
+        "due_at_utc": due_at_utc,
     }
     if row["status"] != "VALIDATED":
         row["validated_at_utc"] = ""
@@ -228,7 +248,24 @@ def _resolve_due_at_utc(deadline: Any) -> str:
     return ""
 
 
+def _priority_to_sla_hours(priority: Any) -> int:
+    normalized = str(priority or "").strip().upper()
+    if normalized == "RED":
+        return 24
+    if normalized == "AMBER":
+        return 72
+    return 168
+
+
+def _derive_due_at_utc(reference_value: Any, sla_hours: int) -> str:
+    reference = _parse_iso_datetime(reference_value)
+    if reference is None:
+        reference = datetime.now(timezone.utc)
+    return (reference + timedelta(hours=max(1, int(sla_hours)))).replace(microsecond=0).isoformat()
+
+
 def _load_board_approval_state() -> dict[str, Any]:
+    # Approval/work state is canonical in `state/board_approval_decisions.json`.
     payload = _safe_json_load(BOARD_APPROVAL_STATE_FILE)
     if not isinstance(payload, dict):
         return {"decisions": {}, "execution_by_approval": {}, "board_snapshot": {}, "selection_by_user": {}}
@@ -313,6 +350,7 @@ def _persist_board_approval_state(state: dict[str, Any]) -> bool:
         },
         "selection_by_user": selection_by_user,
     }
+    # Bridge writes back to the canonical approval/work state file only.
     return _safe_json_dump(BOARD_APPROVAL_STATE_FILE, payload)
 
 
@@ -336,6 +374,12 @@ class AiogramBridgeRuntime:
         self.owner_user_id = self._parse_optional_int(
             os.getenv(str(telegram_cfg.get("owner_user_id_env", "TELEGRAM_OWNER_USER_ID")), "")
         )
+        self.backup_chat_id = self._parse_optional_int(
+            os.getenv(str(telegram_cfg.get("backup_chat_id_env", "TELEGRAM_BACKUP_CHAT_ID")), "")
+        )
+        self.backup_user_id = self._parse_optional_int(
+            os.getenv(str(telegram_cfg.get("backup_user_id_env", "TELEGRAM_BACKUP_USER_ID")), "")
+        )
 
         cfg_chat_ids = telegram_cfg.get("allowed_chat_ids", []) or []
         cfg_user_ids = telegram_cfg.get("allowed_user_ids", []) or []
@@ -345,8 +389,23 @@ class AiogramBridgeRuntime:
             self.allowed_chat_ids.add(self.owner_chat_id)
         if self.owner_user_id is not None:
             self.allowed_user_ids.add(self.owner_user_id)
+        if self.backup_chat_id is not None:
+            self.allowed_chat_ids.add(self.backup_chat_id)
+        if self.backup_user_id is not None:
+            self.allowed_user_ids.add(self.backup_user_id)
+
+        backup_policy_cfg = bridge_cfg.get("backup_approver_policy", {})
+        backup_policy_cfg = backup_policy_cfg if isinstance(backup_policy_cfg, dict) else {}
+        raw_allowed_actions = backup_policy_cfg.get("allowed_actions", [])
+        raw_allowed_actions = raw_allowed_actions if isinstance(raw_allowed_actions, list) else []
+        self.backup_allowed_actions = {
+            str(value).strip()
+            for value in raw_allowed_actions
+            if str(value).strip()
+        } or set(DEFAULT_BACKUP_APPROVER_ACTIONS)
 
         self.observer_mode = bool(bridge_cfg.get("observer_mode", True))
+        self.degraded_ops_mode = bool(bridge_cfg.get("degraded_ops_mode", False))
         self.phase3_enabled = bool(self.config.get("phase3", {}).get("enabled", False))
         self.security_ready = bool(self.allowed_chat_ids or self.allowed_user_ids)
         self.ollama_base_url = str(memory_cfg.get("ollama_base_url", "http://127.0.0.1:11434")).rstrip("/")
@@ -394,13 +453,47 @@ class AiogramBridgeRuntime:
             return False
         return True
 
+    def is_owner_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        if self.owner_chat_id is not None and chat_id != self.owner_chat_id:
+            return False
+        if self.owner_user_id is not None and user_id != self.owner_user_id:
+            return False
+        return self.owner_chat_id is not None or self.owner_user_id is not None
+
+    def is_backup_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        if self.backup_chat_id is None and self.backup_user_id is None:
+            return False
+        if self.backup_chat_id is not None and chat_id != self.backup_chat_id:
+            return False
+        if self.backup_user_id is not None and user_id != self.backup_user_id:
+            return False
+        return True
+
+    def action_allowed(self, action_type: str, chat_id: int | None, user_id: int | None) -> bool:
+        if self.is_owner_identity(chat_id, user_id):
+            return True
+        if self.is_backup_identity(chat_id, user_id):
+            return action_type in self.backup_allowed_actions
+        return True
+
+    def permission_denied_message(self, action_type: str) -> str:
+        if action_type in {"view_status", "view_approvals"}:
+            return "Backup approver access is configured, but this action is not permitted by the current policy."
+        return (
+            "This bridge action is restricted to the owner under the current backup approver policy. "
+            "Use `/status` or `/approvals`, or update `bridge.backup_approver_policy.allowed_actions` in config."
+        )
+
     def latest_daily_brief(self) -> dict[str, Any] | None:
+        # Bridge reads the canonical telemetry truth, not timestamped sibling reports.
         return _safe_json_load(REPORTS_DIR / "daily_brief_latest.json")
 
     def latest_phase2(self) -> dict[str, Any] | None:
+        # Bridge reads the canonical division truth, not historical snapshots.
         return _safe_json_load(REPORTS_DIR / "phase2_divisions_latest.json")
 
     def latest_phase3(self) -> dict[str, Any] | None:
+        # Bridge reads the canonical CEO truth, not historical snapshots.
         return _safe_json_load(REPORTS_DIR / "phase3_holding_latest.json")
 
 
@@ -411,6 +504,13 @@ def _runtime() -> AiogramBridgeRuntime:
     if RUNTIME is None:
         raise RuntimeError("Bridge runtime not initialized.")
     return RUNTIME
+
+
+def _degraded_ops_banner() -> str:
+    return (
+        "DEGRADED OPS MODE ACTIVE: capital-risk executes are blocked; "
+        "content and lower-priority approval prompts are paused."
+    )
 
 
 async def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -1502,15 +1602,29 @@ def _upsert_execution_row(
         status = "APPROVED"
     if not status:
         status = "APPROVED"
-    due_at_utc = existing.get("due_at_utc") or _resolve_due_at_utc(item.get("deadline"))
+    priority = str(item.get("priority", existing.get("priority", ""))).strip().upper()
+    sla_raw = _safe_float(item.get("sla_hours"))
+    sla_hours = int(sla_raw) if sla_raw is not None and sla_raw > 0 else int(existing.get("sla_hours") or _priority_to_sla_hours(priority))
+    due_at_utc = (
+        existing.get("due_at_utc")
+        or str(item.get("due_at_utc", "")).strip()
+        or _resolve_due_at_utc(item.get("deadline"))
+        or _derive_due_at_utc(approved_at_utc, sla_hours)
+    )
+    delivery_owner = str(item.get("delivery_owner", "")).strip() or str(existing.get("delivery_owner", "")).strip()
+    if not delivery_owner:
+        delivery_owner = _resolve_delivery_owner(item.get("owner"))
     updated_row = {
         **existing,
         "status": status,
+        "priority": priority,
         "updated_at_utc": _utc_now_iso(),
         "topic": str(item.get("topic", "")).strip(),
         "owner": str(item.get("owner", "")).strip(),
+        "delivery_owner": delivery_owner,
         "decision": _resolve_board_decision_text(item),
         "approved_at_utc": approved_at_utc,
+        "sla_hours": sla_hours,
         "due_at_utc": due_at_utc,
     }
     raw_execution[approval_id] = updated_row
@@ -1649,10 +1763,12 @@ def _sync_execution_queue_from_approvals(
                 "priority": priority,
                 "topic": topic or "Untitled approval",
                 "owner": owner,
+                "delivery_owner": updated_row.get("delivery_owner"),
                 "decision": decision_text,
                 "status": updated_row.get("status"),
                 "metric_status": metric_status,
                 "approved_at_utc": approved_at,
+                "sla_hours": updated_row.get("sla_hours"),
                 "due_at_utc": updated_row.get("due_at_utc"),
                 "done_at_utc": updated_row.get("done_at_utc"),
                 "completion_note": updated_row.get("completion_note"),
@@ -1670,7 +1786,11 @@ def _sync_execution_queue_from_approvals(
             "approval_id": normalized_id,
             "topic": str(decision_state.get("topic", "")).strip(),
             "owner": str(decision_state.get("owner", "")).strip(),
+            "delivery_owner": str(decision_state.get("delivery_owner", "")).strip(),
             "decision": str(decision_state.get("decision", "")).strip(),
+            "priority": str(decision_state.get("priority", "")).strip().upper(),
+            "sla_hours": decision_state.get("sla_hours"),
+            "due_at_utc": str(decision_state.get("due_at_utc", "")).strip(),
             "deadline": "",
         }
         previous = execution_by_approval.get(normalized_id, {})
@@ -1691,10 +1811,12 @@ def _sync_execution_queue_from_approvals(
                 "priority": "AMBER",
                 "topic": str(updated_row.get("topic", "")).strip() or "Untitled approval",
                 "owner": str(updated_row.get("owner", "")).strip(),
+                "delivery_owner": str(updated_row.get("delivery_owner", "")).strip(),
                 "decision": str(updated_row.get("decision", "")).strip(),
                 "status": str(updated_row.get("status", "")).strip(),
                 "metric_status": _topic_kpi_status(str(updated_row.get("topic", "")), phase3_payload),
                 "approved_at_utc": str(updated_row.get("approved_at_utc", "")).strip(),
+                "sla_hours": updated_row.get("sla_hours"),
                 "due_at_utc": str(updated_row.get("due_at_utc", "")).strip(),
                 "done_at_utc": str(updated_row.get("done_at_utc", "")).strip(),
                 "completion_note": str(updated_row.get("completion_note", "")).strip(),
@@ -1714,10 +1836,12 @@ def _sync_execution_queue_from_approvals(
                 "priority": "AMBER",
                 "topic": persisted_row.get("topic") or "Untitled approval",
                 "owner": persisted_row.get("owner"),
+                "delivery_owner": persisted_row.get("delivery_owner"),
                 "decision": persisted_row.get("decision"),
                 "status": persisted_row.get("status"),
                 "metric_status": _topic_kpi_status(str(persisted_row.get("topic", "")), phase3_payload),
                 "approved_at_utc": persisted_row.get("approved_at_utc"),
+                "sla_hours": persisted_row.get("sla_hours"),
                 "due_at_utc": persisted_row.get("due_at_utc"),
                 "done_at_utc": persisted_row.get("done_at_utc"),
                 "completion_note": persisted_row.get("completion_note"),
@@ -1960,6 +2084,8 @@ async def _collect_board_approval_rows(refresh: bool = False) -> tuple[list[dict
             decided.append(item)
         else:
             pending.append(item)
+    if _runtime().degraded_ops_mode:
+        pending = [item for item in pending if str(item.get("priority", "")).upper() == "RED"]
     return pending, decided, generated
 
 
@@ -1977,6 +2103,8 @@ def _approval_rows_from_phase3_payload(payload: dict[str, Any] | None) -> tuple[
             decided.append(item)
         else:
             pending.append(item)
+    if _runtime().degraded_ops_mode:
+        pending = [item for item in pending if str(item.get("priority", "")).upper() == "RED"]
     return pending, decided, generated
 
 
@@ -2031,10 +2159,15 @@ def _build_board_approvals_keyboard(
 
 async def _build_approvals_reply(refresh: bool = False, user_id: int | None = None) -> tuple[str, Any | None]:
     lines = ["Owner approvals snapshot"]
+    if _runtime().degraded_ops_mode:
+        lines.append(_degraded_ops_banner())
     keyboard: Any | None = None
     if _runtime().phase3_enabled:
         pending, decided, generated = await _collect_board_approval_rows(refresh=refresh)
         execution_open, execution_validated, _ = await _current_execution_rows(refresh=False)
+        execution_awaiting = [
+            item for item in execution_open if str(item.get("status", "")).upper() in {"APPROVED", "ASSIGNED", "STARTED"}
+        ]
         if generated:
             lines.append(f"Snapshot freshness: {_snapshot_freshness_label(generated)} ({generated} UTC)")
 
@@ -2046,7 +2179,7 @@ async def _build_approvals_reply(refresh: bool = False, user_id: int | None = No
             ]
             selected_ids = _prune_board_selected_ids(user_id, pending_ids) if user_id is not None else []
             selected_set = set(selected_ids)
-            lines.append("Board approvals pending:")
+            lines.append("Pending approval:")
             for item in pending[:5]:
                 approval_id = str(item.get("approval_id", "")).strip() or "board_id_missing"
                 topic = str(item.get("topic", "")).strip()
@@ -2054,7 +2187,9 @@ async def _build_approvals_reply(refresh: bool = False, user_id: int | None = No
                 meaning = _approval_topic_meaning(topic)
                 selected_marker = " [SELECTED]" if approval_id in selected_set else ""
                 lines.append(f"{approval_id}: {summary} Approval means {meaning.lower()}{selected_marker}")
-                lines.append(f"Owner: {_resolve_delivery_owner(item.get('owner'))}")
+                delivery_owner = str(item.get("delivery_owner", "")).strip() or _resolve_delivery_owner(item.get("owner"))
+                lines.append(f"Owner: {delivery_owner}")
+                lines.append(f"Due: {item.get('due_at_utc') or 'n/a'} | SLA: {item.get('sla_hours') or 'n/a'}h")
                 lines.append(f"Approve: /approve {approval_id} | Reject: /deny {approval_id}")
             lines.append(
                 f"Selection: {len(selected_set)} selected. Tap Select to tick items, then use Approve Selected/Reject Selected."
@@ -2065,21 +2200,22 @@ async def _build_approvals_reply(refresh: bool = False, user_id: int | None = No
             )
             keyboard = _build_board_approvals_keyboard(pending, selected_ids=selected_ids)
         else:
-            lines.append("Board approvals pending: none.")
+            lines.append("Pending approval: none.")
 
-        if execution_open:
-            lines.append("Approved work queue:")
-            for item in execution_open[:10]:
+        if execution_awaiting:
+            lines.append("Approved - awaiting execution:")
+            for item in execution_awaiting[:10]:
+                delivery_owner = str(item.get("delivery_owner", "")).strip() or _resolve_delivery_owner(item.get("owner"))
                 lines.append(
                     f"- {item.get('approval_id')} [{item.get('status')}] {item.get('topic')} | "
-                    f"Owner: {_resolve_delivery_owner(item.get('owner'))}"
+                    f"Owner: {delivery_owner} | Due: {item.get('due_at_utc') or 'n/a'}"
                 )
                 lines.append(
                     f"  /assign {item.get('approval_id')} | /start {item.get('approval_id')} | "
                     f"/done {item.get('approval_id')} <completion_note>"
                 )
         else:
-            lines.append("Approved work queue: none.")
+            lines.append("Approved - awaiting execution: none.")
 
         if execution_validated:
             lines.append("Validated complete:")
@@ -2209,7 +2345,12 @@ async def _apply_board_approval_outcome(
             "decided_by_user_id": user_id,
             "topic": str(matched.get("topic", "")).strip(),
             "owner": str(matched.get("owner", "")).strip(),
+            "delivery_owner": str(matched.get("delivery_owner", "")).strip() or _resolve_delivery_owner(matched.get("owner")),
             "decision": _resolve_board_decision_text(matched),
+            "priority": str(matched.get("priority", "")).strip().upper(),
+            "sla_hours": int(_safe_float(matched.get("sla_hours")) or _priority_to_sla_hours(matched.get("priority"))),
+            "due_at_utc": str(matched.get("due_at_utc", "")).strip()
+            or _derive_due_at_utc(_utc_now_iso(), int(_safe_float(matched.get("sla_hours")) or _priority_to_sla_hours(matched.get("priority")))),
             "source_snapshot_utc": generated,
         }
         if outcome == "APPROVED":
@@ -2324,7 +2465,12 @@ async def _handle_board_approval_decision(
         "decided_by_user_id": user_id,
         "topic": str(matched.get("topic", "")).strip(),
         "owner": str(matched.get("owner", "")).strip(),
+        "delivery_owner": str(matched.get("delivery_owner", "")).strip() or _resolve_delivery_owner(matched.get("owner")),
         "decision": _resolve_board_decision_text(matched),
+        "priority": str(matched.get("priority", "")).strip().upper(),
+        "sla_hours": int(_safe_float(matched.get("sla_hours")) or _priority_to_sla_hours(matched.get("priority"))),
+        "due_at_utc": str(matched.get("due_at_utc", "")).strip()
+        or _derive_due_at_utc(_utc_now_iso(), int(_safe_float(matched.get("sla_hours")) or _priority_to_sla_hours(matched.get("priority")))),
         "source_snapshot_utc": generated,
     }
     state["decisions"] = decisions
@@ -2338,7 +2484,7 @@ async def _handle_board_approval_decision(
         return "I could not persist that approval decision. Please retry."
     return (
         f"Board approval `{normalized}` marked {outcome}. "
-        f"Topic: {matched.get('topic')} | Owner: {matched.get('owner')}."
+        f"Topic: {matched.get('topic')} | Owner: {str(matched.get('delivery_owner', '')).strip() or _resolve_delivery_owner(matched.get('owner'))} | Due: {matched.get('due_at_utc') or decisions[normalized].get('due_at_utc')}."
     )
 
 
@@ -2389,11 +2535,14 @@ async def _handle_board_command() -> str:
     approvals = board_review.get("approvals", [])
     approvals = approvals if isinstance(approvals, list) else []
     first_item = approvals[0] if approvals and isinstance(approvals[0], dict) else {}
-    return (
+    reply = (
         f"The board pack is ready and the company is currently {company.get('status', 'unknown')}. "
         f"There are {len(approvals)} approval item(s) on the pack. "
         f"{'Top item: ' + str(first_item.get('topic')) + '.' if first_item else ''}"
     ).strip()
+    if _runtime().degraded_ops_mode:
+        reply = _degraded_ops_banner() + "\n" + reply
+    return reply
 
 
 async def _handle_status_command(compact: bool = False) -> str:
@@ -2533,13 +2682,15 @@ async def _handle_status_command(compact: bool = False) -> str:
             if pending_approvals:
                 lead_item = pending_approvals[0]
                 focus_text = str(lead_item.get("topic", "")).strip() or "Approval decision pending."
-                owner_text = _resolve_delivery_owner(lead_item.get("owner"))
-                decision_now = f"Await approval: {str(lead_item.get('decision', '')).strip()}"
+                owner_text = str(lead_item.get("delivery_owner", "")).strip() or _resolve_delivery_owner(lead_item.get("owner"))
+                decision_now = f"Await approval: {str(lead_item.get('decision', '')).strip()} (due {lead_item.get('due_at_utc') or 'n/a'})"
             elif execution_pending:
                 lead_item = execution_pending[0]
                 focus_text = str(lead_item.get("topic", "")).strip() or "Approved action pending execution."
-                owner_text = _resolve_delivery_owner(lead_item.get("owner"))
-                decision_now = str(lead_item.get("decision", "")).strip() or "Execute approved corrective action."
+                owner_text = str(lead_item.get("delivery_owner", "")).strip() or _resolve_delivery_owner(lead_item.get("owner"))
+                decision_now = (
+                    str(lead_item.get("decision", "")).strip() or "Execute approved corrective action."
+                ) + f" (due {lead_item.get('due_at_utc') or 'n/a'})"
             else:
                 focus_text = str(key_decision.get("topic", "")).strip() if key_decision else "No immediate decision items."
                 owner_text = _resolve_delivery_owner(key_decision.get("owner")) if key_decision else "Execution Lead"
@@ -2577,6 +2728,8 @@ async def _handle_status_command(compact: bool = False) -> str:
                 "- /status for full CEO business brief",
                 "- /approvals for decisions awaiting approval",
             ]
+            if runtime.degraded_ops_mode:
+                compact_lines.insert(1, _degraded_ops_banner())
             return "\n".join(compact_lines)
 
         lines = [
@@ -2601,11 +2754,16 @@ async def _handle_status_command(compact: bool = False) -> str:
             f"- Approved but not executed: {len(execution_pending)}",
             f"- Validated complete: {len(execution_validated)}",
         ]
+        if runtime.degraded_ops_mode:
+            lines.insert(1, _degraded_ops_banner())
         if pending_approvals:
             lines.append("- Top pending approval:")
             lines.append(f"  ID: {pending_approvals[0].get('approval_id')}")
             lines.append(f"  Topic: {pending_approvals[0].get('topic')}")
-            lines.append(f"  Owner: {_resolve_delivery_owner(pending_approvals[0].get('owner'))}")
+            lines.append(
+                f"  Owner: {str(pending_approvals[0].get('delivery_owner', '')).strip() or _resolve_delivery_owner(pending_approvals[0].get('owner'))}"
+            )
+            lines.append(f"  Due: {pending_approvals[0].get('due_at_utc') or 'n/a'}")
             lines.append(f"  Action: {pending_approvals[0].get('decision')}")
         else:
             lines.append("- Pending approvals queue is clear.")
@@ -2614,7 +2772,10 @@ async def _handle_status_command(compact: bool = False) -> str:
             lines.append("- Top approved action awaiting execution:")
             lines.append(f"  ID: {execution_pending[0].get('approval_id')}")
             lines.append(f"  Topic: {execution_pending[0].get('topic')}")
-            lines.append(f"  Owner: {_resolve_delivery_owner(execution_pending[0].get('owner'))}")
+            lines.append(
+                f"  Owner: {str(execution_pending[0].get('delivery_owner', '')).strip() or _resolve_delivery_owner(execution_pending[0].get('owner'))}"
+            )
+            lines.append(f"  Due: {execution_pending[0].get('due_at_utc') or 'n/a'}")
             lines.append(f"  Action: {execution_pending[0].get('decision')}")
         else:
             lines.append("- No approved actions are awaiting execution.")
@@ -3044,6 +3205,9 @@ async def _handle_bot_command(text: str, user_id: int | None = None) -> str:
     if bot_id not in _runtime().bot_ids:
         return f"I don't recognize bot id `{bot_id}`."
     if action == "execute":
+        if _runtime().degraded_ops_mode:
+            _clear_bot_execute_preflight(bot_id, user_id)
+            return _degraded_ops_banner() + "\nNew `/bot ... execute` requests are blocked until degraded operations mode is disabled."
         if extra != "confirm":
             preflight = await _build_bot_execute_preflight(bot_id)
             _store_bot_execute_preflight(bot_id, user_id, preflight)
@@ -3102,6 +3266,50 @@ async def _handle_bot_command(text: str, user_id: int | None = None) -> str:
             + (f". {headline}" if headline else ".")
         )
     return f"{bot_id} {action} completed."
+
+
+def _command_action_type(text: str) -> str:
+    lowered = text.lower().strip()
+    if lowered in {"/help", "/status", "/hermes_status"}:
+        return "view_status"
+    if lowered.startswith("/approvals"):
+        return "view_approvals"
+    if lowered.startswith("/approve") or lowered.startswith("/deny"):
+        return "board_approval_decision"
+    if lowered.startswith("/assign") or lowered.startswith("/start") or lowered.startswith("/done"):
+        return "approval_execution_update"
+    if lowered in {"/brief", "/board", "/board review", "/commercial"}:
+        return "view_status"
+    if lowered == "/content_status":
+        return "view_status"
+    if lowered.startswith("/content_approve") or lowered.startswith("/content_deny"):
+        return "content_decision"
+    if lowered.startswith("/content"):
+        return "content_create"
+    if lowered == "/develop_status":
+        return "view_status"
+    if lowered.startswith("/develop_approve") or lowered.startswith("/develop_deny"):
+        return "develop_decision"
+    if lowered.startswith("/develop"):
+        return "develop_submit"
+    if lowered.startswith("/memory"):
+        return "memory_query"
+    if lowered.startswith("/bot "):
+        return "bot_execute" if " execute" in lowered else "view_status"
+    if lowered.startswith("/site ") or lowered.startswith("/divisions"):
+        return "view_status"
+    return "general_chat"
+
+
+def _callback_action_type(data: str) -> str:
+    normalized = str(data or "").strip().lower()
+    if normalized.startswith("board_approve:") or normalized.startswith("board_deny:"):
+        return "board_approval_decision"
+    if normalized in {"board_approve_selected", "board_deny_selected", "board_approve_all", "board_deny_all"}:
+        return "board_approval_decision"
+    if normalized.startswith("board_toggle:") or normalized == "board_clear_selected":
+        return "view_approvals"
+    return "general_chat"
 
 
 async def _handle_known_command(text: str, user_id: int | None = None) -> str | None:
@@ -3225,6 +3433,83 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
             f"Current alerts: {len(payload.get('base_alerts', []) or [])}. "
             f"Tracked divisions: {', '.join(payload.get('divisions_ran', []) or [])}."
         )
+
+    # ── Wiki commands ─────────────────────────────────────────────────────────
+    if re.match(r"^/approve_wiki_", text, re.I):
+        slug = re.sub(r"^/approve_wiki_", "", text, flags=re.I).strip()
+        import wiki as _wiki  # noqa: PLC0415
+        found = _wiki.approve_entry(slug)
+        if found:
+            return f"✅ Wiki entry '{slug}' approved and added to institutional memory."
+        return f"No pending wiki entry with slug '{slug}'."
+
+    if re.match(r"^/reject_wiki_", text, re.I):
+        slug = re.sub(r"^/reject_wiki_", "", text, flags=re.I).strip()
+        import wiki as _wiki  # noqa: PLC0415
+        found = _wiki.reject_entry(slug)
+        if found:
+            return f"🗑 Wiki entry '{slug}' discarded."
+        return f"No pending wiki entry with slug '{slug}'."
+
+    # ── Initiative commands ────────────────────────────────────────────────────
+    if re.match(r"^/approve_init_", text, re.I):
+        slug = re.sub(r"^/approve_init_", "", text, flags=re.I).strip()
+        init_id = f"init_{slug}"
+        import md_agent_state as mds  # noqa: PLC0415
+        found = mds.update_initiative(init_id, "APPROVED", detail="CEO approved via Telegram")
+        if found:
+            return (
+                f"✅ Initiative {init_id} approved — queued for dev pipeline.\n"
+                f"→ /pending  to check status"
+            )
+        return f"Initiative {init_id} not found."
+
+    if re.match(r"^/reject_init_", text, re.I):
+        slug = re.sub(r"^/reject_init_", "", text, flags=re.I).strip()
+        init_id = f"init_{slug}"
+        import md_agent_state as mds  # noqa: PLC0415
+        mds.update_initiative(init_id, "REJECTED", detail="CEO rejected via Telegram")
+        return f"Initiative {init_id} rejected."
+
+    # ── Dev pipeline merge commands ────────────────────────────────────────────
+    if re.match(r"^/approve_merge_", text, re.I):
+        slug = re.sub(r"^/approve_merge_", "", text, flags=re.I).strip()
+        init_id = f"init_{slug}"
+        import dev_pipeline  # noqa: PLC0415
+        ok, msg = dev_pipeline.merge_initiative(init_id)
+        return f"✅ {msg}" if ok else f"⚠️ Merge failed: {msg}"
+
+    if re.match(r"^/reject_merge_", text, re.I):
+        slug = re.sub(r"^/reject_merge_", "", text, flags=re.I).strip()
+        init_id = f"init_{slug}"
+        import md_agent_state as mds  # noqa: PLC0415
+        mds.update_initiative(init_id, "REJECTED", detail="CEO rejected merge")
+        return f"Initiative {init_id} merge rejected — worktree discarded."
+
+    # ── Pending review ─────────────────────────────────────────────────────────
+    if lowered == "/pending":
+        import wiki as _wiki  # noqa: PLC0415
+        import md_agent_state as mds  # noqa: PLC0415
+        lines: list[str] = []
+        pending_wiki = _wiki.get_pending()
+        if pending_wiki:
+            lines.append(f"📖 {len(pending_wiki)} wiki entr{'y' if len(pending_wiki) == 1 else 'ies'} pending:")
+            for e in pending_wiki:
+                lines.append(f"  · {e['title']}\n    → /approve_wiki_{e['slug']}  or  /reject_wiki_{e['slug']}")
+        pending_inits = mds.get_proposed_initiatives()
+        if pending_inits:
+            lines.append(f"\n🔧 {len(pending_inits)} initiative{'s' if len(pending_inits) != 1 else ''} awaiting approval:")
+            for i in pending_inits:
+                s = i["initiative_id"].replace("init_", "")
+                lines.append(
+                    f"  · {i['title']}\n"
+                    f"    Problem: {i.get('problem','')[:80]}\n"
+                    f"    → /approve_init_{s}  or  /reject_init_{s}"
+                )
+        if not lines:
+            return "No pending wiki entries or initiatives."
+        return "\n".join(lines)
+
     return None
 
 
@@ -3261,6 +3546,47 @@ async def process_text_message(
     starts_with_slash = stripped_text.startswith("/")
     LOGGER.debug('[DEBUG] Message starts with "/"? %s', starts_with_slash)
     if starts_with_slash:
+        action_type = _command_action_type(stripped_text)
+        if not runtime.action_allowed(action_type, chat_id=chat_id, user_id=user_id):
+            denied = runtime.permission_denied_message(action_type)
+            metadata = {
+                "authorized": True,
+                "divisions_involved": [],
+                "topics": ["permission_denied", action_type],
+            }
+            await _save_conversation(
+                timestamp=_utc_now_iso(),
+                user_id=user_id,
+                user_msg=text,
+                bot_response=denied,
+                response_type="permission_denied",
+                metadata=metadata,
+            )
+            return denied, metadata
+        if runtime.degraded_ops_mode and action_type in {"bot_execute", "content_create", "content_decision"}:
+            blocked = (
+                _degraded_ops_banner()
+                + "\n"
+                + (
+                    "New `/bot ... execute` requests are blocked until degraded operations mode is disabled."
+                    if action_type == "bot_execute"
+                    else "Content drafting and content approval decisions are paused until degraded operations mode is disabled."
+                )
+            )
+            metadata = {
+                "authorized": True,
+                "divisions_involved": [],
+                "topics": ["degraded_ops_mode", action_type],
+            }
+            await _save_conversation(
+                timestamp=_utc_now_iso(),
+                user_id=user_id,
+                user_msg=text,
+                bot_response=blocked,
+                response_type="degraded_ops_mode",
+                metadata=metadata,
+            )
+            return blocked, metadata
         LOGGER.debug("[DEBUG] Routing to command handler: %s", stripped_text.split()[0] if stripped_text else "")
         command_reply = await _handle_known_command(stripped_text, user_id=user_id)
         if command_reply is None:
@@ -3282,6 +3608,26 @@ async def process_text_message(
             metadata=metadata,
         )
         return command_reply, metadata
+
+    if runtime.is_backup_identity(chat_id=chat_id, user_id=user_id) and not runtime.action_allowed(
+        "general_chat",
+        chat_id=chat_id,
+        user_id=user_id,
+    ):
+        reply = (
+            "Backup approver mode is read-scoped right now. Use `/status` or `/approvals`, "
+            "or expand `bridge.backup_approver_policy.allowed_actions` for additional commands."
+        )
+        metadata = {"authorized": True, "divisions_involved": [], "topics": ["permission_denied", "general_chat"]}
+        await _save_conversation(
+            timestamp=_utc_now_iso(),
+            user_id=user_id,
+            user_msg=text,
+            bot_response=reply,
+            response_type="permission_denied",
+            metadata=metadata,
+        )
+        return reply, metadata
 
     response_type, divisions, topics = _classify_message(stripped_text)
     deterministic_reply = await _handle_natural_deterministic_intent(stripped_text, user_id=user_id)
@@ -3400,6 +3746,7 @@ async def handle_message(message: Any) -> None:
 async def handle_callback_query(callback_query: Any) -> None:
     data = str(getattr(callback_query, "data", "") or "").strip()
     user_id = getattr(getattr(callback_query, "from_user", None), "id", None)
+    message = getattr(callback_query, "message", None)
     if not data:
         await callback_query.answer("No action payload received.")
         return
@@ -3411,6 +3758,10 @@ async def handle_callback_query(callback_query: Any) -> None:
     )
     if not is_supported:
         await callback_query.answer("Unsupported action.")
+        return
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if not _runtime().action_allowed(_callback_action_type(data), chat_id=chat_id, user_id=user_id):
+        await callback_query.answer("That action is restricted by the backup approver policy.", show_alert=True)
         return
 
     pending, _, _ = await _collect_board_approval_rows(refresh=False)
@@ -3450,7 +3801,6 @@ async def handle_callback_query(callback_query: Any) -> None:
 
     updated_text, keyboard = await _build_approvals_reply(refresh=False, user_id=user_id)
 
-    message = getattr(callback_query, "message", None)
     if message is not None:
         try:
             await message.edit_text(updated_text, reply_markup=keyboard)
@@ -3484,6 +3834,22 @@ async def _send_owner_brief() -> None:
         text = _fallback_response("morning brief", {"recent_history": [], "semantic_history": []}, division_data)
     else:
         text = "Morning brief generation ran, but I only have a partial payload to summarize."
+
+    # Append pending wiki / initiative footer
+    try:
+        import wiki as _wiki  # noqa: PLC0415
+        import md_agent_state as _mds  # noqa: PLC0415
+        footer: list[str] = []
+        wiki_count = len(_wiki.get_pending())
+        init_count = len(_mds.get_proposed_initiatives())
+        if wiki_count:
+            footer.append(f"📖 {wiki_count} wiki entr{'y' if wiki_count == 1 else 'ies'} pending approval")
+        if init_count:
+            footer.append(f"🔧 {init_count} initiative{'s' if init_count != 1 else ''} awaiting approval")
+        if footer:
+            text += "\n\n" + "\n".join(footer) + "\n→ /pending  to review"
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
         from aiogram import Bot  # pylint: disable=import-outside-toplevel
