@@ -1,17 +1,27 @@
 """FreeTraderHub revenue & traffic KPI monitor.
 
 Pulls live metrics from:
-  - Umami Analytics (visitor counts)
-  - Loops (email list size)
+  - Umami Analytics (visitor counts) — automatic via API
+  - Email list size — manual env var (Loops has no count API)
 
 Writes actuals into state/property_metric_feed.json via
 phase3_holding.ingest_property_metric_values.
 
-Required env vars (all optional — missing vars → None for that metric):
-  UMAMI_BASE_URL      e.g. https://analytics.umami.is  (no trailing slash)
-  UMAMI_API_KEY       Bearer token from Umami Settings → API Keys
-  UMAMI_WEBSITE_ID    UUID shown in Umami website settings
-  LOOPS_API_KEY       API key from Loops Settings → API
+Umami auth — two options (first one found wins):
+  Option A — username/password (works for Cloud and self-hosted):
+    UMAMI_BASE_URL   e.g. https://analytics.umami.is
+    UMAMI_USERNAME   your Umami login email/username
+    UMAMI_PASSWORD   your Umami login password
+    UMAMI_WEBSITE_ID UUID shown in Umami website settings
+
+  Option B — static API key (Umami Cloud paid plans only):
+    UMAMI_BASE_URL
+    UMAMI_API_KEY    static token from Umami Settings → API Keys
+    UMAMI_WEBSITE_ID
+
+Email list (Loops has no bulk-count API — update manually):
+  FTH_EMAIL_LIST_SIZE   current subscriber count from Loops dashboard
+                        Update this number whenever you check Loops.
 
 Usage:
   python scripts/fth_monitor.py            # fetch + ingest + print summary
@@ -40,16 +50,54 @@ LOGGER = logging.getLogger("fth_monitor")
 # Umami helpers
 # ---------------------------------------------------------------------------
 
-def _umami_headers(api_key: str) -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
+def _umami_get_token(
+    base_url: str,
+    username: str,
+    password: str,
+    timeout_sec: int = 15,
+) -> str | None:
+    """Exchange username+password for a Bearer token via POST /api/auth/login."""
+    url = f"{base_url.rstrip('/')}/api/auth/login"
+    payload = json.dumps({"username": username, "password": password}).encode("utf-8")
+    req = request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=timeout_sec) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        token = data.get("token")
+        return str(token) if token else None
+    except (error.URLError, json.JSONDecodeError, OSError) as exc:
+        LOGGER.warning("Umami login failed: %s", exc)
+        return None
+
+
+def _umami_resolve_token(base_url: str, timeout_sec: int = 15) -> str | None:
+    """Return a valid Bearer token using whichever auth method is configured.
+
+    Priority:
+      1. UMAMI_API_KEY  — static key (Cloud paid plans)
+      2. UMAMI_USERNAME + UMAMI_PASSWORD — login exchange (all plans)
+    """
+    static_key = os.environ.get("UMAMI_API_KEY", "").strip()
+    if static_key and not static_key.startswith("REPLACE_"):
+        return static_key
+
+    username = os.environ.get("UMAMI_USERNAME", "").strip()
+    password = os.environ.get("UMAMI_PASSWORD", "").strip()
+    if username and password:
+        LOGGER.info("Umami: authenticating with username/password…")
+        return _umami_get_token(base_url, username, password, timeout_sec=timeout_sec)
+
+    return None
 
 
 def fetch_umami_stats(
     base_url: str,
-    api_key: str,
+    token: str,
     website_id: str,
     days: int = 30,
     timeout_sec: int = 15,
@@ -63,7 +111,7 @@ def fetch_umami_stats(
     start_ms = end_ms - days * 86_400 * 1000
     params = urlencode({"startAt": start_ms, "endAt": end_ms})
     url = f"{base_url.rstrip('/')}/api/websites/{website_id}/stats?{params}"
-    headers = _umami_headers(api_key)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:
         req = request.Request(url, headers=headers)
         with request.urlopen(req, timeout=timeout_sec) as resp:
@@ -92,53 +140,6 @@ def fetch_umami_stats(
 
 
 # ---------------------------------------------------------------------------
-# Loops helpers
-# ---------------------------------------------------------------------------
-
-def fetch_loops_list_size(
-    api_key: str,
-    timeout_sec: int = 15,
-) -> int | None:
-    """Return total subscriber count from Loops.
-
-    Loops v1 /contacts endpoint returns an array; we read the X-Total-Count
-    header if present, otherwise count the first page (max 100 results).
-    For lists under 100 this is exact; for larger lists it's a lower bound
-    until Loops exposes a direct count endpoint.
-    """
-    url = "https://app.loops.so/api/v1/contacts"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
-    try:
-        req = request.Request(url, headers=headers)
-        with request.urlopen(req, timeout=timeout_sec) as resp:
-            raw_total = resp.headers.get("X-Total-Count") or resp.headers.get("x-total-count")
-            body = json.loads(resp.read().decode("utf-8"))
-    except (error.URLError, json.JSONDecodeError, OSError) as exc:
-        LOGGER.warning("Loops fetch failed: %s", exc)
-        return None
-
-    if raw_total is not None:
-        try:
-            return int(raw_total)
-        except (TypeError, ValueError):
-            pass
-
-    # Fall back to counting what we received
-    if isinstance(body, list):
-        return len(body)
-    # Some Loops endpoints wrap in {"contacts": [...]}
-    if isinstance(body, dict):
-        contacts = body.get("contacts") or body.get("data") or []
-        if isinstance(contacts, list):
-            return len(contacts)
-
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Main collection entry point
 # ---------------------------------------------------------------------------
 
@@ -152,31 +153,39 @@ def collect_fth_kpis(days: int = 30) -> dict[str, object]:
 
     # --- Umami ---
     umami_base = os.environ.get("UMAMI_BASE_URL", "").strip()
-    umami_key = os.environ.get("UMAMI_API_KEY", "").strip()
     umami_site = os.environ.get("UMAMI_WEBSITE_ID", "").strip()
 
-    if umami_base and umami_key and umami_site:
-        LOGGER.info("Fetching Umami stats for website %s (last %d days)…", umami_site, days)
-        umami = fetch_umami_stats(umami_base, umami_key, umami_site, days=days)
-        kpis["sessions_30d"] = umami.get("visits")
-        kpis["visitors_30d"] = umami.get("visitors")
-        kpis["pageviews_30d"] = umami.get("pageviews")
-        # Map visits to sessions_7d proxy (will be accurate once 7d endpoint is added)
-        # For now expose 30d figure — morning brief will label it correctly.
+    if umami_base and umami_site and not umami_site.startswith("REPLACE_"):
+        token = _umami_resolve_token(umami_base)
+        if token:
+            LOGGER.info("Fetching Umami stats for website %s (last %d days)…", umami_site, days)
+            umami = fetch_umami_stats(umami_base, token, umami_site, days=days)
+            kpis["sessions_30d"] = umami.get("visits")
+            kpis["visitors_30d"] = umami.get("visitors")
+            kpis["pageviews_30d"] = umami.get("pageviews")
+        else:
+            LOGGER.warning("Umami: could not obtain token — check UMAMI_USERNAME/UMAMI_PASSWORD or UMAMI_API_KEY.")
+            kpis["sessions_30d"] = None
+            kpis["visitors_30d"] = None
+            kpis["pageviews_30d"] = None
     else:
-        LOGGER.info("Umami not configured (UMAMI_BASE_URL / UMAMI_API_KEY / UMAMI_WEBSITE_ID missing).")
+        LOGGER.info("Umami not configured (set UMAMI_BASE_URL + UMAMI_WEBSITE_ID + credentials).")
         kpis["sessions_30d"] = None
         kpis["visitors_30d"] = None
         kpis["pageviews_30d"] = None
 
-    # --- Loops ---
-    loops_key = os.environ.get("LOOPS_API_KEY", "").strip()
-
-    if loops_key:
-        LOGGER.info("Fetching Loops email list size…")
-        kpis["email_list_size"] = fetch_loops_list_size(loops_key)
+    # --- Email list size (manual — Loops has no bulk-count API) ---
+    # Update FTH_EMAIL_LIST_SIZE in .env whenever you check the Loops dashboard.
+    raw_list_size = os.environ.get("FTH_EMAIL_LIST_SIZE", "").strip()
+    if raw_list_size and not raw_list_size.startswith("REPLACE_"):
+        try:
+            kpis["email_list_size"] = int(raw_list_size)
+            LOGGER.info("Email list size from env: %s", kpis["email_list_size"])
+        except ValueError:
+            LOGGER.warning("FTH_EMAIL_LIST_SIZE is not a valid integer: %s", raw_list_size)
+            kpis["email_list_size"] = None
     else:
-        LOGGER.info("Loops not configured (LOOPS_API_KEY missing).")
+        LOGGER.info("Email list size not set — add FTH_EMAIL_LIST_SIZE=<count> to .env.")
         kpis["email_list_size"] = None
 
     return kpis
