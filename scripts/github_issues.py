@@ -191,7 +191,8 @@ def process_division_health(health_result: dict, config: dict) -> dict:
     Returns:
         issue cadence result dict from handle_division_result().
     """
-    repo = config.get("github_repo", "")
+    # Support both flat {"github_repo": "..."} and nested {"company": {"github_repo": "..."}}
+    repo = config.get("github_repo") or config.get("company", {}).get("github_repo", "")
     if not repo:
         logger.debug("github_repo not configured; skipping issue cadence.")
         return {"action": "none", "issue_number": None}

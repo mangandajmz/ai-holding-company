@@ -2,6 +2,7 @@ company:
   name: "AI Holding Company"
   timezone: "America/Vancouver"
   owner_role: "Owner/CEO"
+  github_repo: "mangandajmz/ai-holding-company"
 
 chat:
   preferred_app: "telegram" # Change to "slack" if needed
