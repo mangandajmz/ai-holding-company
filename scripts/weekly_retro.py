@@ -30,6 +30,12 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(ROOT / ".env", override=True)
+except ImportError:
+    pass  # python-dotenv not installed; rely on system env vars
+
 from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
 
 logging.basicConfig(

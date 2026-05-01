@@ -35,6 +35,12 @@ import psutil
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv(ROOT / ".env", override=True)
+except ImportError:
+    pass  # python-dotenv not installed; rely on system env vars
+
 from utils import load_yaml as _load_yaml, now_utc_iso as _utc_now  # noqa: E402
 
 logging.basicConfig(
@@ -328,7 +334,10 @@ def _run_division_health(
     import subprocess  # noqa: S404
 
     router = str(ROOT / "scripts" / "tool_router.py")
-    cmd = [sys.executable, router, "run_divisions", "--division", division, "--force"]
+    # tool_router only accepts 'trading' and 'websites' as named divisions;
+    # 'commercial' and any future division map to 'all' (runs full phase2 crew).
+    router_division = division if division in ("trading", "websites") else "all"
+    cmd = [sys.executable, router, "run_divisions", "--division", router_division, "--force"]
 
     try:
         result = subprocess.run(  # noqa: S603
