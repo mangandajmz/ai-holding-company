@@ -32,7 +32,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 try:
     from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv(ROOT / ".env", override=True)
+    _load_dotenv(ROOT / ".env", override=True, encoding="utf-8-sig")
 except ImportError:
     pass  # python-dotenv not installed; rely on system env vars
 
