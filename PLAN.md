@@ -1,13 +1,14 @@
 ﻿# AI Holding Company â€” Master Plan
-**Version:** 5.6  
+**Version:** 5.7  
 **Owner:** J (CEO)  
-**Last updated:** 2026-04-17  
-**Supersedes:** All previous plan versions (v1â€“v4).  
+**Last updated:** 2026-05-01  
+**Supersedes:** All previous plan versions (v1â€”v4).  
 **v5.2 change:** Stage D updated â€” portfolio analysis complete, Integration Readiness Sprint defined. Stage D execution tasks documented in Â§11.1. Property charters written for all four portfolio properties.  
 **v5.3 change:** Stage D closed. Trading=GREEN, Websites=GREEN. 23/23 tests passing, commit e533073. G1 unblocked. Stage G (Commercial Division) now active â€” prompts in STAGE_G_PROMPTS.md.  
 **v5.4 change:** Stage G closed. Commercial Division live, 45/45 tests passing, commit 1367323. Codex review: 8 issues found and resolved (including HIGH â€” inverted risk thresholds). Stage H (Holding Board v2) now active â€” prompts in STAGE_H_PROMPTS.md.
 **v5.5 change:** Stage J closed. Content Studio (light) is now live as brief-driven only with CEO approval gating (R3/R4). Added `crews/content_studio.yaml`, `scripts/content_studio.py`, phase2 integration, Telegram `/content` + `/content_status`, and 14 passing Content Studio tests. Two consecutive phase2 runs confirmed `content_studio=GREEN`.
 **v5.6 change:** Stage I closed. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and CEO approval workflow, semantic memory initialization (`nomic-embed-text`), and time-saved tracking with R9 guardrail proof at 6.25 hours/week.
+**v5.7 change:** Stage H closed (Sprint 0). Holding Board v2 verified â€” board_pack mode confirmed working with 10-field Board Pack items, dissent agent filing real objections, MA gate enforced. Two consecutive board_pack runs saved (reports/stage_h_brief_1.json, stage_h_brief_2.json). 11 new board_pack tests added (tests/test_board_pack.py). 47â†'58 tests passing. Sprint 1 (Agentic Orchestrator) now active.
 
 ---
 
@@ -348,15 +349,15 @@ Locked. Do not re-open without a CEO directive.
 > the board brief can include initiative scoring, ROI projections, and risk flags inline â€”
 > making every decision the CEO sees a properly scoped Board Pack item, not a raw alert.
 
-**Stage H definition of done:**
+**Stage H definition of done:** ✅ COMPLETE 2026-05-01
 
-- [ ] `crews/holding_ceo.yaml` â€” Dissent agent added; CEO task template updated to include Commercial data
-- [ ] `scripts/phase3_holding.py` â€” `_build_board_review()` upgraded to 8-field Board Pack format
-- [ ] `scripts/phase3_holding.py` â€” Commercial division status integrated into `_score_company()` and CEO brief
-- [ ] `scripts/phase3_holding.py` â€” new `board_pack` mode added (alongside `heartbeat` and `board_review`)
-- [ ] MA gate â€” Board Pack items missing any of the 8 fields blocked before reaching CEO
-- [ ] Two consecutive Board Pack runs produce complete 8-field output with Dissent filed
-- [ ] All existing tests still passing; new Board Pack tests added
+- [x] `crews/holding_ceo.yaml` â€” Dissent agent added; CEO task template updated to include Commercial data
+- [x] `scripts/phase3_holding.py` â€” `_build_board_review()` upgraded to 10-field Board Pack format
+- [x] `scripts/phase3_holding.py` â€” Commercial division status integrated into `_score_company()` and CEO brief
+- [x] `scripts/phase3_holding.py` â€” new `board_pack` mode added (alongside `heartbeat` and `board_review`)
+- [x] MA gate â€” Board Pack items missing rationale/owner/measurement_plan blocked before reaching CEO
+- [x] Two consecutive Board Pack runs produce complete 10-field output with Dissent filed (reports/stage_h_brief_1.json, stage_h_brief_2.json)
+- [x] All existing tests still passing; 11 new Board Pack tests added in tests/test_board_pack.py (47â†'58 passing)
 
 **See `STAGE_H_PROMPTS.md` for Claude Code execution prompts.**
 
