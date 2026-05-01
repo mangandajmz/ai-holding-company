@@ -259,6 +259,10 @@ class TelegramBridge:
         if re.match(r"^/board(?:\s+review)?$", raw, re.I):
             return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "board_review", "--force"]}
 
+        orch_match = re.match(r"^/orchestrator\s+(stop|start|status)$", raw, re.I)
+        if orch_match:
+            return {"type": "orchestrator", "subcmd": orch_match.group(1).lower()}
+
         site_match = re.match(r"^/(?:site|check_website)\s+([a-zA-Z0-9_-]+)$", raw)
         if site_match:
             website = site_match.group(1)
@@ -1209,6 +1213,47 @@ class TelegramBridge:
                 "To approve: /develop_approve <approval_id>\n"
                 "To deny: /develop_deny <approval_id>"
             )
+        if action.get("type") == "orchestrator":
+            from orchestrator import (  # pylint: disable=import-outside-toplevel
+                get_orchestrator_status,
+                read_pid,
+                read_reasoning_cache,
+                reasoning_cache_is_stale,
+                STOP_FLAG,
+            )
+
+            subcmd = str(action.get("subcmd", "status")).lower()
+
+            if subcmd == "status":
+                status = get_orchestrator_status()
+                pid = read_pid()
+                cache = read_reasoning_cache()
+                stale = reasoning_cache_is_stale(cache)
+                stale_banner = ""
+                if stale and cache:
+                    stale_banner = f"\n⚠️ STALE — reasoning from {cache.get('generated_at_utc', 'unknown')}"
+                return (
+                    f"Orchestrator: {status}\n"
+                    f"PID: {pid or 'none'}"
+                    f"{stale_banner}"
+                )
+
+            if subcmd == "stop":
+                STOP_FLAG.touch()
+                return "Orchestrator stop signal sent. Will halt on next tick (~5 min)."
+
+            if subcmd == "start":
+                status = get_orchestrator_status()
+                if status == "RUNNING":
+                    return "Orchestrator is already RUNNING."
+                return (
+                    "To start the orchestrator, run on the host machine:\n"
+                    "  python scripts/orchestrator.py\n"
+                    "Or via Windows Task Scheduler. Remote start is not supported (security)."
+                )
+
+            return f"Unknown orchestrator subcommand: {subcmd!r}"
+
         tool_name = str(action.get("name"))
         args = action.get("args", [])
         result = self._run_tool_router(args)
