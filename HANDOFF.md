@@ -4,53 +4,52 @@ Read PLAN.md and CLAUDE.md completely before doing anything else.
 
 ---
 
-## Current State (as of 2026-04-16)
+## Current State (as of 2026-05-01)
 
 | Item | Status |
 |------|--------|
-| PLAN.md version | 5.4 |
-| Latest commit | 1367323 |
-| Tests | 45/45 passing |
-| Trading division | GREEN |
-| Websites division | GREEN |
+| PLAN.md version | 5.8 |
+| Latest commit | see `git log --oneline -1` |
+| Tests | 100/100 passing |
+| Trading division | RED (Polymarket sync issue + MT5 health rc=1) |
+| Websites division | RED (latency / uptime alerts) |
 | Commercial division | GREEN |
-| Stage A | ✅ Complete |
-| Stage B | ✅ Complete |
-| Stage C | ✅ Complete |
-| Stage D | ✅ Complete |
+| Content Studio | GREEN |
+| Stage A–D | ✅ Complete |
 | Stage G | ✅ Complete (commit 1367323, Codex CLEAN) |
-| Stage H | 🟡 In progress — see STAGE_H_PROMPTS.md |
+| Stage H | ✅ Complete (board_pack verified, 58 tests) |
+| Stage I | ✅ Complete (Developer Tool, semantic memory, R9 proof) |
+| Stage J | ✅ Complete (Content Studio light, brief-driven, CEO-gated) |
+| Sprint 0 | ✅ Complete — Stage H closed, PLAN.md → v5.7 |
+| Sprint 1 | ✅ Complete — orchestrator.py + event store + Telegram kill switch |
+| Sprint 2 | ✅ Complete — all three divisions wired |
+| Sprint 3 | ✅ Complete — morning brief + pinned health lights |
+| Sprint 4 | ✅ Complete — weekly retro Sunday 20:00 Vancouver, catch-up |
+| Sprint 5 | ✅ Complete — GitHub Issues cadence (RED→open, 24h dedup, GREEN→close) |
 
 ---
 
-## Two Active Work Lanes
+## Agentic Orchestrator — COMPLETE (Sprints 0-5)
 
-### Lane 1 — Holding Company Build (STAGE_H_PROMPTS.md)
-Holding Board v2 + Board Pack upgrade. Five blocks in order:
-- Block 1: `crews/holding_ceo.yaml` — add dissent_agent + dissent_task
-- Block 2: `scripts/phase3_holding.py` — upgrade `_build_board_review()` to 10-field output, add `commercial_result` parameter
-- Block 3: Wire Commercial into `_score_company()`, add `board_pack` mode to `_run_ceo_brief()`, upgrade `_build_phase3_markdown()`, extend `_ALLOWED_PHASE3_SUBCOMMANDS`
-- Block 4: Add `_validate_board_pack_item()` pure function + MA gate enforcement with ⚠️ Telegram prefix
-- Block 5: 11 new tests + two GREEN board_pack runs saved as `stage_h_brief_1/2.json` + PLAN.md → v5.5
+**Approved CEO plan:** `~/.gstack/projects/mangandajmz-ai-holding-company/ceo-plans/2026-04-30-agentic-holding-company.md`
+**Engineering review:** `~/.gstack/projects/mangandajmz-ai-holding-company/eng-reviews/2026-04-30-orchestrator-sprint.md`
 
-**Always run blocks in order. Codex review gate after every block. Gate definition is in CLAUDE.md.**
+All five sprints are done. The system is now fully agentic:
+- `scripts/orchestrator.py` — daemon loop, SQLite events, Ollama reasoning, Telegram kill switch
+- `scripts/telegram_bridge.py` — `/orchestrator stop|start|status`, pinned health lights, one-pager brief
+- `scripts/weekly_retro.py` — Sunday 20:00 Vancouver, catch-up on boot, reports/retros/
+- `scripts/github_issues.py` — RED→open issue, 24h dedup→comment, GREEN→close
 
-### Lane 2 — Property Fixes (STAGE_D_PROMPTS.md)
-Website and config hygiene. Runs parallel to Lane 1 — does not block it.
-- Block 1: projects.yaml path corrections (15 min)
-- Block 2: Messaging conflicts — FreeGhostTools + FreeTraderHub (40 min)
-- Block 3: Umami analytics on FreeGhostTools (40 min)
-- Block 4: Polymarket SSH rc=255 diagnosis (30 min)
-- Block 5: MT5 signal verification (15 min)
+### Task Scheduler entries needed (Windows)
 
----
+| Task | Command | Schedule |
+|------|---------|---------|
+| Orchestrator | `python scripts/orchestrator.py` | At boot + every 5 min restart-on-failure |
+| Morning brief | `python scripts/telegram_bridge.py --send-morning-brief` | Daily 08:00 America/Vancouver |
+| Weekly retro | `python scripts/weekly_retro.py` | Sunday 20:00 America/Vancouver |
 
-## How to Pick Up Mid-Lane
-
-If a previous tool completed some blocks:
-1. Check the success criteria in the prompt file for the last completed block.
-2. Verify the criteria pass before starting the next block.
-3. Never start a new block without confirming the previous one is clean.
+### GitHub Issues: one-time setup
+Add `github_repo: "your-org/ai-holding-company"` to `config/projects.yaml` and run `gh auth login` on the host. Without `github_repo`, the cadence silently skips (action=none).
 
 ---
 
@@ -59,48 +58,50 @@ If a previous tool completed some blocks:
 | File | Purpose |
 |------|---------|
 | PLAN.md | Master plan — read first, always |
-| CLAUDE.md | Development philosophy + Code Review Gate — read alongside PLAN.md |
-| STAGE_H_PROMPTS.md | Claude Code prompts for Stage H (Lane 1) |
-| STAGE_D_PROMPTS.md | Claude Code prompts for property fixes (Lane 2) |
+| CLAUDE.md | Dev philosophy + Code Review Gate |
+| scripts/orchestrator.py | Event-driven daemon — runs all three divisions every 5 min |
+| scripts/telegram_bridge.py | Telegram interface — add /orchestrator commands here |
+| scripts/phase3_holding.py | CEO layer — board_pack mode (Stage H, complete) |
+| scripts/phase2_crews.py | Division orchestration layer |
+| scripts/tool_router.py | CLI entry point for all scripts |
+| scripts/utils.py | Shared helpers — use existing, add none |
 | config/projects.yaml | Central integration config |
 | config/targets.yaml | KPI thresholds |
-| scripts/phase2_crews.py | Division orchestration layer |
-| scripts/phase3_holding.py | CEO layer — Board Pack logic lives here |
-| scripts/aiogram_bridge.py | Sole production Telegram bridge for commands, approvals, and scheduling |
-| scripts/utils.py | Shared helpers — use existing ones, add none |
-| crews/holding_ceo.yaml | CEO crew spec — Stage H Block 1 target |
-| crews/commercial_division.yaml | Commercial crew spec (Stage G, complete) |
-| reports/ | Generated output — do not edit manually |
+| state/events.db | SQLite event store — all division events |
+| state/last_reasoning.json | Ollama reasoning cache (stale after 2h) |
+| state/orchestrator.pid | PID file for daemon supervision |
+| state/pinned_health_msg.json | Telegram pinned message_id for health lights |
+| state/retro_state.json | Last retro sent date (catch-up logic) |
+| state/gh_issues.json | Open GH issue numbers per division |
+| scripts/weekly_retro.py | Weekly retro generator (Sprint 4) |
+| scripts/github_issues.py | GitHub Issues cadence (Sprint 5) |
+| reports/stage_h_brief_1.json | First board_pack verification run |
+| reports/stage_h_brief_2.json | Second board_pack verification run |
 
 ---
 
 ## Non-Negotiable Rules (summary — full list in PLAN.md §2)
 
-- R1: All runtime inference via Ollama only. No cloud APIs in the system.
-- R2: MT5 and Polymarket bot source is read-only.
-- R3: Website source read-only except with explicit CEO approval.
+- R1: All runtime inference via Ollama only. No cloud APIs.
+- R2: MT5 and Polymarket bot source is read-only without CEO approval.
+- R3: Website source read-only except with Developer Tool + CEO approval.
+- R5: No cost commitment >$50 without CEO.
 - R8: Code writes only inside ai-holding-company/. Never bot or website source without approval.
-- R11: No OpenClaw. Telegram bridge is the sole automation interface.
-- CLAUDE.md: No overengineering. No new helpers without removing a duplicate.
-  shell=False always. No LLM arithmetic — Python only for financial calculations.
-- CLAUDE.md Code Review Gate: Style/Linting + Logic + Security check after every block.
-  Resolve ALL issues before moving to the next block. Non-negotiable.
+- R9: Two net-negative weeks → halt + review.
+- R11: No OpenClaw. python-telegram-bot only. Telegram bridge is the sole automation interface.
+- CLAUDE.md: shell=False always. shlex.split() on config strings. No overengineering.
+- Code Review Gate: Style/Linting + Logic + Security after every sprint. Non-negotiable.
 
 ---
 
-## Stage H Context (read before touching phase3_holding.py)
+## Stage H Context (complete — do not re-implement)
 
-Current `_build_board_review()` returns only 3 fields: `{priority, topic, decision}`.
-Stage H upgrades it to 10 fields — the 8 Board Pack fields from PLAN.md §8
-(rationale, expected_upside, effort_cost, confidence, owner, deadline, dissent,
-measurement_plan) plus priority and topic for backward compat.
-
-The dissent field is populated by the new `dissent_agent` in holding_ceo.yaml.
-One objection minimum per Board Pack item — non-negotiable per PLAN.md §8.
-
-MA gate (Block 4): if any board_pack item lacks rationale, owner, or measurement_plan,
-`_validate_board_pack_item()` returns False and the Telegram message gets a ⚠️ prefix.
+Stage H is done. `_build_board_review()` returns 10-field Board Pack items.
+`_validate_board_pack_item()` enforces MA gate (rationale + owner + measurement_plan required).
+Dissent agent in `crews/holding_ceo.yaml` files one objection minimum per item.
+Two consecutive board_pack runs saved: `reports/stage_h_brief_1.json`, `reports/stage_h_brief_2.json`.
+100 tests passing — 11 board_pack + 15 orchestrator + 17 retro + 10 GH issues + others.
 
 ---
 
-*HANDOFF.md — updated 2026-04-16 — regenerate this file at the end of each stage.*
+*HANDOFF.md — updated 2026-05-01 — Sprints 0-5 complete, v5.8.*
