@@ -135,6 +135,91 @@ class TelegramBridge:
         safe_text = text[:3900]
         self._api_call("sendMessage", {"chat_id": str(chat_id), "text": safe_text})
 
+    def send_message_with_id(self, chat_id: int, text: str) -> int | None:
+        """Send a message and return the message_id (for pinning)."""
+        safe_text = text[:3900]
+        response = self._api_call("sendMessage", {"chat_id": str(chat_id), "text": safe_text})
+        try:
+            return int(response["result"]["message_id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def pin_message(self, chat_id: int, message_id: int) -> None:
+        """Pin a message in the chat (silently — no notification)."""
+        try:
+            self._api_call(
+                "pinChatMessage",
+                {"chat_id": str(chat_id), "message_id": str(message_id), "disable_notification": "true"},
+            )
+        except Exception:  # pylint: disable=broad-except
+            pass  # Pinning is best-effort; do not crash on failure
+
+    def update_pinned_health(self, divisions: list[dict[str, Any]], generated_at_utc: str) -> None:
+        """Post/edit the pinned division health message. Persists message_id to state/."""
+        if self.owner_chat_id is None:
+            return
+
+        pinned_state_path = ROOT / "state" / "pinned_health_msg.json"
+
+        def _traffic_light(status: str) -> str:
+            s = str(status).upper()
+            if s == "GREEN":
+                return "🟢"
+            if s == "AMBER":
+                return "🟡"
+            if s == "RED":
+                return "🔴"
+            return "⚪"
+
+        div_parts: list[str] = []
+        for div in divisions:
+            if not isinstance(div, dict):
+                continue
+            name = str(div.get("division", "?")).title()
+            status = str(div.get("status", "?"))
+            div_parts.append(f"{_traffic_light(status)} {name}")
+
+        health_line = " | ".join(div_parts) if div_parts else "No division data"
+        ts_display = generated_at_utc[:16].replace("T", " ") if generated_at_utc else "unknown"
+        health_text = f"🏢 Company Health\n{health_line}\nUpdated: {ts_display} UTC"
+
+        # Load existing pinned message_id
+        pinned_msg_id: int | None = None
+        if pinned_state_path.exists():
+            try:
+                pinned_data = json.loads(pinned_state_path.read_text(encoding="utf-8"))
+                pinned_msg_id = int(pinned_data.get("message_id", 0)) or None
+            except (json.JSONDecodeError, ValueError, OSError):
+                pinned_msg_id = None
+
+        # If no existing pinned message, send and pin a new one
+        if pinned_msg_id is None:
+            try:
+                new_msg_id = self.send_message_with_id(self.owner_chat_id, health_text)
+                if new_msg_id:
+                    self.pin_message(self.owner_chat_id, new_msg_id)
+                    pinned_state_path.parent.mkdir(parents=True, exist_ok=True)
+                    pinned_state_path.write_text(
+                        json.dumps({"message_id": new_msg_id, "chat_id": self.owner_chat_id}, indent=2),
+                        encoding="utf-8",
+                    )
+            except Exception:  # pylint: disable=broad-except
+                pass  # Best-effort
+        else:
+            # Edit the existing pinned message in-place
+            try:
+                self._api_call(
+                    "editMessageText",
+                    {
+                        "chat_id": str(self.owner_chat_id),
+                        "message_id": str(pinned_msg_id),
+                        "text": health_text,
+                    },
+                )
+            except Exception:  # pylint: disable=broad-except
+                # Message may have been deleted — send a new one next cycle
+                pinned_state_path.unlink(missing_ok=True)
+
     def get_updates(self) -> list[dict[str, Any]]:
         offset = int(self.state.get("last_update_id", 0)) + 1
         payload = {"timeout": "20", "offset": str(offset)}
@@ -1017,6 +1102,96 @@ class TelegramBridge:
         lines.append("Owner reminder: /brief | /board review | /divisions all | /status")
         return "\n".join(lines).strip()
 
+    def _format_one_pager_brief(self, payload: dict[str, Any]) -> str:
+        """Format the holding brief as a one-pager readable in <60s.
+
+        Structure:
+          Header + division traffic lights
+          PnL / trade / alert summary
+          Top 3 alerts
+          Pending decisions (board_review RED items)
+          Footer / quick commands
+        """
+        if not isinstance(payload, dict):
+            return "Morning brief failed: invalid payload."
+
+        def _light(status: str) -> str:
+            s = str(status).upper()
+            if s == "GREEN":
+                return "🟢"
+            if s == "AMBER":
+                return "🟡"
+            if s == "RED":
+                return "🔴"
+            return "⚪"
+
+        summary = payload.get("base_summary", {}) or {}
+        divisions = [d for d in (payload.get("divisions") or []) if isinstance(d, dict)]
+        alerts = [a for a in (payload.get("base_alerts") or []) if a]
+        generated_at = str(payload.get("generated_at_utc") or "")
+        ts_display = generated_at[:16].replace("T", " ") if generated_at else "?"
+
+        company_name = str(payload.get("company_name") or "AI Holding Company")
+
+        # Division traffic lights
+        div_lines: list[str] = []
+        for div in divisions:
+            name = str(div.get("division", "?")).title()
+            status = str(div.get("status") or "?")
+            scorecard = div.get("scorecard", {}) or {}
+            items = [i for i in (scorecard.get("items") or []) if isinstance(i, dict)]
+            priority = {"RED": 0, "AMBER": 1, "GREEN": 2}
+            top_items = sorted(items, key=lambda x: priority.get(str(x.get("status", "")).upper(), 3))
+            top_issue = ""
+            if top_items and str(top_items[0].get("status", "")).upper() != "GREEN":
+                top_item = top_items[0]
+                top_issue = f" | {top_item.get('metric', '?')}: {top_item.get('actual', '?')}"
+            div_lines.append(f"{_light(status)} {name}{top_issue}")
+
+        divs_block = "\n".join(div_lines) if div_lines else "No division data"
+
+        # Summary row
+        pnl = summary.get("pnl_total", "?")
+        trades = summary.get("trades_total", "?")
+        alert_count = len(alerts)
+        summary_row = f"📊 PnL: {pnl} | Trades: {trades} | Alerts: {alert_count}"
+
+        # Top 3 alerts
+        alert_lines: list[str] = []
+        for i, alert in enumerate(alerts[:3], 1):
+            alert_lines.append(f"  {i}. {str(alert)[:100]}")
+        alerts_block = ("\n⚡ Top alerts:\n" + "\n".join(alert_lines)) if alert_lines else ""
+
+        # Pending decisions — board_review RED items
+        board = payload.get("board_review", {}) or {}
+        approvals = [a for a in (board.get("approvals") or []) if isinstance(a, dict)]
+        red_approvals = [a for a in approvals if str(a.get("priority", "")).upper() == "RED"]
+        decisions_block = ""
+        if red_approvals:
+            decision_lines = [f"  • {a.get('topic', '?')}" for a in red_approvals[:3]]
+            decisions_block = f"\n📋 {len(red_approvals)} pending decision(s):\n" + "\n".join(decision_lines)
+
+        # Reasoning cache stale warning
+        from orchestrator import read_reasoning_cache, reasoning_cache_is_stale  # pylint: disable=import-outside-toplevel
+        cache = read_reasoning_cache()
+        stale_banner = ""
+        if reasoning_cache_is_stale(cache) and cache:
+            stale_banner = f"\n⚠️ STALE — reasoning from {cache.get('generated_at_utc', 'unknown')}"
+
+        lines = [
+            f"🏢 {company_name}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            divs_block,
+            "",
+            summary_row,
+            alerts_block,
+            decisions_block,
+            stale_banner,
+            f"\n⏱ Generated: {ts_display} UTC",
+            "💬 /brief | /board review | /orchestrator status",
+        ]
+        return "\n".join(ln for ln in lines if ln is not None).strip()
+
     def _search_memory(self, query: str, top_k: int = 3) -> list[dict[str, Any]]:
         """Search vector memory for query. Returns [] on any failure."""
         try:
@@ -1270,7 +1445,16 @@ class TelegramBridge:
         text = ""
         payload = result.get("payload")
         if ok and isinstance(payload, dict):
-            text = self._summarize_holding_brief(payload) if self.phase3_enabled else self._summarize_divisions_brief(payload)
+            if self.phase3_enabled:
+                text = self._format_one_pager_brief(payload)
+                # Update pinned health lights on every morning brief run
+                divisions = [d for d in (payload.get("divisions") or []) if isinstance(d, dict)]
+                self.update_pinned_health(
+                    divisions=divisions,
+                    generated_at_utc=str(payload.get("generated_at_utc") or ""),
+                )
+            else:
+                text = self._summarize_divisions_brief(payload)
         else:
             fallback = self._run_tool_router(["daily_brief"])
             text = self._summarize_tool_result("daily_brief", fallback)
