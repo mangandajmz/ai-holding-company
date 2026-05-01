@@ -1086,6 +1086,8 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     summary_errors = 0
 
     for bot in config.get("trading_bots", []):
+        if not bot.get("monitor", True):  # skip properties not yet operationally ready
+            continue
         bot_id = str(bot.get("id"))
         repo_override = repo_overrides.get(bot_id)
         bot_sync = bot_sync_by_id.get(bot_id, {})
@@ -1164,6 +1166,8 @@ def daily_brief(config: dict[str, Any], force: bool = False) -> dict[str, Any]:
     max_latency = int(config.get("kpis", {}).get("thresholds", {}).get("max_website_latency_ms", 3000))
     websites_up = 0
     for website in config.get("websites", []):
+        if not website.get("monitor", True):  # skip properties not yet operationally ready
+            continue
         site_id = str(website.get("id"))
         result = check_website(config=config, site_id=site_id)
         if not result.get("ok"):

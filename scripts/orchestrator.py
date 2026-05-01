@@ -459,8 +459,9 @@ def run_loop(config: dict[str, Any], interval: int = LOOP_INTERVAL_SECONDS) -> N
     write_pid()
     logger.info("Orchestrator started. PID=%s interval=%ss", os.getpid(), interval)
 
-    # Sprint 2: All three active divisions wired.
-    active_divisions = ["trading", "websites", "commercial"]
+    # Only monitor divisions that are operationally and business ready.
+    # Add a division here when it completes the revamp process.
+    active_divisions = ["websites"]
 
     try:
         while True:

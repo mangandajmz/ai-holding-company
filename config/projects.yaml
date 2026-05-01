@@ -35,6 +35,7 @@ memory:
 trading_bots:
   - id: "mt5_desk"
     name: "MT5 Agentic Trading Desk"
+    monitor: false
     repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/mt5-agentic-desk"
     log_paths:
       - "logs/runtime/runtime.log"
@@ -55,6 +56,7 @@ trading_bots:
 
   - id: "polymarket"
     name: "Polymarket Copy Trading Bot"
+    monitor: false
     repo_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/polymarket-bot"
     log_paths:
       - "bot.log"
@@ -99,6 +101,7 @@ trading_bots:
 websites:
   - id: "freeghosttools"
     name: "Free Ghost Tools"
+    monitor: false
     url: "https://freeghosttools.com/"
     timeout_sec: 10
     local_project_path: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/free-utility-tools"
