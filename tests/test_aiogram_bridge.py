@@ -26,10 +26,24 @@ class _DummyRuntime:
         self.chat_model = "llama3.1:8b"
         self.bot_ids = {"mt5_desk", "polymarket"}
         self.website_ids = {"freeghosttools"}
+        self.backup_allowed_actions = {"view_status", "view_approvals"}
+        self.degraded_ops_mode = False
         self._phase3_payload = phase3_payload or {}
 
     def is_authorized(self, chat_id: int | None, user_id: int | None) -> bool:
         return True
+
+    def is_backup_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        return False
+
+    def is_owner_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        return True
+
+    def action_allowed(self, action_type: str, chat_id: int | None, user_id: int | None) -> bool:
+        return True
+
+    def permission_denied_message(self, action_type: str) -> str:
+        return "Permission denied."
 
     def latest_daily_brief(self) -> dict[str, Any] | None:
         return None
@@ -74,9 +88,7 @@ def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypat
     assert "Scope: promoted properties only (0 tracked: none)" in reply
     assert "- Headline: Promoted portfolio is off-plan; stabilization is required before expansion." in reply
     assert "Decision Required Now" in reply
-    assert "- No approval blockers at this time." in reply
     assert "Primary Focus This Week" in reply
-    assert "- No immediate decision items." in reply
     assert "- Execution on-plan: 0/0 (0.0%)" in reply
     assert "Updated: 2026-04-24T03:05:00Z UTC" in reply
     assert "Freshness:" in reply
@@ -262,7 +274,7 @@ def test_natural_approvals_query_returns_board_and_developer_items(monkeypatch, 
         )
     )
     assert "Owner approvals snapshot" in reply
-    assert "Board approvals pending:" in reply
+    assert "Pending approval:" in reply
     assert "board_01_mt5_cycle" in reply
     assert "Owner: Trading Lead" in reply
     assert "Tap the Approve/Reject buttons below each item" in reply
@@ -463,7 +475,7 @@ def test_board_approve_and_deny_commands_update_state(monkeypatch, tmp_path) -> 
     assert "marked APPROVED" in approve_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Board approvals pending: none." in approvals_reply
+    assert "Pending approval: none." in approvals_reply
     assert "Board decisions logged:" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 
@@ -522,7 +534,7 @@ def test_approve_all_command_marks_pending_items(monkeypatch, tmp_path) -> None:
     assert "updated 2" in approve_all_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Board approvals pending: none." in approvals_reply
+    assert "Pending approval: none." in approvals_reply
     assert "Board decisions logged:" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 

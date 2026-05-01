@@ -599,7 +599,7 @@ def test_build_property_department_briefs_exposes_audience_scored_views(tmp_path
     assert len(briefs) == 1
     brief = briefs[0]
     departments = brief["departments"]
-    assert departments["finance"]["audience"] == "Finance + Commercial"
+    assert departments["finance"]["audience"] == "Finance + Revenue"
     assert departments["marketing"]["audience"] == "Marketing + Growth"
     assert departments["product"]["audience"] == "Product + UX"
     assert departments["operations"]["audience"] == "Operations + Content Studio"
@@ -650,8 +650,9 @@ def test_run_phase3_holding_includes_property_pnl_blocks_and_markdown(monkeypatc
     assert "## Property Department Briefs" in captured["markdown"]
 
 
-def test_build_board_review_includes_approval_id_and_decision() -> None:
+def test_build_board_review_includes_approval_id_and_decision(tmp_path: Path) -> None:
     board = phase3_holding._build_board_review(
+        config=_base_config(tmp_path),
         company_scorecard={
             "items": [
                 {
@@ -679,18 +680,11 @@ def test_build_board_review_includes_approval_id_and_decision() -> None:
                 },
             }
         ],
-        commercial_result={
-            "status": "AMBER",
-            "risk": {
-                "risk_verdict": "Forecast visibility is weak this cycle.",
-                "exposure_flags": ["Revenue forecast attainment"],
-            },
-        },
     )
 
     approvals = board.get("approvals", [])
     approvals = approvals if isinstance(approvals, list) else []
-    assert len(approvals) >= 3
+    assert len(approvals) >= 2
     for item in approvals:
         assert isinstance(item, dict)
         approval_id = str(item.get("approval_id", "")).strip()
