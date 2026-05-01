@@ -303,6 +303,8 @@ def _resolve_cache_path(path_value: str, bot_id: str) -> Path:
 def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
     output: dict[str, Any] = {"ran": False, "bots": []}
     for bot in config.get("trading_bots", []):
+        if not bot.get("monitor", True):  # skip properties not yet operationally ready
+            continue
         bot_id = str(bot.get("id"))
         remote_cfg = bot.get("remote_readonly", {})
         if not isinstance(remote_cfg, dict) or not remote_cfg.get("enabled", False):
