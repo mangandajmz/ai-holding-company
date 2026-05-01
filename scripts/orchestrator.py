@@ -415,6 +415,18 @@ def _orchestrate_division(
     )
     logger.info("Division %s status: %s (event_id=%s)", division, status, event_id)
 
+    # Sprint 5: GitHub Issues cadence — RED opens / comments; GREEN/WARN closes.
+    try:
+        from github_issues import process_division_health  # pylint: disable=import-outside-toplevel
+        gh_result = process_division_health(
+            {"division": division, "severity": severity, "summary": f"{division} status: {status}"},
+            config,
+        )
+        if gh_result.get("action") not in ("none", "error"):
+            logger.info("GH Issue cadence: %s → %s #%s", division, gh_result["action"], gh_result.get("issue_number"))
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning("GH Issues cadence error for %s: %s", division, exc)
+
     if severity == "critical":
         event_row = {"division": division, "event_type": "health_check",
                      "severity": "critical", "payload": {"status": status}}
