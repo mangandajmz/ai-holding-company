@@ -184,3 +184,55 @@ def test_telegram_parse_orchestrator_status():
         action = bridge._parse_action(f"/orchestrator {subcmd}")
         assert action["type"] == "orchestrator", f"Expected orchestrator type for subcmd={subcmd!r}"
         assert action["subcmd"] == subcmd
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — all three divisions emit and are queryable
+# ---------------------------------------------------------------------------
+
+def test_emit_events_all_three_divisions():
+    """Trading, websites, and commercial must all be able to emit events."""
+    for division in ("trading", "websites", "commercial"):
+        eid = orchestrator.emit_event(division, "health_check", "info", {"division": division})
+        assert eid > 0, f"emit_event failed for division={division!r}"
+
+    for division in ("trading", "websites", "commercial"):
+        events = orchestrator.read_events(division=division, limit=5)
+        assert len(events) >= 1, f"No events found for division={division!r}"
+        assert all(e["division"] == division for e in events)
+
+
+def test_read_events_filters_by_division():
+    """read_events(division=X) must return only division X events."""
+    orchestrator.emit_event("trading", "health_check", "info")
+    orchestrator.emit_event("websites", "health_check", "warn")
+    orchestrator.emit_event("commercial", "health_check", "info")
+
+    trading_events = orchestrator.read_events(division="trading", limit=10)
+    assert all(e["division"] == "trading" for e in trading_events)
+
+    websites_events = orchestrator.read_events(division="websites", limit=10)
+    assert all(e["division"] == "websites" for e in websites_events)
+
+
+def test_read_events_mixed_severity():
+    """read_events must return events with correct severity values."""
+    orchestrator.emit_event("trading", "alert_triggered", "critical")
+    orchestrator.emit_event("websites", "metric_changed", "warn")
+    orchestrator.emit_event("commercial", "task_completed", "info")
+
+    critical = orchestrator.read_events(severity="critical", limit=10)
+    assert all(e["severity"] == "critical" for e in critical)
+
+    info = orchestrator.read_events(severity="info", limit=10)
+    assert all(e["severity"] == "info" for e in info)
+
+
+def test_emit_event_returns_sequential_ids():
+    """Consecutive emits must return monotonically increasing row IDs."""
+    ids = [
+        orchestrator.emit_event("trading", "health_check", "info")
+        for _ in range(3)
+    ]
+    assert ids == sorted(ids), f"Event IDs not sequential: {ids}"
+    assert len(set(ids)) == 3, f"Duplicate event IDs: {ids}"

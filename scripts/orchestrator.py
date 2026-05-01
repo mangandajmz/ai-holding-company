@@ -438,8 +438,8 @@ def run_loop(config: dict[str, Any], interval: int = LOOP_INTERVAL_SECONDS) -> N
     write_pid()
     logger.info("Orchestrator started. PID=%s interval=%ss", os.getpid(), interval)
 
-    # Sprint 1: Trading division only. Websites + Commercial added in Sprint 2.
-    active_divisions = ["trading"]
+    # Sprint 2: All three active divisions wired.
+    active_divisions = ["trading", "websites", "commercial"]
 
     try:
         while True:
