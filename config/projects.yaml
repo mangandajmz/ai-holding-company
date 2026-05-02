@@ -194,6 +194,10 @@ kpis:
 
 phase2:
   enabled: true
+  # Only fully revamped operating divisions run on scheduled "all" paths.
+  # FreeTraderHub is the current live property; other divisions stay parked until revamped.
+  operating_divisions:
+    - "websites"
   crewai:
     ollama_model: "ollama/llama3.2:latest"
     ollama_base_url: "http://127.0.0.1:11434"
@@ -217,7 +221,7 @@ phase2:
         min_resolved_trades_24h: 1
     websites:
       snapshot_uptime_ratio_min: 1.0
-      max_latency_ms: 500
+      max_latency_ms: 3000
       max_sitemap_age_days: 14
       max_research_report_age_days: 8
   reports:

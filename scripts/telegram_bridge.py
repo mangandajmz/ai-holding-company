@@ -1428,6 +1428,7 @@ class TelegramBridge:
                     return "Orchestrator is already RUNNING."
                 return (
                     "To start the orchestrator, run on the host machine:\n"
+                    "  Remove state/orchestrator.stop if it exists, then:\n"
                     "  python scripts/orchestrator.py\n"
                     "Or via Windows Task Scheduler. Remote start is not supported (security)."
                 )

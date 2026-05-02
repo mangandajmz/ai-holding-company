@@ -8,6 +8,13 @@ from datetime import date
 # Ensure project root is on the path when run directly
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+HOLDING_ROOT = os.path.dirname(PROJECT_ROOT)
+os.environ.setdefault("CREWAI_STORAGE_DIR", os.path.join(HOLDING_ROOT, "state", "crewai"))
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
+
 # Force UTF-8 output so box-drawing characters render on Windows
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

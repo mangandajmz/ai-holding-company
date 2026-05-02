@@ -51,8 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
     divisions.add_argument(
         "--division",
         default="all",
-        choices=["all", "trading", "websites"],
-        help="Division scope: all, trading, or websites.",
+        choices=["all", "trading", "websites", "content_studio"],
+        help="Division scope: all, trading, websites, or content_studio.",
     )
     divisions.add_argument("--force", action="store_true", help="Force a fresh base brief before running divisions.")
 

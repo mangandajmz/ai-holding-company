@@ -62,7 +62,7 @@ def _team_lead() -> Agent:
         llm=_make_llm(temperature=0.1),
         allow_delegation=True,
         verbose=True,
-        memory=True,
+        memory=False,
         max_iter=8,
     )
 
@@ -84,7 +84,7 @@ def _researcher() -> Agent:
         tools=[duckduckgo_search, ScrapeWebsiteTool(), get_finance_headlines],
         allow_delegation=False,
         verbose=True,
-        memory=True,
+        memory=False,
         max_iter=5,
     )
 
@@ -106,7 +106,7 @@ def _monitor() -> Agent:
         tools=[get_reddit_hot_posts, scan_all_subreddits],
         allow_delegation=False,
         verbose=True,
-        memory=True,
+        memory=False,
         max_iter=4,
     )
 
@@ -128,7 +128,7 @@ def _analyst() -> Agent:
         tools=[read_gsc_csv],
         allow_delegation=False,
         verbose=True,
-        memory=True,
+        memory=False,
         max_iter=4,
     )
 
@@ -158,7 +158,7 @@ def _writer() -> Agent:
         tools=[],
         allow_delegation=False,
         verbose=True,
-        memory=True,
+        memory=False,
         max_iter=5,
     )
 
@@ -304,5 +304,5 @@ def build_crew() -> Crew:
         manager_agent=team_lead,
         process=Process.hierarchical,
         verbose=True,
-        memory=True,
+        memory=False,
     )

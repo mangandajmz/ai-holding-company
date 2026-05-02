@@ -37,6 +37,19 @@ def _phase2_cfg(config: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _operating_division_scope(config: dict[str, Any]) -> list[str]:
+    phase2 = _phase2_cfg(config)
+    configured = phase2.get("operating_divisions", ["websites"])
+    configured = configured if isinstance(configured, list) else ["websites"]
+    allowed = {"trading", "websites", "content_studio"}
+    divisions: list[str] = []
+    for item in configured:
+        division = str(item).strip()
+        if division in allowed and division not in divisions:
+            divisions.append(division)
+    return divisions or ["websites"]
+
+
 def _load_shared_targets(config: dict[str, Any]) -> dict[str, Any]:
     phase3_cfg = config.get("phase3", {})
     phase3_cfg = phase3_cfg if isinstance(phase3_cfg, dict) else {}
@@ -698,12 +711,20 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         ]
         if filtered:
             scored_websites = filtered
+    public_websites = [
+        site
+        for site in scored_websites
+        if isinstance(site, dict)
+        and not str(site.get("id", "")).strip().endswith("_research")
+    ]
+    if not public_websites:
+        public_websites = [site for site in scored_websites if isinstance(site, dict)]
     items: list[dict[str, str]] = []
     risks: list[str] = []
     actions: list[str] = []
 
-    total = len([w for w in scored_websites if isinstance(w, dict)])
-    up = len([w for w in scored_websites if isinstance(w, dict) and bool(w.get("ok"))])
+    total = len(public_websites)
+    up = len([w for w in public_websites if bool(w.get("ok"))])
     ratio = (up / total) if total else None
     if ratio is None:
         uptime_status = "RED"
@@ -731,7 +752,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("One or more managed websites are down in the current snapshot.")
         actions.append("Prioritize incident triage for down sites before content/feature work.")
 
-    latencies = [_to_float(w.get("latency_ms")) for w in scored_websites if isinstance(w, dict)]
+    latencies = [_to_float(w.get("latency_ms")) for w in public_websites]
     latencies = [v for v in latencies if v is not None]
     max_latency = max(latencies) if latencies else None
     if max_latency is None:
@@ -760,9 +781,7 @@ def _score_websites(brief_payload: dict[str, Any], config: dict[str, Any]) -> di
         risks.append("Website latency is materially above target.")
 
     dns_tcp_all = True
-    for site in scored_websites:
-        if not isinstance(site, dict):
-            continue
+    for site in public_websites:
         network = site.get("network_diag", {})
         network = network if isinstance(network, dict) else {}
         if not bool(network.get("dns_ok")) or not bool(network.get("tcp_443_ok")):
@@ -1453,7 +1472,7 @@ def run_phase2_divisions(config: dict[str, Any], division: str = "all", force: b
     brief_payload, source_mode = _ensure_brief_payload(config=config, force=force)
     llm, llm_error = _build_llm(config=config)
 
-    divisions_to_run = ["trading", "websites", "content_studio"] if division == "all" else [division]
+    divisions_to_run = _operating_division_scope(config) if division == "all" else [division]
     division_payloads: list[dict[str, Any]] = []
     warnings: list[str] = []
     if llm_error:

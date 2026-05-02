@@ -39,6 +39,7 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrator, "REASONING_CACHE", tmp_path / "last_reasoning.json")
     monkeypatch.setattr(orchestrator, "PID_FILE", tmp_path / "orchestrator.pid")
     monkeypatch.setattr(orchestrator, "STOP_FLAG", tmp_path / "orchestrator.stop")
+    monkeypatch.setattr(orchestrator, "ALERT_STATE", tmp_path / "orchestrator_alert_state.json")
     yield
 
 
@@ -167,6 +168,36 @@ def test_reasoning_cache_old_is_stale(tmp_path):
 
 def test_empty_cache_is_stale():
     assert orchestrator.reasoning_cache_is_stale({}) is True
+
+
+def test_should_send_alert_suppresses_duplicate_signature():
+    assert orchestrator.should_send_alert("websites", "websites:RED") is True
+    assert orchestrator.should_send_alert("websites", "websites:RED") is False
+    assert orchestrator.should_send_alert("websites", "websites:timeout") is True
+
+
+def test_diagnose_timeout_is_deterministic():
+    diagnosis, action, confidence = orchestrator.diagnose_event(
+        {
+            "division": "websites",
+            "event_type": "health_check",
+            "severity": "critical",
+            "payload": {"error": "timeout"},
+        },
+        {},
+    )
+
+    assert "orchestration timeout" in diagnosis
+    assert "manual division check" in action
+    assert confidence == "high"
+
+
+def test_run_division_health_rejects_unsupported_division():
+    result = orchestrator._run_division_health("commercial", {}, "run-001")
+
+    assert result["ok"] is False
+    assert result["division"] == "commercial"
+    assert "unsupported health division" in result["error"]
 
 
 # ---------------------------------------------------------------------------

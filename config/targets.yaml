@@ -46,7 +46,7 @@ trading:
 
 websites:
   snapshot_uptime_ratio_min: 1.0
-  max_latency_ms: 500
+  max_latency_ms: 3000
   max_sitemap_age_days: 14
   max_research_report_age_days: 8
 

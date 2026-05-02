@@ -59,9 +59,13 @@ EVENTS_DB = STATE_DIR / "events.db"
 REASONING_CACHE = STATE_DIR / "last_reasoning.json"
 PID_FILE = STATE_DIR / "orchestrator.pid"
 STOP_FLAG = STATE_DIR / "orchestrator.stop"
+ALERT_STATE = STATE_DIR / "orchestrator_alert_state.json"
 
 REASONING_STALE_HOURS = 2
 LOOP_INTERVAL_SECONDS = 300  # 5 minutes
+HEALTH_CHECK_TIMEOUT_SECONDS = 300
+ALERT_COOLDOWN_SECONDS = 6 * 60 * 60
+SUPPORTED_HEALTH_DIVISIONS = {"trading", "websites"}
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +206,52 @@ def reasoning_cache_is_stale(cache: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Alert throttling
+# ---------------------------------------------------------------------------
+
+def _read_alert_state() -> dict[str, Any]:
+    if not ALERT_STATE.exists():
+        return {}
+    try:
+        return json.loads(ALERT_STATE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_alert_state(state: dict[str, Any]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    ALERT_STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def should_send_alert(division: str, signature: str) -> bool:
+    """Return True for first alert, changed alert, or cooldown expiry."""
+    now = datetime.now(timezone.utc)
+    state = _read_alert_state()
+    entry = state.get(division, {})
+    entry = entry if isinstance(entry, dict) else {}
+    last_signature = str(entry.get("signature", ""))
+    last_sent_raw = str(entry.get("sent_at_utc", ""))
+
+    send = last_signature != signature
+    if not send and last_sent_raw:
+        try:
+            last_sent = datetime.fromisoformat(last_sent_raw.replace("Z", "+00:00"))
+            send = (now - last_sent).total_seconds() >= ALERT_COOLDOWN_SECONDS
+        except ValueError:
+            send = True
+    if not send and not last_sent_raw:
+        send = True
+
+    if send:
+        state[division] = {
+            "signature": signature,
+            "sent_at_utc": now.isoformat(),
+        }
+        _write_alert_state(state)
+    return send
+
+
+# ---------------------------------------------------------------------------
 # PID management
 # ---------------------------------------------------------------------------
 
@@ -268,6 +318,32 @@ def diagnose_event(
     config: dict[str, Any],
 ) -> tuple[str, str, str]:
     """Ask Ollama to diagnose a critical event. Returns (diagnosis, action, confidence)."""
+    payload = event.get("payload", {})
+    payload = payload if isinstance(payload, dict) else {}
+    error_text = str(payload.get("error", "")).strip()
+    status_text = str(payload.get("status", "")).strip().upper()
+    division_name = str(event.get("division", "division"))
+
+    if error_text == "timeout":
+        return (
+            f"The {division_name} health command exceeded {HEALTH_CHECK_TIMEOUT_SECONDS}s. "
+            "That is an orchestration timeout, not proof that the underlying site or bot is down.",
+            "Run one manual division check, then tune timeout/cadence before restarting the daemon.",
+            "high",
+        )
+    if "invalid choice" in error_text and "commercial" in error_text:
+        return (
+            "Commercial is not a supported tool_router division in this checkout.",
+            "Remove commercial from the daemon loop or implement a dedicated commercial command.",
+            "high",
+        )
+    if status_text == "RED":
+        return (
+            f"{division_name} reported RED from its scorecard. Use the latest report as source of truth.",
+            "Open the latest Phase 2 report and act on the top non-GREEN KPI.",
+            "high",
+        )
+
     ollama_cfg = config.get("phase2", {})
     model = (ollama_cfg.get("ollama_model") or "llama3.2:latest").replace("ollama/", "")
     base_url = ollama_cfg.get("ollama_base_url") or "http://127.0.0.1:11434"
@@ -275,8 +351,6 @@ def diagnose_event(
     division = event.get("division", "unknown")
     event_type = event.get("event_type", "unknown")
     severity = event.get("severity", "unknown")
-    payload = event.get("payload", {})
-
     prompt = (
         f"AI Holding Company — division health event.\n"
         f"Division: {division}\n"
@@ -304,6 +378,10 @@ def diagnose_event(
 
 def _send_telegram(text: str, config: dict[str, Any]) -> None:
     """Send an informational Telegram message via TelegramBridge (R11)."""
+    signature = text.split("\n", 1)[0].strip() or "orchestrator-alert"
+    if not should_send_alert(signature, signature):
+        logger.info("Suppressed duplicate Telegram alert: %s", signature)
+        return
     try:
         from telegram_bridge import TelegramBridge  # pylint: disable=import-outside-toplevel
         bridge_cfg_path = Path(config.get("_config_path") or DEFAULT_CONFIG)
@@ -330,21 +408,24 @@ def _run_division_health(
     run_id: str,
 ) -> dict[str, Any]:
     """Run a division health check via tool_router. Returns result dict."""
-    import shlex
     import subprocess  # noqa: S404
 
+    if division not in SUPPORTED_HEALTH_DIVISIONS:
+        return {
+            "ok": False,
+            "error": f"unsupported health division: {division}",
+            "division": division,
+        }
+
     router = str(ROOT / "scripts" / "tool_router.py")
-    # tool_router only accepts 'trading' and 'websites' as named divisions;
-    # 'commercial' and any future division map to 'all' (runs full phase2 crew).
-    router_division = division if division in ("trading", "websites") else "all"
-    cmd = [sys.executable, router, "run_divisions", "--division", router_division, "--force"]
+    cmd = [sys.executable, router, "run_divisions", "--division", division, "--force"]
 
     try:
         result = subprocess.run(  # noqa: S603
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=HEALTH_CHECK_TIMEOUT_SECONDS,
             cwd=str(ROOT),
             shell=False,  # R8 — shell=False always
         )
@@ -467,7 +548,6 @@ def run_loop(config: dict[str, Any], interval: int = LOOP_INTERVAL_SECONDS) -> N
         while True:
             if STOP_FLAG.exists():
                 logger.info("Stop flag detected — shutting down.")
-                STOP_FLAG.unlink(missing_ok=True)
                 break
 
             run_id = str(uuid.uuid4())
