@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,7 +58,12 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     GH_ISSUES_STATE.parent.mkdir(parents=True, exist_ok=True)
-    GH_ISSUES_STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp_path = GH_ISSUES_STATE.with_name(f".{GH_ISSUES_STATE.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        tmp_path.replace(GH_ISSUES_STATE)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

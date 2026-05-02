@@ -184,14 +184,18 @@ def _pick_latest_file(path: Path) -> Path | None:
         return path
     if not path.exists() or not path.is_dir():
         return None
-    candidates = [candidate for candidate in path.rglob("*") if candidate.is_file()]
+    candidates = [
+        candidate
+        for candidate in path.glob("*")
+        if not candidate.is_symlink() and candidate.is_file()
+    ]
     if not candidates:
         return None
     candidates.sort(key=lambda value: value.stat().st_mtime, reverse=True)
     return candidates[0]
 
 
-_SAFE_SERVICE_CMD_RE = re.compile(r"^[a-zA-Z0-9 _./@|=-]+$")
+_SAFE_SERVICE_CMD_RE = re.compile(r"^[a-zA-Z0-9 _./@-]+$")
 
 
 def _run_command(command: str, cwd: Path, timeout_sec: int = 120, extra_args: str = "") -> dict[str, Any]:
@@ -414,7 +418,7 @@ def _sync_remote_readonly_bots(config: dict[str, Any]) -> dict[str, Any]:
         if service_cmd and not _SAFE_SERVICE_CMD_RE.match(service_cmd):
             record["errors"].append(
                 f"service_check_cmd contains unsafe characters; skipped. "
-                f"Only alphanumeric, spaces, and _./@|=- are allowed."
+                f"Only alphanumeric, spaces, and _./@- are allowed."
             )
             service_cmd = ""
         if service_cmd:

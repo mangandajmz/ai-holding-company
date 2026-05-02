@@ -179,7 +179,7 @@ def write_reasoning_cache(
         "recommended_action": recommended_action,
         "confidence": confidence,
     }
-    REASONING_CACHE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _atomic_json_write(REASONING_CACHE, payload)
 
 
 def read_reasoning_cache() -> dict[str, Any]:
@@ -220,7 +220,17 @@ def _read_alert_state() -> dict[str, Any]:
 
 def _write_alert_state(state: dict[str, Any]) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    ALERT_STATE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _atomic_json_write(ALERT_STATE, state)
+
+
+def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def should_send_alert(division: str, signature: str) -> bool:

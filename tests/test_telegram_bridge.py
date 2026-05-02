@@ -26,6 +26,15 @@ def test_authorized_accepts_matching_chat_and_user() -> None:
     assert bridge._authorized(chat_id=777, user_id=12345) is True
 
 
+def test_authorized_chat_only_requires_private_chat_identity() -> None:
+    bridge = TelegramBridge.__new__(TelegramBridge)
+    bridge.allowed_chat_ids = {777}
+    bridge.allowed_user_ids = set()
+
+    assert bridge._authorized(chat_id=777, user_id=777) is True
+    assert bridge._authorized(chat_id=777, user_id=12345) is False
+
+
 def _build_bridge() -> TelegramBridge:
     bridge = TelegramBridge.__new__(TelegramBridge)
     bridge.allowed_chat_ids = set()

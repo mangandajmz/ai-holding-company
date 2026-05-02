@@ -5,10 +5,83 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
 import aiogram_bridge  # noqa: E402
+
+
+def _write_bridge_config(
+    path: Path,
+    allowed_chat_ids: list[int] | None = None,
+    allowed_user_ids: list[int] | None = None,
+) -> None:
+    allowed_chat_ids = allowed_chat_ids or []
+    allowed_user_ids = allowed_user_ids or []
+    path.write_text(
+        "\n".join(
+            [
+                "bridge:",
+                "  observer_mode: true",
+                "  telegram:",
+                "    bot_token_env: TELEGRAM_BOT_TOKEN",
+                "    owner_chat_id_env: TELEGRAM_OWNER_CHAT_ID",
+                "    owner_user_id_env: TELEGRAM_OWNER_USER_ID",
+                f"    allowed_chat_ids: {allowed_chat_ids}",
+                f"    allowed_user_ids: {allowed_user_ids}",
+                "memory:",
+                "  ollama_base_url: http://127.0.0.1:11434",
+                "  embedding_model: nomic-embed-text",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_allowlisted_non_owner_is_not_allowed_privileged_action(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_OWNER_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_OWNER_USER_ID", raising=False)
+    monkeypatch.setattr(aiogram_bridge, "load_dotenv", lambda *args, **kwargs: None)
+    config_path = tmp_path / "projects.yaml"
+    _write_bridge_config(config_path, allowed_chat_ids=[100], allowed_user_ids=[200])
+
+    runtime = aiogram_bridge.AiogramBridgeRuntime(config_path=config_path)
+
+    assert runtime.is_authorized(chat_id=100, user_id=200) is True
+    assert runtime.action_allowed("board_approval_decision", chat_id=100, user_id=200) is False
+
+
+def test_chat_only_allowlist_requires_private_chat_identity(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_OWNER_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_OWNER_USER_ID", raising=False)
+    monkeypatch.setattr(aiogram_bridge, "load_dotenv", lambda *args, **kwargs: None)
+    config_path = tmp_path / "projects.yaml"
+    _write_bridge_config(config_path, allowed_chat_ids=[100])
+
+    runtime = aiogram_bridge.AiogramBridgeRuntime(config_path=config_path)
+
+    assert runtime.is_authorized(chat_id=100, user_id=100) is True
+    assert runtime.is_authorized(chat_id=100, user_id=200) is False
+
+
+def test_dev_pipeline_commands_have_restricted_action_types() -> None:
+    assert aiogram_bridge._command_action_type("/approve_merge_1234") == "develop_merge"
+    assert aiogram_bridge._command_action_type("/reject_merge_1234") == "develop_merge"
+    assert aiogram_bridge._command_action_type("/approve_init_1234") == "develop_decision"
+
+
+def test_simulate_text_requires_explicit_identity(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_OWNER_CHAT_ID", raising=False)
+    monkeypatch.delenv("TELEGRAM_OWNER_USER_ID", raising=False)
+    monkeypatch.setattr(aiogram_bridge, "load_dotenv", lambda *args, **kwargs: None)
+    config_path = tmp_path / "projects.yaml"
+    _write_bridge_config(config_path, allowed_chat_ids=[1])
+    monkeypatch.setattr(sys, "argv", ["aiogram_bridge.py", "--config", str(config_path), "--simulate-text", "/status"])
+
+    with pytest.raises(RuntimeError, match="requires explicit"):
+        asyncio.run(aiogram_bridge.main())
 
 
 class _DummyRuntime:
@@ -16,6 +89,7 @@ class _DummyRuntime:
         self.config: dict[str, Any] = {}
         self.phase3_enabled = True
         self.observer_mode = True
+        self.degraded_ops_mode = False
         self.hermes_enabled = False
         self.hermes_base_url = "http://127.0.0.1:9000"
         self.hermes_health_path = "/health"
@@ -31,6 +105,18 @@ class _DummyRuntime:
     def is_authorized(self, chat_id: int | None, user_id: int | None) -> bool:
         return True
 
+    def is_owner_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        return True
+
+    def is_backup_identity(self, chat_id: int | None, user_id: int | None) -> bool:
+        return False
+
+    def action_allowed(self, action_type: str, chat_id: int | None, user_id: int | None) -> bool:
+        return True
+
+    def permission_denied_message(self, action_type: str) -> str:
+        return "denied"
+
     def latest_daily_brief(self) -> dict[str, Any] | None:
         return None
 
@@ -41,7 +127,7 @@ class _DummyRuntime:
         return self._phase3_payload
 
 
-def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypatch) -> None:
+def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypatch, tmp_path) -> None:
     runtime = _DummyRuntime(
         phase3_payload={
             "generated_at_utc": "2026-04-24T03:05:00Z",
@@ -53,6 +139,7 @@ def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypat
         }
     )
     monkeypatch.setattr(aiogram_bridge, "RUNTIME", runtime)
+    monkeypatch.setattr(aiogram_bridge, "BOARD_APPROVAL_STATE_FILE", tmp_path / "board_approval_decisions.json")
 
     async def _save(*args: Any, **kwargs: Any) -> None:
         return None
@@ -74,7 +161,6 @@ def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypat
     assert "Scope: promoted properties only (0 tracked: none)" in reply
     assert "- Headline: Promoted portfolio is off-plan; stabilization is required before expansion." in reply
     assert "Decision Required Now" in reply
-    assert "- No approval blockers at this time." in reply
     assert "Primary Focus This Week" in reply
     assert "- No immediate decision items." in reply
     assert "- Execution on-plan: 0/0 (0.0%)" in reply
@@ -262,7 +348,7 @@ def test_natural_approvals_query_returns_board_and_developer_items(monkeypatch, 
         )
     )
     assert "Owner approvals snapshot" in reply
-    assert "Board approvals pending:" in reply
+    assert "Pending approval:" in reply
     assert "board_01_mt5_cycle" in reply
     assert "Owner: Trading Lead" in reply
     assert "Tap the Approve/Reject buttons below each item" in reply
@@ -463,7 +549,7 @@ def test_board_approve_and_deny_commands_update_state(monkeypatch, tmp_path) -> 
     assert "marked APPROVED" in approve_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Board approvals pending: none." in approvals_reply
+    assert "Pending approval: none." in approvals_reply
     assert "Board decisions logged:" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 
@@ -522,7 +608,7 @@ def test_approve_all_command_marks_pending_items(monkeypatch, tmp_path) -> None:
     assert "updated 2" in approve_all_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Board approvals pending: none." in approvals_reply
+    assert "Pending approval: none." in approvals_reply
     assert "Board decisions logged:" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 

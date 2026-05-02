@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 MAX_ITERATIONS = 3
 _DATE_FMT = "%Y-%m-%dT%H:%M:%SZ"
+ALLOWED_MODEL_WRITE_ROOTS = ("scripts", "tests")
 
 
 def _now_utc() -> str:
@@ -70,7 +71,7 @@ def _get_diff(worktree_dir: Path) -> str:
     _, diff, _ = _run(["git", "diff", "HEAD"], cwd=worktree_dir)
     if not diff:
         _, diff, _ = _run(["git", "diff", "--cached"], cwd=worktree_dir)
-    return diff[:6000]  # cap for Telegram
+    return diff
 
 
 def _run_tests(worktree_dir: Path) -> tuple[bool, str]:
@@ -167,15 +168,19 @@ Review this change. Verdict PASS only if all criteria are met and no issues foun
 
 def _apply_files(worktree_dir: Path, files: list[dict[str, str]]) -> list[str]:
     written = []
+    resolved_worktree = worktree_dir.resolve()
     for f in files:
         rel_path = f.get("path", "").strip().lstrip("/").replace("\\", "/")
         content = f.get("content", "")
         if not rel_path or not content:
             continue
+        path_parts = Path(rel_path).parts
+        if not path_parts or path_parts[0] not in ALLOWED_MODEL_WRITE_ROOTS:
+            continue
         # R8: only ai-holding-company/ scope — block any path escape
         target = worktree_dir / rel_path
         try:
-            target.resolve().relative_to(worktree_dir.resolve())
+            target.resolve().relative_to(resolved_worktree)
         except ValueError:
             continue  # path escape attempt — skip silently
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -320,6 +325,17 @@ def merge_initiative(initiative_id: str) -> tuple[bool, str]:
 
     branch = f"initiative/{initiative_id}"
     worktree_dir = ROOT / ".claude" / "worktrees" / initiative_id
+
+    code, current_branch, err = _run(["git", "branch", "--show-current"], cwd=ROOT)
+    if code != 0:
+        return False, f"Could not verify current branch: {err}"
+    if current_branch != "main":
+        return False, f"Merge blocked: current branch is {current_branch!r}, expected 'main'."
+
+    if worktree_dir.exists():
+        tests_pass, test_output = _run_tests(worktree_dir)
+        if not tests_pass:
+            return False, f"Merge blocked: worktree tests failed:\n{test_output[:1200]}"
 
     code, _, err = _run(["git", "merge", "--no-ff", branch, "-m",
                          f"feat: merge initiative {initiative_id}"], cwd=ROOT)

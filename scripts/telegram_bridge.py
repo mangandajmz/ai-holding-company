@@ -39,7 +39,12 @@ def _state_read(path: Path) -> dict[str, Any]:
 
 def _state_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -272,6 +277,8 @@ class TelegramBridge:
         if self.allowed_user_ids:
             if user_id is None or user_id not in self.allowed_user_ids:
                 return False
+        elif self.allowed_chat_ids:
+            return chat_id is not None and user_id is not None and chat_id == user_id
         return True
 
     def _audit(self, payload: dict[str, Any]) -> None:
@@ -314,8 +321,12 @@ class TelegramBridge:
             return {"type": "help"}
         if lowered in {"/commercial", "commercial"}:
             return {"type": "freetext", "text": raw}
-        if lowered in {"/status", "status", "daily_brief", "ceo"}:
+        if lowered in {"/status", "status"}:
+            return {"type": "tool", "name": "run_holding", "args": ["run_holding", "--mode", "heartbeat", "--force"]}
+        if lowered in {"daily_brief", "ceo"}:
             return {"type": "freetext", "text": "What is the company status?"}
+        if lowered in {"/approvals", "approvals"} or (not lowered.startswith("/") and "approval" in lowered):
+            return {"type": "approvals"}
         if lowered in {"/brief", "brief"} or any(
             p in lowered for p in ("generate fresh brief", "give me a brief", "send a brief", "run brief", "morning brief")
         ):
@@ -946,6 +957,33 @@ class TelegramBridge:
             "I don't have a dedicated commercial payload to summarize here. Use /board review for the broader company view."
         )
 
+    def _summarize_department_question(self, department: str, phase3: dict[str, Any] | None) -> str | None:
+        if not isinstance(phase3, dict):
+            return None
+        briefs = phase3.get("property_department_briefs", [])
+        if not isinstance(briefs, list):
+            return None
+        lines = [f"{department.title()} status by operating property:"]
+        for prop in briefs:
+            if not isinstance(prop, dict):
+                continue
+            departments = prop.get("departments", {})
+            departments = departments if isinstance(departments, dict) else {}
+            dept_payload = departments.get(department)
+            if not isinstance(dept_payload, dict):
+                continue
+            prop_name = str(prop.get("property_name") or prop.get("property_id") or "property")
+            status = str(dept_payload.get("status", "UNKNOWN")).upper()
+            headline = str(dept_payload.get("headline", "")).strip()
+            proposal = str(dept_payload.get("proposal", "")).strip()
+            line = f"- {prop_name}: [{status}]"
+            if headline:
+                line += f" {headline}"
+            lines.append(line)
+            if proposal:
+                lines.append(f"  Proposal: {proposal}")
+        return self._lines_to_text(lines) if len(lines) > 1 else None
+
     def _answer_from_memory(self, text: str) -> str:
         facts = self._dedupe_memory_results(self._search_memory(text, top_k=6))
         if not facts:
@@ -1225,6 +1263,17 @@ class TelegramBridge:
         phase2 = self._load_latest_report_json("phase2_divisions_latest.json")
         phase3 = self._load_latest_report_json("phase3_holding_latest.json")
 
+        if "mt5" in lowered and "restart" in lowered and "research" in lowered:
+            health = self._run_tool_router(["run_trading_script", "--bot", "mt5_desk", "--command-key", "health"])
+            report = self._run_tool_router(["run_trading_script", "--bot", "mt5_desk", "--command-key", "report"])
+            return self._lines_to_text(
+                [
+                    "MT5 health and research checks completed; no scheduler restart was executed.",
+                    f"- Health ok={health.get('ok')}",
+                    f"- Report ok={report.get('ok')}",
+                ]
+            )
+
         if self._looks_like_direction(text):
             result = self._run_tool_router(["log_direction", "--text", text, "--source", "telegram_freetext"])
             if result.get("ok"):
@@ -1251,6 +1300,10 @@ class TelegramBridge:
             return self._summarize_trading_question(daily=daily, phase2=phase2)
         if any(term in lowered for term in ("website", "websites", "site", "sites")):
             return self._summarize_websites_question(daily=daily, phase2=phase2)
+        if "marketing" in lowered:
+            department_reply = self._summarize_department_question("marketing", phase3=phase3)
+            if department_reply:
+                return department_reply
         if self._looks_like_question(text):
             return self._summarize_company_question(daily=daily, phase3=phase3)
 
@@ -1264,6 +1317,37 @@ class TelegramBridge:
             return str(action.get("message"))
         if action.get("type") == "freetext":
             return self._answer_freetext(action["text"])
+        if action.get("type") == "approvals":
+            result = self._run_tool_router(["run_holding", "--mode", "board_review", "--force"], timeout_sec=1200)
+            payload = result.get("payload", {}) if result.get("ok") else {}
+            payload = payload if isinstance(payload, dict) else {}
+            board = payload.get("board_review", {})
+            board = board if isinstance(board, dict) else {}
+            approvals = [item for item in (board.get("approvals") or []) if isinstance(item, dict)]
+            lines = ["Board approvals:"]
+            if approvals:
+                for item in approvals[:5]:
+                    topic = str(item.get("topic", "approval")).strip()
+                    decision = str(item.get("decision", "")).strip()
+                    owner = str(item.get("owner", "")).strip()
+                    lines.append(f"- {topic}" + (f" - {decision}" if decision else "") + (f" (owner: {owner})" if owner else ""))
+            else:
+                lines.append("- None")
+
+            try:
+                from developer_tool import run_developer_tool  # pylint: disable=import-outside-toplevel
+
+                dev_result = run_developer_tool(config=self.config, action="status")
+            except Exception:  # pylint: disable=broad-except
+                dev_result = {"pending": [], "pending_count": 0}
+            pending = [item for item in (dev_result.get("pending") or []) if isinstance(item, dict)]
+            lines.append(f"Developer approvals ({len(pending)}):")
+            if pending:
+                for item in pending[:5]:
+                    lines.append(f"- {item.get('approval_id')}: {item.get('task')}")
+            else:
+                lines.append("- None")
+            return self._lines_to_text(lines)
         if action.get("type") == "content":
             from content_studio import run_content_studio  # pylint: disable=import-outside-toplevel
 
@@ -1557,6 +1641,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="Poll once and exit.")
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and push morning brief to owner.")
     parser.add_argument("--simulate-text", default="", help="Run parser+tool flow locally without Telegram API.")
+    parser.add_argument("--simulate-user-id", type=int, default=None, help="User id for local simulation.")
+    parser.add_argument("--simulate-chat-id", type=int, default=None, help="Chat id for local simulation.")
     parser.add_argument("--discover-ids", action="store_true", help="Print chat_id/user_id values from recent updates.")
     return parser
 
@@ -1572,6 +1658,10 @@ def main() -> None:
         )
 
     if args.simulate_text:
+        if args.simulate_user_id is None or args.simulate_chat_id is None:
+            raise RuntimeError("--simulate-text requires explicit --simulate-user-id and --simulate-chat-id.")
+        if not bridge._authorized(chat_id=args.simulate_chat_id, user_id=args.simulate_user_id):
+            raise RuntimeError("Simulation identity is not allowlisted.")
         print(bridge.handle_text(args.simulate_text))
         return
 
