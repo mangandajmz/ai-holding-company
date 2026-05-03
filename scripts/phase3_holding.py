@@ -864,8 +864,8 @@ def _build_property_pnl_blocks(
 
         tracking = _extract_tracking_payload(raw_entry)
         tracking = _merge_non_null(tracking, _extract_tracking_payload(memory_entry))
-        tracking = _merge_non_null(tracking, source_tracking)
         tracking = _merge_non_null(tracking, _extract_tracking_payload(feed_entry))
+        tracking = _merge_non_null(tracking, source_tracking)
 
         audience = tracking.get("audience", {})
         audience = audience if isinstance(audience, dict) else {}

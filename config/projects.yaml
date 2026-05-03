@@ -152,6 +152,35 @@ property_charters:
       internal_rate_usd_hr: 75
       r12_formula_version: website_v1
       charter_file: "FREETRADERHUB_CHARTER_v1.md"
+    tracking:
+      website_id: freetraderhub_website
+      research_website_id: freetraderhub_research
+    promotion:
+      promoted: true
+      business_case_defined: true
+      target_product_defined: true
+      feasibility_validated: true
+      roi_case_defined: true
+      metrics_defined:
+        - monthly_visitors
+        - email_list_size
+        - tool_completion_rate_pct
+        - affiliate_mrr_usd
+        - alert_mrr_usd
+        - pro_mrr_usd
+        - total_mrr_usd
+        - content_pages_published
+        - direct_costs_usd_7d
+      tracked_metrics:
+        - sessions_7d
+        - tool_completion_rate_pct
+        - total_mrr_usd
+        - hours_invested_7d
+        - direct_costs_usd_7d
+        - quantified_value_usd_7d
+      live_metrics_count: 6
+      metrics_trackable: true
+      notes: "Promoted as the first active operating property on 2026-05-02. Business case, target product, ROI case, and metric model are defined in revenue-model.md, revenue-streams.md, traffic-growth-plan.md, roadmap.md, and PLAN.md v5.9. Current metrics are a manual/starter feed until Umami, email, affiliate, and revenue exports are wired."
   freeghosttools:
     charter:
       version: v0-stub

@@ -1,5 +1,10 @@
 # AI Holding Company — Phase 1: Core Monitoring
 
+> Deprecated automation note: OpenClaw instructions in this guide are
+> historical. Current project rules prohibit OpenClaw. Use
+> `scripts/aiogram_bridge.py` and the Telegram bridge for automation,
+> scheduling, and owner interaction.
+
 **Goal:** Get a single "Executive Assistant" agent running locally with Ollama + OpenClaw, connected to Telegram, monitoring your trading bots and websites, and sending you daily briefs.
 
 **Your Setup:** Windows 11, 16GB RAM, CPU-only (no GPU), Telegram, 1-3 bots (Forex, Gold, Polymarket — mix of VPS and desktop), 1-2 websites. You already track PNL, drawdown, win rate, and uptime.

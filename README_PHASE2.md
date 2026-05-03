@@ -1,5 +1,9 @@
 # AI Holding Company - Phase 2 Runbook
 
+> Deprecated automation note: any OpenClaw instructions below are historical.
+> Current automation, scheduling, and owner interaction must use
+> `scripts/aiogram_bridge.py` and the Telegram bridge.
+
 Phase 2 introduces hierarchical CrewAI divisions on top of the Phase 1 telemetry stack.
 
 ## 1) Install/upgrade dependencies

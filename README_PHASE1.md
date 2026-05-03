@@ -1,5 +1,10 @@
 # AI Holding Company - Phase 1 Runbook
 
+> Deprecated automation note: the OpenClaw sections below are historical.
+> Current automation, scheduling, and owner interaction must use
+> `scripts/aiogram_bridge.py` and the Telegram bridge. Do not install or route
+> new work through OpenClaw unless the project rules are explicitly changed.
+
 This folder is the local command center for Phase 1:
 - 1 Executive Assistant agent
 - monitors trading bots and websites

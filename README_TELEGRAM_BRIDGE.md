@@ -64,6 +64,20 @@ python scripts/aiogram_bridge.py --simulate-text "/content_status"
 - `/status`
 - `/brief` (Phase 3: runs CEO heartbeat; fallback Phase 2: division brief)
 - `/board review` (Phase 3 board review pack with approval items)
+- `/boardroom start [topic]`
+- `/boardroom ask <division> <question>`
+- `/boardroom status`
+- `/boardroom close [note]`
+- `/loop new <goal>`
+- `/loop status`
+- `/loop show <loop_id>`
+- `/loop evidence <loop_id> <path> [note]`
+- `/loop advance <loop_id> <recommendation>`
+- `/loop approve <loop_id> [note]`
+- `/loop reject <loop_id> [note]`
+- `/loop start <loop_id> [note]`
+- `/loop measure <loop_id> <result>`
+- `/loop done <loop_id> [result]`
 - `/approvals`
 - `/approve <board_approval_id>`
 - `/deny <board_approval_id>`

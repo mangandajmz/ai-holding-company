@@ -12,6 +12,8 @@ __pycache__/
 
 reports/*.json
 reports/*.md
+reports/**/*.json
+reports/**/*.md
 !reports/.gitkeep
 
 artifacts/**

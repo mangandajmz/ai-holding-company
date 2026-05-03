@@ -59,6 +59,13 @@ Add `github_repo: "your-org/ai-holding-company"` to `config/projects.yaml` and r
 |------|---------|
 | PLAN.md | Master plan — read first, always |
 | CLAUDE.md | Dev philosophy + Code Review Gate |
+| docs/DAILY_OPERATING_SYSTEM.md | Current MVP daily CEO workflow |
+| docs/LOOP_OPERATING_MODEL.md | File-first closed-loop company operating model |
+| docs/STRUCTURE_MAP.md | Maps target company_os concepts to the current repo |
+| docs/templates/ | Approval, report, scorecard, and decision templates |
+| docs/website_qa/ | Human-readable QA checklists for FreeTraderHub and FreeGhostTools |
+| scripts/company_loop.py | File-first company loops: goal → evidence → approval → measurement |
+| scripts/boardroom.py | Lightweight MD/division boardroom meeting transcripts |
 | scripts/orchestrator.py | Event-driven daemon — runs all three divisions every 5 min |
 | scripts/telegram_bridge.py | Telegram interface — add /orchestrator commands here |
 | scripts/phase3_holding.py | CEO layer — board_pack mode (Stage H, complete) |

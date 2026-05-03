@@ -1,7 +1,7 @@
 ﻿# AI Holding Company â€” Master Plan
-**Version:** 5.7  
+**Version:** 5.9
 **Owner:** J (CEO)  
-**Last updated:** 2026-05-01  
+**Last updated:** 2026-05-02
 **Supersedes:** All previous plan versions (v1â€”v4).  
 **v5.2 change:** Stage D updated â€” portfolio analysis complete, Integration Readiness Sprint defined. Stage D execution tasks documented in Â§11.1. Property charters written for all four portfolio properties.  
 **v5.3 change:** Stage D closed. Trading=GREEN, Websites=GREEN. 23/23 tests passing, commit e533073. G1 unblocked. Stage G (Commercial Division) now active â€” prompts in STAGE_G_PROMPTS.md.  
@@ -10,6 +10,7 @@
 **v5.6 change:** Stage I closed. Added Developer Tool (`/develop`, `/develop_approve`, `/develop_deny`, `/develop_status`) with R8 scope gate and CEO approval workflow, semantic memory initialization (`nomic-embed-text`), and time-saved tracking with R9 guardrail proof at 6.25 hours/week.
 **v5.7 change:** Stage H closed (Sprint 0). Holding Board v2 verified — board_pack mode confirmed working with 10-field Board Pack items, dissent agent filing real objections, MA gate enforced. Two consecutive board_pack runs saved (reports/stage_h_brief_1.json, stage_h_brief_2.json). 11 new board_pack tests added (tests/test_board_pack.py). 47→58 tests passing. Sprint 1 (Agentic Orchestrator) now active.
 **v5.8 change:** Sprints 1-5 complete. orchestrator.py daemon (SQLite events, PID, Telegram kill switch), all three divisions wired, morning brief + pinned health lights, weekly retro (Sunday 20:00 Vancouver, catch-up), GitHub Issues cadence (RED → open, 24h dedup → comment, GREEN → close). 58→100 tests passing. New files: scripts/orchestrator.py, scripts/weekly_retro.py, scripts/github_issues.py, tests/test_orchestrator.py, tests/test_weekly_retro.py, tests/test_github_issues.py.
+**v5.9 change:** Forward plan reset from current state. Keep the existing local-first structure; do not create a parallel `company_os/` tree. Next work is FreeTraderHub operating-property hardening: truthful promotion gates, live business metric feed, closed-loop initiative artifacts, website QA discipline, and CEO approval records for publishing, spending, outreach, deployment, trading, credentials, and business commitments.
 
 ---
 
@@ -238,6 +239,138 @@ Locked. Do not re-open without a CEO directive.
 ---
 
 ## 11. Stage Plan â€” Current Status
+
+### 11.0 Current Forward Plan â€” v5.9
+
+**Where we are now:** the operating shell exists. Phase 1 telemetry, Phase 2
+division reporting, Phase 3 CEO/Board packs, Telegram owner interaction,
+approval state, local memory, Content Studio, Commercial scoring, and website
+operations are already present. FreeTraderHub is the first serious operating
+property, but it is still in launch validation rather than a mature compounding
+business.
+
+**Principle for the next phase:** add only what helps the CEO see, decide, or
+measure better. Do not add a new folder tree, a new chat surface, a new agent
+role, or a new automation layer unless it removes real friction from the current
+daily operating loop.
+
+**Canonical workflow for all meaningful work:**
+
+```text
+Goal -> Work -> Evidence -> AI Review -> CEO Approval -> Action -> Measurement -> Improvement
+```
+
+Use the existing equivalents:
+
+- CEO inbox: Telegram through `scripts/aiogram_bridge.py`
+- Approvals: `state/board_approval_decisions.json` and loop approval state
+- Reports: `reports/`
+- KPI targets: `config/targets.yaml`
+- Division and role definitions: `crews/` and `docs/AGENT_ROLE_MODEL.md`
+- Operating docs: `docs/DAILY_OPERATING_SYSTEM.md`, `docs/LOOP_OPERATING_MODEL.md`, `docs/STRUCTURE_MAP.md`
+- Website QA: `docs/website_qa/`
+
+Do **not** create `company_os/`, `agents/`, `divisions/`, or `websites/` folders
+while the current structure remains readable. `docs/STRUCTURE_MAP.md` is the
+mapping from the target company-OS concepts to the repo that already exists.
+
+#### Next Operating Milestone: FreeTraderHub Property Hardening
+
+**Goal:** promote FreeTraderHub from "launch property with monitoring" to
+"measurable operating property with a weekly growth loop."
+
+Definition of done:
+
+- FreeTraderHub property gates are truthful and current:
+  `business_case_defined`, `target_product_defined`, `feasibility_validated`,
+  `roi_case_defined`, `metrics_defined`, and `metrics_trackable`.
+- The property metric feed contains current values for the core FTH KPIs:
+  visitors/sessions, returning user rate when available, tool completion rate,
+  email list size, affiliate clicks/revenue, alert MRR, Pro MRR, total MRR,
+  content/page production, and direct costs.
+- Every FreeTraderHub initiative has a loop artifact before implementation:
+  goal, evidence, recommendation, owner, expected upside, effort/cost, KPI,
+  review date, and measurement plan.
+- Any publishing, deployment, external outreach, paid tool launch, affiliate
+  commitment, credential/API change, legal-sensitive decision, or spending
+  commitment remains `PENDING_CEO_APPROVAL` until the CEO approves.
+- Website QA checklist passes before any public-facing FTH change is treated as
+  complete.
+- Weekly CEO review can answer: what changed, what evidence supports it, what
+  decision is pending, what KPI moved, and what we do next.
+
+#### Work Blocks â€” Ordered
+
+| Block | Work | Value added | Guardrail |
+|---|---|---|---|
+| 1 | Update FTH promotion gates and metric definitions against the existing strategy docs | Makes the CEO scorecard truthful instead of generic | No new folders; update existing config/state/docs |
+| 2 | Connect or manually refresh FTH metric feed from Umami/Loops/affiliate/revenue sources | Turns tracking into board-useful KPIs | No new APIs unless already safe and approved |
+| 3 | Run the FTH growth loop through `scripts/company_loop.py` | Forces evidence, review, approval, action, measurement | Risky work stays `PENDING_CEO_APPROVAL` |
+| 4 | Use Content Studio only from approved FTH briefs | Produces SEO/email/content assets without vibe output | No auto-publish of AI prose |
+| 5 | Use Website QA checklist before marking FTH work done | Protects trust, calculator reliability, mobile UX, and SEO quality | Checklist first; automate only repeated checks |
+| 6 | Feed results back into CEO/Board packs weekly | Creates a queryable history of decisions and outcomes | Keep reports concise and evidence-linked |
+
+#### Division Responsibilities For This Phase
+
+- Executive: set weekly FTH priority, review board packs, approve or reject
+  risky actions, and keep the decision queue capped.
+- Websites/Product: maintain uptime, latency, calculator reliability, navigation,
+  SEO metadata, and user-facing clarity.
+- Research: produce evidence for rule pages, firm comparisons, SEO opportunities,
+  competitor positioning, and rule-change alerts.
+- Content Studio: draft approved briefs only: rule explainers, comparison pages,
+  email copy, course/waitlist copy, and outreach assets.
+- Commercial: score each FTH initiative for ROI, effort/cost, confidence,
+  revenue stream fit, and post-launch measurement.
+- Marketing: remain lightweight. Produce SEO/channel recommendations and campaign
+  ideas only after evidence exists; max one campaign decision per week.
+- Operations/Admin: keep reports, approvals, scorecards, decision logs, and
+  weekly review artifacts tidy enough to query later.
+
+No additional standing agents are authorized for this phase. Use the existing
+compact role model unless a concrete gap blocks work.
+
+#### Approval Request Standard
+
+Any approval-bound action must include:
+
+- Title
+- Division
+- Recommended action
+- Why this is recommended
+- Evidence
+- Expected benefit
+- Risks
+- Cost
+- Reversibility
+- Approval status
+- Date
+- Owner
+
+This extends the Board Pack requirements in Â§8 rather than replacing them.
+
+#### Report Discipline
+
+For FreeTraderHub, the minimum weekly artifact set is:
+
+- Division report: work completed, evidence/artifacts, blockers,
+  recommendations, KPI impact, approval requests, next actions.
+- CEO summary: overall status, wins, risks, pending approvals, KPI changes,
+  recommended decisions, next 24-hour priorities.
+- Business scorecard: traffic, content published, tool improvements, revenue or
+  affiliate progress, costs, open risks, priority actions.
+- Decision log: context, options, decision, reason, follow-up date, and result.
+
+Prefer markdown and JSON already produced by the existing scripts. Add scripts
+only when a manual step is repeated often enough that automation clearly saves
+time.
+
+#### Next-Step Recommendation
+
+Start with Block 1 and Block 2. They are the highest value because the CEO layer
+already exists, but it cannot make good FTH business decisions until the gates
+and metric feed are current. Do not build more automation until the weekly FTH
+scorecard can be trusted.
 
 | Stage | Title | Status | Priority | Guardrails |
 |-------|-------|--------|----------|------------|

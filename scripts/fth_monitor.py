@@ -3,9 +3,10 @@
 Pulls live metrics from:
   - Umami Analytics (visitor counts) — automatic via API
   - Email list size — manual env var (Loops has no count API)
+  - Affiliate dashboard values — manual env vars until partner APIs are justified
 
-Writes actuals into state/property_metric_feed.json via
-phase3_holding.ingest_property_metric_values.
+Writes actuals into state/property_metrics/freetraderhub/shared.json, which
+Phase 3 already ingests into state/property_metric_feed.json during heartbeats.
 
 Umami auth — two options (first one found wins):
   Option A — username/password (works for Cloud and self-hosted):
@@ -22,6 +23,14 @@ Umami auth — two options (first one found wins):
 Email list (Loops has no bulk-count API — update manually):
   FTH_EMAIL_LIST_SIZE   current subscriber count from Loops dashboard
                         Update this number whenever you check Loops.
+
+Affiliate dashboards (manual weekly refresh):
+  FTH_AFFILIATE_CLICKS_7D             total affiliate clicks
+  FTH_FTMO_AFFILIATE_CLICKS_7D        FTMO affiliate clicks
+  FTH_FUNDEDNEXT_AFFILIATE_CLICKS_7D  FundedNext affiliate clicks
+  FTH_AFFILIATE_USD_7D                affiliate commission earned this week
+  FTH_AFFILIATE_MRR_USD               affiliate monthly run-rate estimate
+  FTH_TOP_PARTNER                     top partner by clicks/revenue
 
 Usage:
   python scripts/fth_monitor.py            # fetch + ingest + print summary
@@ -143,10 +152,32 @@ def fetch_umami_stats(
 # Main collection entry point
 # ---------------------------------------------------------------------------
 
-def collect_fth_kpis(days: int = 30) -> dict[str, object]:
+def _read_int_env(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw or raw.startswith("REPLACE_"):
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        LOGGER.warning("%s is not a valid integer: %s", name, raw)
+        return None
+
+
+def _read_float_env(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw or raw.startswith("REPLACE_"):
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        LOGGER.warning("%s is not a valid number: %s", name, raw)
+        return None
+
+
+def collect_fth_kpis(days: int = 7) -> dict[str, object]:
     """Collect all FTH KPIs from configured APIs.
 
-    Returns a flat dict suitable for ingest_property_metric_values.
+    Returns a flat dict suitable for the local FTH metric source writer.
     Keys with None values indicate the API was not configured or failed.
     """
     kpis: dict[str, object] = {}
@@ -160,73 +191,112 @@ def collect_fth_kpis(days: int = 30) -> dict[str, object]:
         if token:
             LOGGER.info("Fetching Umami stats for website %s (last %d days)…", umami_site, days)
             umami = fetch_umami_stats(umami_base, token, umami_site, days=days)
-            kpis["sessions_30d"] = umami.get("visits")
-            kpis["visitors_30d"] = umami.get("visitors")
-            kpis["pageviews_30d"] = umami.get("pageviews")
+            kpis[f"sessions_{days}d"] = umami.get("visits")
+            kpis[f"visitors_{days}d"] = umami.get("visitors")
+            kpis[f"pageviews_{days}d"] = umami.get("pageviews")
         else:
             LOGGER.warning("Umami: could not obtain token — check UMAMI_USERNAME/UMAMI_PASSWORD or UMAMI_API_KEY.")
-            kpis["sessions_30d"] = None
-            kpis["visitors_30d"] = None
-            kpis["pageviews_30d"] = None
+            kpis[f"sessions_{days}d"] = None
+            kpis[f"visitors_{days}d"] = None
+            kpis[f"pageviews_{days}d"] = None
     else:
         LOGGER.info("Umami not configured (set UMAMI_BASE_URL + UMAMI_WEBSITE_ID + credentials).")
-        kpis["sessions_30d"] = None
-        kpis["visitors_30d"] = None
-        kpis["pageviews_30d"] = None
+        kpis[f"sessions_{days}d"] = None
+        kpis[f"visitors_{days}d"] = None
+        kpis[f"pageviews_{days}d"] = None
 
     # --- Email list size (manual — Loops has no bulk-count API) ---
     # Update FTH_EMAIL_LIST_SIZE in .env whenever you check the Loops dashboard.
-    raw_list_size = os.environ.get("FTH_EMAIL_LIST_SIZE", "").strip()
-    if raw_list_size and not raw_list_size.startswith("REPLACE_"):
-        try:
-            kpis["email_list_size"] = int(raw_list_size)
-            LOGGER.info("Email list size from env: %s", kpis["email_list_size"])
-        except ValueError:
-            LOGGER.warning("FTH_EMAIL_LIST_SIZE is not a valid integer: %s", raw_list_size)
-            kpis["email_list_size"] = None
-    else:
+    kpis["email_list_size"] = _read_int_env("FTH_EMAIL_LIST_SIZE")
+    if kpis["email_list_size"] is None:
         LOGGER.info("Email list size not set — add FTH_EMAIL_LIST_SIZE=<count> to .env.")
-        kpis["email_list_size"] = None
+    else:
+        LOGGER.info("Email list size from env: %s", kpis["email_list_size"])
+
+    # --- Affiliate dashboards (manual until partner APIs are worth wiring) ---
+    kpis["affiliate_clicks_7d"] = _read_int_env("FTH_AFFILIATE_CLICKS_7D")
+    kpis["ftmo_affiliate_clicks_7d"] = _read_int_env("FTH_FTMO_AFFILIATE_CLICKS_7D")
+    kpis["fundednext_affiliate_clicks_7d"] = _read_int_env("FTH_FUNDEDNEXT_AFFILIATE_CLICKS_7D")
+    kpis["affiliate_usd_7d"] = _read_float_env("FTH_AFFILIATE_USD_7D")
+    kpis["affiliate_mrr_usd"] = _read_float_env("FTH_AFFILIATE_MRR_USD")
+    top_partner = os.environ.get("FTH_TOP_PARTNER", "").strip()
+    kpis["top_partner"] = top_partner if top_partner and not top_partner.startswith("REPLACE_") else None
 
     return kpis
 
 
 def _ingest(kpis: dict[str, object], config_path: Path) -> dict[str, object]:
-    """Write KPIs into property_metric_feed.json via phase3_holding."""
-    try:
-        from phase3_holding import ingest_property_metric_values  # noqa: PLC0415
-        from monitoring import load_config  # noqa: PLC0415
-    except ImportError as exc:
-        return {"ok": False, "error": str(exc)}
+    """Write KPIs into the FTH source JSON consumed by Phase 3."""
+    _ = config_path
+    source_path = ROOT / "state" / "property_metrics" / "freetraderhub" / "shared.json"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
 
-    config = load_config(config_path)
-    result = ingest_property_metric_values(
-        config=config,
-        property_slug="freetraderhub",
-        metric_values=kpis,
-        source="fth_monitor_live",
-    )
-    return result if isinstance(result, dict) else {"ok": True}
+    if source_path.exists():
+        try:
+            payload = json.loads(source_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+    else:
+        payload = {}
+
+    tracking = payload.setdefault("tracking", {})
+    audience = tracking.setdefault("audience", {})
+    revenue = tracking.setdefault("revenue", {})
+    movers = tracking.setdefault("movers", {})
+
+    for key in ["sessions_7d", "visitors_7d", "pageviews_7d", "email_list_size"]:
+        if kpis.get(key) is not None:
+            audience[key] = kpis[key]
+
+    for key in ["affiliate_usd_7d", "affiliate_mrr_usd"]:
+        if kpis.get(key) is not None:
+            revenue[key] = kpis[key]
+
+    if kpis.get("top_partner") is not None:
+        revenue["top_partner"] = kpis["top_partner"]
+
+    affiliate_clicks = {
+        "total_7d": kpis.get("affiliate_clicks_7d"),
+        "ftmo_7d": kpis.get("ftmo_affiliate_clicks_7d"),
+        "fundednext_7d": kpis.get("fundednext_affiliate_clicks_7d"),
+    }
+    revenue["affiliate_clicks"] = {
+        key: value for key, value in affiliate_clicks.items() if value is not None
+    } or revenue.get("affiliate_clicks", {})
+
+    if any(value is not None for value in affiliate_clicks.values()):
+        movers["top_growth_lever"] = (
+            "Affiliate links are live; measure clicks by firm and convert the best-performing CTA into the next growth test."
+        )
+
+    payload["updated_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    payload["source"] = "fth_monitor_manual_and_umami"
+    source_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"ok": True, "path": str(source_path)}
 
 
 def build_brief_line(kpis: dict[str, object]) -> str:
     """Return a one-line FTH KPI summary for the morning brief.
 
     Example:
-      📊 FTH — 1,240 visitors/30d | 38 email subs | MRR $0
+      📊 FTH — 1,240 visits/7d | 38 email subs | affiliate $12
     """
     parts = []
 
-    visitors = kpis.get("visitors_30d")
-    if visitors is not None:
-        parts.append(f"{visitors:,} visitors/30d")
+    sessions = kpis.get("sessions_7d")
+    if sessions is not None:
+        parts.append(f"{sessions:,} visits/7d")
 
     email = kpis.get("email_list_size")
     if email is not None:
         parts.append(f"{email} email subs")
 
+    affiliate = kpis.get("affiliate_usd_7d")
+    if affiliate is not None:
+        parts.append(f"affiliate ${float(affiliate):,.2f}/7d")
+
     if not parts:
-        parts.append("no live data yet — configure UMAMI_BASE_URL + LOOPS_API_KEY")
+        parts.append("no live data yet — configure Umami and manual KPI env vars")
 
     return "📊 FTH — " + " | ".join(parts)
 
@@ -247,7 +317,7 @@ def _main() -> None:
 
     parser = argparse.ArgumentParser(description="FreeTraderHub KPI monitor.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and print but do not write to feed.")
-    parser.add_argument("--days", type=int, default=30, help="Lookback window for Umami (default: 30).")
+    parser.add_argument("--days", type=int, default=7, help="Lookback window for Umami (default: 7).")
     parser.add_argument("--config", default=str(ROOT / "config" / "projects.yaml"), help="Path to projects.yaml.")
     args = parser.parse_args()
 
@@ -278,7 +348,7 @@ def _main() -> None:
         if result.get("ok") is False:
             print(f"⚠ Ingest failed: {result.get('error')}")
         else:
-            print("✓ Written to property_metric_feed.json")
+            print(f"✓ Written to {result.get('path', 'FTH metric source')}")
     else:
         print("(dry-run — not written)")
 
