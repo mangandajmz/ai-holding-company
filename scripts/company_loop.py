@@ -372,13 +372,15 @@ def approve_loop(config: dict[str, Any], loop_id: str, note: str = "", action: s
     loop = _find_loop(state, loop_id)
     if not loop:
         return {"ok": False, "error": f"Loop not found: {loop_id}"}
+    existing_action = str(loop.get("approved_action", "")).strip()
     if action.strip():
         loop["approved_action"] = action.strip()
-    elif note.strip() and not loop.get("approved_action"):
+    elif note.strip() and not existing_action:
         loop["approved_action"] = note.strip()
     loop["approval_status"] = "APPROVED"
-    loop["next_step"] = "Execute approved action and record measurement evidence."
+    loop["next_step"] = "MD agent is executing the approved internal work package; record evidence and measurement next."
     _set_status(loop, "APPROVED", note)
+    _set_status(loop, "IN_PROGRESS", "Auto-started after CEO approval.")
     _save_state(config, state)
     _write_reports(config, state["loops"])
     return {"ok": True, "loop": loop, "report": str(_reports_dir(config) / f"{loop_id}.md")}

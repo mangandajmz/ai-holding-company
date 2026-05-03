@@ -93,7 +93,60 @@ def test_risky_advance_requires_ceo_approval_before_start(tmp_path, monkeypatch)
     assert blocked["ok"] is False
     assert "approval is required" in blocked["error"].lower()
     assert approved["loop"]["approval_status"] == "APPROVED"
+    assert approved["loop"]["status"] == "IN_PROGRESS"
+    assert "MD agent is executing" in approved["loop"]["next_step"]
     assert started["loop"]["status"] == "IN_PROGRESS"
+
+
+def test_approval_auto_starts_loop_for_md_execution(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(company_loop, "ROOT", tmp_path)
+    config = _config(tmp_path)
+    loop_id = company_loop.new_loop(
+        config,
+        goal="Refresh FreeTraderHub metric trust",
+        loop_type="business_initiative",
+        division="commercial",
+    )["loop"]["loop_id"]
+    company_loop.advance_loop(
+        config,
+        loop_id=loop_id,
+        recommendation="Refresh manual dashboards and attach evidence.",
+        risk_review="Internal reporting only.",
+    )
+
+    approved = company_loop.approve_loop(
+        config,
+        loop_id=loop_id,
+        note="CEO approved.",
+        action="Refresh internal KPI evidence.",
+    )
+
+    loop = approved["loop"]
+    assert loop["approval_status"] == "APPROVED"
+    assert loop["status"] == "IN_PROGRESS"
+    assert loop["current_stage"] == "IN_PROGRESS"
+    assert loop["approved_action"] == "Refresh internal KPI evidence."
+    assert loop["history"][-2]["event"] == "APPROVED"
+    assert loop["history"][-1]["event"] == "IN_PROGRESS"
+
+
+def test_reapproval_note_does_not_replace_existing_approved_action(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(company_loop, "ROOT", tmp_path)
+    config = _config(tmp_path)
+    loop_id = company_loop.new_loop(config, goal="Run FTH metric refresh")["loop"]["loop_id"]
+    company_loop.approve_loop(
+        config,
+        loop_id=loop_id,
+        action="Refresh internal KPI evidence.",
+    )
+
+    reapproved = company_loop.approve_loop(
+        config,
+        loop_id=loop_id,
+        note="CEO confirmed approval again.",
+    )
+
+    assert reapproved["loop"]["approved_action"] == "Refresh internal KPI evidence."
 
 
 def test_add_evidence_preserves_pending_ceo_approval(tmp_path, monkeypatch) -> None:
