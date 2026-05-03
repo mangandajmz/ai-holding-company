@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -405,6 +406,82 @@ def test_natural_approvals_query_returns_board_and_developer_items(monkeypatch, 
 
 def test_approvals_command_is_case_insensitive() -> None:
     assert aiogram_bridge._command_action_type("/Approvals") == "view_approvals"
+
+
+def test_dashboard_command_is_view_only() -> None:
+    assert aiogram_bridge._command_action_type("/dashboard") == "view_status"
+
+
+def test_dashboard_command_returns_compact_ceo_card(monkeypatch, tmp_path) -> None:
+    runtime = _DummyRuntime(
+        phase3_payload={
+            "generated_at_utc": "2026-05-03T16:00:00+00:00",
+            "company_scorecard": {
+                "status": "AMBER",
+                "items": [
+                    {
+                        "metric": "Property forecast attainment",
+                        "status": "RED",
+                    }
+                ],
+            },
+            "property_pnl_blocks": [
+                {
+                    "property_id": "freetraderhub",
+                    "property_name": "FreeTraderHub",
+                    "status": {"value": "GREEN", "pct_to_forecast_mrr": 4.1},
+                    "revenue": {"total_mrr_usd": 0},
+                    "top_movers": {"biggest_risk": "first conversion signal not proven"},
+                }
+            ],
+            "board_review": {
+                "approvals": [
+                    {
+                        "approval_id": "board_fth_forecast",
+                        "priority": "RED",
+                        "topic": "Company KPI: Property forecast attainment",
+                        "decision": "Prioritize monetization.",
+                        "owner": "holding",
+                    }
+                ]
+            },
+        }
+    )
+    source = tmp_path / "state" / "property_metrics" / "freetraderhub" / "shared.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(
+            {
+                "tracking": {
+                    "audience": {"sessions_7d": 12, "email_list_size": 3},
+                    "revenue": {
+                        "affiliate_clicks": {"ftmo_7d": 1, "fundednext_7d": 0},
+                        "total_mrr_usd": 0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(aiogram_bridge, "RUNTIME", runtime)
+    monkeypatch.setattr(aiogram_bridge, "ROOT", tmp_path)
+    monkeypatch.setattr(aiogram_bridge, "_pending_company_loop_approvals", lambda: [])
+
+    reply = asyncio.run(aiogram_bridge._handle_dashboard_command())
+
+    assert "AI Capital Group Dashboard" in reply
+    assert "Portfolio" in reply
+    assert "- Operational health: GREEN" in reply
+    assert "- Commercial health: RED" in reply
+    assert "FreeTraderHub" in reply
+    assert "- Traffic 7d: 12 sessions" in reply
+    assert "- Email list: 3" in reply
+    assert "- Affiliate clicks 7d: FTMO 1 | FundedNext 0" in reply
+    assert "CEO Actions" in reply
+    assert "- Pending approvals: 1" in reply
+    assert "board_fth_forecast" in reply
+    assert "/approvals for decisions" in reply
 
 
 def test_greeting_returns_fast_deterministic_reply(monkeypatch) -> None:

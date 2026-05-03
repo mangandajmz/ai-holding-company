@@ -32,6 +32,7 @@ CONVERSATION_HISTORY_FILE = ROOT / "state" / "conversation_history.jsonl"
 LOG_FILE = ROOT / "logs" / "aiogram_bridge.log"
 REPORTS_DIR = ROOT / "reports"
 BOARD_APPROVAL_STATE_FILE = ROOT / "state" / "board_approval_decisions.json"
+TELEGRAM_DASHBOARD_STATE_FILE = ROOT / "state" / "telegram_dashboard.json"
 MODULE_CANONICAL_SOURCE = "state/board_approval_decisions.json"
 TELEMETRY_CANONICAL_SOURCE = "reports/daily_brief_latest.json"
 DIVISION_CANONICAL_SOURCE = "reports/phase2_divisions_latest.json"
@@ -1347,6 +1348,7 @@ def _format_help() -> str:
         "AI Holding Company bridge commands:\n"
         "- /help\n"
         "- /status\n"
+        "- /dashboard\n"
         "- /approvals [refresh]\n"
         "- /approve <board_approval_id>\n"
         "- /deny <board_approval_id>\n"
@@ -3220,6 +3222,133 @@ async def _handle_approvals_command(refresh: bool = False, user_id: int | None =
     return reply
 
 
+def _load_fth_metric_source() -> dict[str, Any]:
+    source_path = ROOT / "state" / "property_metrics" / "freetraderhub" / "shared.json"
+    if not source_path.exists():
+        return {}
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _find_property_block(payload: dict[str, Any] | None, property_id: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    blocks = payload.get("property_pnl_blocks", [])
+    blocks = [item for item in blocks if isinstance(item, dict)] if isinstance(blocks, list) else []
+    normalized = property_id.strip().lower()
+    for block in blocks:
+        block_id = str(block.get("property_id", "")).strip().lower()
+        block_name = str(block.get("property_name", "")).strip().lower()
+        if normalized in {block_id, block_name}:
+            return block
+    return {}
+
+
+def _tracking_section(payload: dict[str, Any], section: str) -> dict[str, Any]:
+    tracking = payload.get("tracking", {})
+    tracking = tracking if isinstance(tracking, dict) else {}
+    value = tracking.get(section, {})
+    return value if isinstance(value, dict) else {}
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+async def _handle_dashboard_command() -> str:
+    runtime = _runtime()
+    phase3 = runtime.latest_phase3() if runtime.phase3_enabled else None
+    facts = _portfolio_facts_from_phase3(phase3 if isinstance(phase3, dict) else None)
+    pending, decided, generated = _approval_rows_from_phase3_payload(phase3 if isinstance(phase3, dict) else None)
+    execution_rows, _ = _sync_execution_queue_from_approvals(pending + decided, phase3 if isinstance(phase3, dict) else None)
+    execution_pending = [
+        item
+        for item in execution_rows
+        if str(item.get("status", "")).upper() in EXECUTION_OPEN_STATUSES
+    ]
+    loop_pending = _pending_company_loop_approvals()
+
+    fth_source = _load_fth_metric_source()
+    fth_block = _find_property_block(phase3 if isinstance(phase3, dict) else None, "freetraderhub")
+    source_audience = _tracking_section(fth_source, "audience")
+    source_revenue = _tracking_section(fth_source, "revenue")
+    block_revenue = fth_block.get("revenue", {})
+    block_revenue = block_revenue if isinstance(block_revenue, dict) else {}
+    block_status = fth_block.get("status", {})
+    block_status = block_status if isinstance(block_status, dict) else {}
+    block_movers = fth_block.get("top_movers", {})
+    block_movers = block_movers if isinstance(block_movers, dict) else {}
+
+    affiliate_clicks = source_revenue.get("affiliate_clicks", {})
+    affiliate_clicks = affiliate_clicks if isinstance(affiliate_clicks, dict) else {}
+    ftmo_clicks = _first_present(affiliate_clicks.get("ftmo_7d"), "unknown")
+    fundednext_clicks = _first_present(affiliate_clicks.get("fundednext_7d"), "unknown")
+    sessions = _first_present(source_audience.get("sessions_7d"), "unknown")
+    email_list = _first_present(source_audience.get("email_list_size"), "unknown")
+    revenue = _first_present(
+        source_revenue.get("total_mrr_usd"),
+        block_revenue.get("total_mrr_usd"),
+        0,
+    )
+    risk = str(block_movers.get("biggest_risk", "")).strip() or "Metric feed still needs regular refresh."
+
+    top_action = "Run /status for the next CEO review."
+    if pending:
+        lead = pending[0]
+        top_action = f"Approve or reject `{lead.get('approval_id')}`: {lead.get('topic')}"
+    elif loop_pending:
+        lead_loop = loop_pending[0]
+        top_action = f"Review loop `{lead_loop.get('loop_id')}`: {lead_loop.get('goal')}"
+    elif execution_pending:
+        lead = execution_pending[0]
+        top_action = f"Execute approved item `{lead.get('approval_id')}`: {lead.get('topic')}"
+
+    generated_text = generated or str(facts.get("generated", "")).strip() or "n/a"
+    lines = [
+        "AI Capital Group Dashboard",
+        f"Updated: {generated_text} UTC",
+        f"Freshness: {facts.get('freshness')}",
+        "",
+        "Portfolio",
+        f"- Operational health: {facts.get('status')}",
+        f"- Commercial health: {facts.get('commercial_health')}",
+        (
+            f"- Execution on-plan: {facts.get('on_plan_pct'):.1f}%"
+            if isinstance(facts.get("on_plan_pct"), float)
+            else "- Execution on-plan: n/a"
+        ),
+        f"- Main pressure: {facts.get('top_issue')}",
+        "",
+        "FreeTraderHub",
+        f"- Status: {block_status.get('value', 'unknown')}",
+        f"- Traffic 7d: {sessions} sessions",
+        f"- Email list: {email_list}",
+        f"- Affiliate clicks 7d: FTMO {ftmo_clicks} | FundedNext {fundednext_clicks}",
+        f"- Revenue: {_format_money(revenue)} MRR",
+        f"- Main risk: {_brief_preview(risk, limit=96)}",
+        "",
+        "CEO Actions",
+        f"- Pending approvals: {len(pending)}",
+        f"- Loop approvals: {len(loop_pending)}",
+        f"- Approved awaiting execution: {len(execution_pending)}",
+        f"- Top action: {_brief_preview(top_action, limit=110)}",
+        "",
+        "Commands",
+        "- /approvals for decisions",
+        "- /status for full brief",
+        "- /loop status for initiatives",
+    ]
+    if runtime.degraded_ops_mode:
+        lines.insert(1, _degraded_ops_banner())
+    return "\n".join(lines)
+
+
 def _portfolio_facts_from_phase3(payload: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {
@@ -3688,7 +3817,7 @@ async def _handle_bot_command(text: str, user_id: int | None = None) -> str:
 
 def _command_action_type(text: str) -> str:
     lowered = text.lower().strip()
-    if lowered in {"/help", "/status", "/hermes_status"}:
+    if lowered in {"/help", "/status", "/dashboard", "/hermes_status"}:
         return "view_status"
     if lowered.startswith("/approvals"):
         return "view_approvals"
@@ -3740,6 +3869,8 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         return _format_help()
     if lowered == "/status":
         return await _handle_status_command()
+    if lowered == "/dashboard":
+        return await _handle_dashboard_command()
     if lowered == "/hermes_status":
         return await _handle_hermes_status_command()
     if lowered.startswith("/approvals"):
@@ -4313,6 +4444,63 @@ async def _send_owner_brief() -> None:
     LOGGER.info("Morning brief sent to chat_id=%s", runtime.owner_chat_id)
 
 
+def _load_dashboard_delivery_state() -> dict[str, Any]:
+    if not TELEGRAM_DASHBOARD_STATE_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(TELEGRAM_DASHBOARD_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_dashboard_delivery_state(payload: dict[str, Any]) -> None:
+    TELEGRAM_DASHBOARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TELEGRAM_DASHBOARD_STATE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+async def _send_owner_dashboard() -> None:
+    runtime = _runtime()
+    if runtime.owner_chat_id is None:
+        raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is required for --send-dashboard.")
+
+    text = await _handle_dashboard_command()
+    try:
+        import aiogram  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError("aiogram is not installed. Install it before using Telegram polling or push delivery.") from exc
+
+    bot = _build_telegram_bot(runtime.bot_token)
+    state = _load_dashboard_delivery_state()
+    message_id = state.get("message_id")
+    try:
+        if message_id is not None:
+            try:
+                await bot.edit_message_text(text, chat_id=runtime.owner_chat_id, message_id=int(message_id))
+                LOGGER.info("Dashboard message edited chat_id=%s message_id=%s", runtime.owner_chat_id, message_id)
+                return
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Existing dashboard message could not be edited; sending a fresh one.")
+
+        sent = await bot.send_message(runtime.owner_chat_id, text)
+        sent_id = getattr(sent, "message_id", None)
+        if sent_id is not None:
+            _save_dashboard_delivery_state(
+                {
+                    "chat_id": runtime.owner_chat_id,
+                    "message_id": sent_id,
+                    "updated_at_utc": _utc_now_iso(),
+                }
+            )
+            try:
+                await bot.pin_chat_message(runtime.owner_chat_id, sent_id, disable_notification=True)
+            except Exception:  # noqa: BLE001
+                LOGGER.info("Dashboard message sent but could not be pinned.")
+        LOGGER.info("Dashboard sent to chat_id=%s", runtime.owner_chat_id)
+    finally:
+        await bot.session.close()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Async aiogram Telegram bridge for AI Holding Company.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to projects.yaml.")
@@ -4320,6 +4508,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulate-user-id", type=int, default=None, help="Optional user id for simulation.")
     parser.add_argument("--simulate-chat-id", type=int, default=None, help="Optional chat id for simulation.")
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and send the morning brief.")
+    parser.add_argument("--send-dashboard", action="store_true", help="Send or update the owner Telegram dashboard.")
     return parser
 
 
@@ -4351,6 +4540,10 @@ async def main() -> None:
     if args.send_morning_brief:
         await _send_owner_brief()
         print(json.dumps({"ok": True, "mode": "send_morning_brief"}))
+        return
+    if args.send_dashboard:
+        await _send_owner_dashboard()
+        print(json.dumps({"ok": True, "mode": "send_dashboard"}))
         return
 
     try:
