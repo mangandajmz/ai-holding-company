@@ -65,6 +65,68 @@ def build_parser() -> argparse.ArgumentParser:
     )
     holding.add_argument("--force", action="store_true", help="Force a fresh base brief before running holding mode.")
 
+    boardroom = sub.add_parser("boardroom", help="Run a CEO boardroom meeting transcript.")
+    boardroom.add_argument(
+        "action",
+        choices=["start", "status", "ask", "close"],
+        help="Boardroom action.",
+    )
+    boardroom.add_argument("--topic", default="", help="Meeting topic for start.")
+    boardroom.add_argument("--division", default="md", help="Division to ask.")
+    boardroom.add_argument("--question", default="", help="Question for boardroom ask.")
+    boardroom.add_argument("--note", default="", help="Closing decision or follow-up note.")
+    boardroom.add_argument("--refresh", action="store_true", help="Open a fresh meeting even if one is active.")
+
+    loop = sub.add_parser("loop", help="Manage file-first company operating loops.")
+    loop_sub = loop.add_subparsers(dest="loop_action", required=True)
+
+    loop_new = loop_sub.add_parser("new", help="Create a company loop from a CEO goal.")
+    loop_new.add_argument("--goal", required=True, help="CEO goal for the loop.")
+    loop_new.add_argument("--type", default="operations", help="Loop type.")
+    loop_new.add_argument("--division", default="operations", help="Owning division.")
+    loop_new.add_argument("--owner", default="CEO", help="Loop owner.")
+
+    loop_status = loop_sub.add_parser("status", help="List open company loops.")
+    loop_status.add_argument("--include-closed", action="store_true", help="Include DONE/REJECTED loops.")
+
+    loop_show = loop_sub.add_parser("show", help="Show one company loop.")
+    loop_show.add_argument("--loop-id", required=True, help="Loop id.")
+
+    loop_evidence = loop_sub.add_parser("evidence", help="Attach evidence to a company loop.")
+    loop_evidence.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_evidence.add_argument("--path", required=True, help="Evidence path or artifact reference.")
+    loop_evidence.add_argument("--note", default="", help="Evidence note.")
+
+    loop_advance = loop_sub.add_parser("advance", help="Advance a loop to review or approval.")
+    loop_advance.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_advance.add_argument("--note", default="", help="Advance note.")
+    loop_advance.add_argument("--recommendation", default="", help="Recommendation text.")
+    loop_advance.add_argument("--risk-review", default="", help="Risk review text.")
+    loop_advance.add_argument("--commercial-review", default="", help="Commercial review text.")
+    loop_advance.add_argument("--measurement-plan", default="", help="Measurement plan.")
+
+    loop_approve = loop_sub.add_parser("approve", help="Approve a company loop action.")
+    loop_approve.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_approve.add_argument("--note", default="", help="Approval note.")
+    loop_approve.add_argument("--action", default="", help="Approved action.")
+
+    loop_reject = loop_sub.add_parser("reject", help="Reject a company loop.")
+    loop_reject.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_reject.add_argument("--note", default="", help="Rejection note.")
+
+    loop_start = loop_sub.add_parser("start", help="Mark approved loop action in progress.")
+    loop_start.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_start.add_argument("--note", default="", help="Start note.")
+
+    loop_measure = loop_sub.add_parser("measure", help="Record measurement result.")
+    loop_measure.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_measure.add_argument("--result", required=True, help="Measurement result.")
+    loop_measure.add_argument("--note", default="", help="Measurement note.")
+
+    loop_done = loop_sub.add_parser("done", help="Close a company loop.")
+    loop_done.add_argument("--loop-id", required=True, help="Loop id.")
+    loop_done.add_argument("--result", default="", help="Final result.")
+
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
     mem_add.add_argument("--source", default="owner_chat", help="Source label for metadata.")
@@ -177,6 +239,85 @@ def main() -> None:
 
         _emit(run_phase3_holding(config=config, mode=args.mode, force=args.force))
         return
+
+    if args.command == "boardroom":
+        from boardroom import ask_boardroom, boardroom_status, close_boardroom, start_boardroom
+
+        if args.action == "start":
+            _emit(start_boardroom(config=config, topic=args.topic, refresh=args.refresh))
+            return
+        if args.action == "status":
+            _emit(boardroom_status(config=config))
+            return
+        if args.action == "ask":
+            _emit(ask_boardroom(config=config, division=args.division, question=args.question))
+            return
+        if args.action == "close":
+            _emit(close_boardroom(config=config, note=args.note))
+            return
+
+    if args.command == "loop":
+        from company_loop import (
+            add_evidence,
+            advance_loop,
+            approve_loop,
+            done_loop,
+            list_loops,
+            measure_loop,
+            new_loop,
+            reject_loop,
+            show_loop,
+            start_action,
+        )
+
+        if args.loop_action == "new":
+            _emit(
+                new_loop(
+                    config=config,
+                    goal=args.goal,
+                    loop_type=args.type,
+                    division=args.division,
+                    owner=args.owner,
+                )
+            )
+            return
+        if args.loop_action == "status":
+            _emit(list_loops(config=config, include_closed=args.include_closed))
+            return
+        if args.loop_action == "show":
+            _emit(show_loop(config=config, loop_id=args.loop_id))
+            return
+        if args.loop_action == "evidence":
+            _emit(add_evidence(config=config, loop_id=args.loop_id, path=args.path, note=args.note))
+            return
+        if args.loop_action == "advance":
+            _emit(
+                advance_loop(
+                    config=config,
+                    loop_id=args.loop_id,
+                    note=args.note,
+                    recommendation=args.recommendation,
+                    risk_review=args.risk_review,
+                    commercial_review=args.commercial_review,
+                    measurement_plan=args.measurement_plan,
+                )
+            )
+            return
+        if args.loop_action == "approve":
+            _emit(approve_loop(config=config, loop_id=args.loop_id, note=args.note, action=args.action))
+            return
+        if args.loop_action == "reject":
+            _emit(reject_loop(config=config, loop_id=args.loop_id, note=args.note))
+            return
+        if args.loop_action == "start":
+            _emit(start_action(config=config, loop_id=args.loop_id, note=args.note))
+            return
+        if args.loop_action == "measure":
+            _emit(measure_loop(config=config, loop_id=args.loop_id, result=args.result, note=args.note))
+            return
+        if args.loop_action == "done":
+            _emit(done_loop(config=config, loop_id=args.loop_id, result=args.result))
+            return
 
     if args.command == "log_direction":
         _emit(_memory_add(config=config, text=args.text, source=args.source))

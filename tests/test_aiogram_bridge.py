@@ -70,6 +70,37 @@ def test_dev_pipeline_commands_have_restricted_action_types() -> None:
     assert aiogram_bridge._command_action_type("/approve_merge_1234") == "develop_merge"
     assert aiogram_bridge._command_action_type("/reject_merge_1234") == "develop_merge"
     assert aiogram_bridge._command_action_type("/approve_init_1234") == "develop_decision"
+    assert aiogram_bridge._command_action_type("/boardroom ask trading status") == "view_status"
+    assert aiogram_bridge._command_action_type("/loop new improve reporting") == "view_status"
+
+
+def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "loop": {
+                    "loop_id": "loop_0001",
+                    "goal": "Improve reporting",
+                    "status": "GOAL_CAPTURED",
+                    "approval_status": "NOT_REQUIRED_YET",
+                    "next_step": "Gather evidence.",
+                },
+                "report": "reports/company_loops/loop_0001.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_loop_command("/loop new Improve reporting"))
+
+    assert calls == [["loop", "new", "--goal", "Improve reporting"]]
+    assert "Loop `loop_0001` is GOAL_CAPTURED" in reply
+    assert "Gather evidence" in reply
 
 
 def test_simulate_text_requires_explicit_identity(tmp_path, monkeypatch) -> None:
@@ -157,7 +188,7 @@ def test_natural_status_query_uses_phase3_snapshot_without_live_router(monkeypat
     reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="where are we now?"))
     assert "CEO Business Brief (Quick)" in reply
     assert "Portfolio Health" in reply
-    assert "- Status: RED" in reply
+    assert "- Operational health: RED" in reply
     assert "Scope: promoted properties only (0 tracked: none)" in reply
     assert "- Headline: Promoted portfolio is off-plan; stabilization is required before expansion." in reply
     assert "Decision Required Now" in reply
@@ -331,6 +362,19 @@ def test_natural_approvals_query_returns_board_and_developer_items(monkeypatch, 
     monkeypatch.setattr(aiogram_bridge, "_save_conversation", _save)
     monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
     monkeypatch.setattr(
+        aiogram_bridge,
+        "_pending_company_loop_approvals",
+        lambda: [
+            {
+                "loop_id": "loop_0002",
+                "goal": "Get FreeTraderHub its first measurable affiliate conversion signal",
+                "owner": "CEO / Marketing / Websites / Commercial",
+                "approval_status": "PENDING_CEO_APPROVAL",
+                "status": "PENDING_CEO_APPROVAL",
+            }
+        ],
+    )
+    monkeypatch.setattr(
         developer_tool,
         "run_developer_tool",
         lambda config, task, approval_id, action: {
@@ -344,16 +388,42 @@ def test_natural_approvals_query_returns_board_and_developer_items(monkeypatch, 
         aiogram_bridge.process_text_message(
             user_id=1,
             chat_id=1,
-            text="I want a list of all items that need approval",
+            text="Approvals",
         )
     )
-    assert "Owner approvals snapshot" in reply
-    assert "Pending approval:" in reply
+    assert "Owner Approvals" in reply
+    assert "Needs decision: 3" in reply
+    assert "Board Decisions" in reply
     assert "board_01_mt5_cycle" in reply
     assert "Owner: Trading Lead" in reply
-    assert "Tap the Approve/Reject buttons below each item" in reply
-    assert "Developer approvals (1):" in reply
+    assert "Developer Approvals (1)" in reply
     assert "dev_123" in reply
+    assert "Company Loops (1)" in reply
+    assert "loop_0002" in reply
+    assert "/loop approve loop_0002" in reply
+
+
+def test_approvals_command_is_case_insensitive() -> None:
+    assert aiogram_bridge._command_action_type("/Approvals") == "view_approvals"
+
+
+def test_greeting_returns_fast_deterministic_reply(monkeypatch) -> None:
+    runtime = _DummyRuntime()
+    monkeypatch.setattr(aiogram_bridge, "RUNTIME", runtime)
+
+    async def _save(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def _never(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("greetings should not retrieve context")
+
+    monkeypatch.setattr(aiogram_bridge, "_save_conversation", _save)
+    monkeypatch.setattr(aiogram_bridge, "_retrieve_context", _never)
+
+    reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="Hi"))
+
+    assert "I am online" in reply
+    assert "Approvals" in reply
 
 
 def test_natural_approvals_query_uses_decision_fallback_when_missing(monkeypatch, tmp_path) -> None:
@@ -391,9 +461,9 @@ def test_natural_approvals_query_uses_decision_fallback_when_missing(monkeypatch
     monkeypatch.setattr(developer_tool, "run_developer_tool", lambda *args: {"pending": []})
 
     reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="/approvals"))
-    assert "Snapshot freshness:" in reply
+    assert "Data:" in reply
     assert "board_99_example" in reply
-    assert "Approval means prioritize monetization actions to improve forecast attainment." in reply
+    assert "Revenue/forecast visibility is weak" in reply
 
 
 def test_approve_without_id_lists_top_pending_ids(monkeypatch, tmp_path) -> None:
@@ -467,8 +537,66 @@ def test_management_take_query_is_snapshot_grounded(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
     reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="Md whats your take"))
     assert "Executive Take" in reply
+    assert "Operational health:" in reply
+    assert "Commercial health:" in reply
     assert "Primary pressure point: Property blocks on-plan ratio." in reply
     assert "Delivery owner now: Owner/CEO." in reply
+
+
+def test_chat_check_does_not_return_executive_take(monkeypatch) -> None:
+    runtime = _DummyRuntime()
+    monkeypatch.setattr(aiogram_bridge, "RUNTIME", runtime)
+
+    async def _save(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def _never(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("chat checks should not retrieve context")
+
+    monkeypatch.setattr(aiogram_bridge, "_save_conversation", _save)
+    monkeypatch.setattr(aiogram_bridge, "_retrieve_context", _never)
+
+    reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="can you chat?"))
+
+    assert "Yes. I can chat" in reply
+    assert "Executive Take" not in reply
+
+
+def test_approved_work_query_returns_execution_status(monkeypatch, tmp_path) -> None:
+    runtime = _DummyRuntime()
+    monkeypatch.setattr(aiogram_bridge, "RUNTIME", runtime)
+    monkeypatch.setattr(aiogram_bridge, "BOARD_APPROVAL_STATE_FILE", tmp_path / "board_approval_decisions.json")
+    aiogram_bridge._persist_board_approval_state(
+        {
+            "decisions": {},
+            "board_snapshot": {},
+            "selection_by_user": {},
+            "execution_by_approval": {
+                "board_one": {
+                    "status": "APPROVED",
+                    "topic": "Company KPI: Property forecast attainment",
+                    "owner": "holding",
+                    "decision": "Increase monetization focus.",
+                    "due_at_utc": "2026-05-06T00:00:00+00:00",
+                }
+            },
+        }
+    )
+
+    async def _save(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(aiogram_bridge, "_save_conversation", _save)
+    monkeypatch.setattr(aiogram_bridge, "_pending_company_loop_approvals", lambda: [])
+
+    reply, _ = asyncio.run(
+        aiogram_bridge.process_text_message(user_id=1, chat_id=1, text="I approved an initiative where is it at?")
+    )
+
+    assert "Approved Work Status" in reply
+    assert "Awaiting execution: 1" in reply
+    assert "board_one" in reply
+    assert "/assign board_one" in reply
 
 
 def test_status_report_resolves_owner_labels(monkeypatch) -> None:
@@ -546,17 +674,17 @@ def test_board_approve_and_deny_commands_update_state(monkeypatch, tmp_path) -> 
     approve_reply, _ = asyncio.run(
         aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approve board_prop_blocks")
     )
-    assert "marked APPROVED" in approve_reply
+    assert "Board approval approved" in approve_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Pending approval: none." in approvals_reply
-    assert "Board decisions logged:" in approvals_reply
+    assert "None pending." in approvals_reply
+    assert "Recently Decided" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 
     deny_reply, _ = asyncio.run(
         aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/deny board_prop_blocks")
     )
-    assert "marked DENIED" in deny_reply
+    assert "Board approval denied" in deny_reply
 
 
 def test_approve_all_command_marks_pending_items(monkeypatch, tmp_path) -> None:
@@ -603,13 +731,13 @@ def test_approve_all_command_marks_pending_items(monkeypatch, tmp_path) -> None:
     approve_all_reply, _ = asyncio.run(
         aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approve_all")
     )
-    assert "Batch APPROVED:" in approve_all_reply
-    assert "requested 2" in approve_all_reply
-    assert "updated 2" in approve_all_reply
+    assert "Batch approved recorded" in approve_all_reply
+    assert "Requested: 2" in approve_all_reply
+    assert "Updated: 2" in approve_all_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
-    assert "Pending approval: none." in approvals_reply
-    assert "Board decisions logged:" in approvals_reply
+    assert "None pending." in approvals_reply
+    assert "Recently Decided" in approvals_reply
     assert "[APPROVED]" in approvals_reply
 
 
@@ -666,13 +794,14 @@ def test_approve_selected_command_uses_user_selection(monkeypatch, tmp_path) -> 
     approve_selected_reply, _ = asyncio.run(
         aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approve_selected")
     )
-    assert "Batch APPROVED:" in approve_selected_reply
-    assert "requested 1" in approve_selected_reply
+    assert "Batch approved recorded" in approve_selected_reply
+    assert "Requested: 1" in approve_selected_reply
 
     approvals_reply, _ = asyncio.run(aiogram_bridge.process_text_message(user_id=11, chat_id=1, text="/approvals"))
     assert "board_prop_blocks" in approvals_reply
     assert "board_alert_count" in approvals_reply
-    assert "[APPROVED] Company KPI: Alert count per heartbeat" in approvals_reply
+    assert "[APPROVED]" in approvals_reply
+    assert "Company KPI: Alert count per heartbeat" in approvals_reply
 
 
 def test_natural_mt5_restart_research_query_runs_checks_without_fake_restart(monkeypatch) -> None:
