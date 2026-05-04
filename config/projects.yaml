@@ -192,13 +192,53 @@ property_charters:
       r12_formula_version: website_v1
   mt5_forex_bot:
     charter:
-      version: v0-stub
-      wedge: "Forex momentum strategy on majors, monitored by AI Holding Co"
-      property_type: trading_bot
-      phase: maintain
-      value_readiness_date: 2026-01-01
+      version: v1
+      wedge: "Private MT5 trading lab for backtesting, demo/paper decision tracking, and process evidence that feeds low-risk FreeTraderHub tools. Hard rule: productize the process, not the trades."
+      property_type: private_trading_lab
+      phase: evidence_build
+      value_readiness_date: 2026-06-03
       internal_rate_usd_hr: 75
-      r12_formula_version: trading_bot_v1
+      r12_formula_version: trading_lab_v1
+      repo_path_current: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/mt5-agentic-desk"
+      repo_path_target: "C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company/projects/mt5-agentic-desk"
+      business_plan_file: "docs/business-and-execution-plan-2026-05-04.md"
+      evidence_checklist_file: "docs/evidence-build-checklist-2026-05-04.md"
+    tracking:
+      trading_bot_id: mt5_desk
+      public_property_id: freetraderhub
+    promotion:
+      promoted: false
+      business_case_defined: true
+      target_product_defined: true
+      feasibility_validated: false
+      roi_case_defined: false
+      monetization_boundary_defined: true
+      hard_rule: "Productize the process, not the trades."
+      public_monetization_allowed:
+        - process_tools
+        - rule_calculators
+        - journaling_templates
+        - education
+        - disclosed_affiliate_referrals
+      public_monetization_forbidden:
+        - paid_signals
+        - copy_trading
+        - managed_accounts
+        - ai_profit_claims
+      autonomy_gate:
+        min_demo_paper_decisions: 100
+        include_no_trade_decisions: true
+        min_runtime_log_days_without_unresolved_safety_failures: 30
+        requires_out_of_sample_evidence: true
+        requires_walk_forward_evidence: true
+      metrics_defined:
+        - demo_paper_decisions_logged
+        - no_trade_decisions_logged
+        - strategy_cohorts_tracked
+        - unresolved_safety_failures
+        - tool_ideas_generated
+        - public_features_shipped_from_private_pain
+      notes: "MT5 Agentic Desk is a private evidence engine. FreeTraderHub may monetize safer process outputs only. The repo should move under projects/ after the active workspace is no longer rooted inside the folder."
   polymarket_bot:
     charter:
       version: v0-stub
