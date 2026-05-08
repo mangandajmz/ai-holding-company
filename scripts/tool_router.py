@@ -134,12 +134,30 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--db", default=None, help="Optional work ledger DB path.")
     work_sub = work.add_subparsers(dest="work_action", required=True)
     work_sub.add_parser("status", help="Show work ledger status.")
+    work_show = work_sub.add_parser("show", help="Show one work item.")
+    work_show.add_argument("--work-id", required=True, help="Work item id.")
     work_scan = work_sub.add_parser("scan_reviews", help="Scan review markdown into the work ledger.")
     work_scan.add_argument(
         "--root",
         default=str(ROOT / "finance_web_page"),
         help="Root directory to scan for READY FOR MA REVIEW markdown.",
     )
+    work_approve = work_sub.add_parser("approve", help="Approve work with execution fields.")
+    work_approve.add_argument("--work-id", required=True, help="Work item id.")
+    work_approve.add_argument("--owner", required=True, help="Owner accountable for execution.")
+    work_approve.add_argument("--due-at", required=True, help="Expected completion time.")
+    work_approve.add_argument("--completion-signal", required=True, help="Evidence needed to close the work.")
+    work_approve.add_argument("--next-step", default="", help="Optional next execution step.")
+    work_start = work_sub.add_parser("start", help="Mark approved work in progress.")
+    work_start.add_argument("--work-id", required=True, help="Work item id.")
+    work_start.add_argument("--note", default="", help="Optional start note.")
+    work_block = work_sub.add_parser("block", help="Mark work blocked.")
+    work_block.add_argument("--work-id", required=True, help="Work item id.")
+    work_block.add_argument("--reason", required=True, help="Reason the work is blocked.")
+    work_done = work_sub.add_parser("done", help="Close work with result and evidence.")
+    work_done.add_argument("--work-id", required=True, help="Work item id.")
+    work_done.add_argument("--result", required=True, help="Final result.")
+    work_done.add_argument("--evidence", required=True, help="Evidence proving the result.")
 
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
@@ -336,21 +354,63 @@ def main() -> None:
     if args.command == "work":
         from kernel.db import connect  # pylint: disable=import-outside-toplevel
         from kernel.views import render_status_text, work_status  # pylint: disable=import-outside-toplevel
-        from kernel.work_items import scan_ready_for_review_markdown  # pylint: disable=import-outside-toplevel
+        from kernel.work_items import (  # pylint: disable=import-outside-toplevel
+            approve_work_item,
+            block_work_item,
+            done_work_item,
+            get_work_item,
+            scan_ready_for_review_markdown,
+            start_work_item,
+        )
 
         conn = connect(args.db)
         try:
-            if args.work_action == "status":
+            try:
+                if args.work_action == "status":
+                    status = work_status(conn)
+                    status["text"] = render_status_text(status)
+                    _emit(status)
+                    return
+                if args.work_action == "show":
+                    item = get_work_item(conn, args.work_id)
+                    _emit({"ok": item is not None, "item": item, "error": None if item else "work item not found"})
+                    return
+                if args.work_action == "scan_reviews":
+                    result = scan_ready_for_review_markdown(conn, root=args.root)
+                    status = work_status(conn)
+                    result["status"] = status
+                    result["text"] = render_status_text(status)
+                    _emit(result)
+                    return
+                if args.work_action == "approve":
+                    item = approve_work_item(
+                        conn,
+                        args.work_id,
+                        owner=args.owner,
+                        due_at=args.due_at,
+                        completion_signal=args.completion_signal,
+                        next_step=args.next_step.strip() or None,
+                    )
+                    _emit({"ok": True, "item": item})
+                    return
+                if args.work_action == "start":
+                    _emit({"ok": True, "item": start_work_item(conn, args.work_id, note=args.note)})
+                    return
+                if args.work_action == "block":
+                    _emit({"ok": True, "item": block_work_item(conn, args.work_id, args.reason)})
+                    return
+                if args.work_action == "done":
+                    item = done_work_item(
+                        conn,
+                        args.work_id,
+                        result=args.result,
+                        evidence=args.evidence,
+                    )
+                    _emit({"ok": True, "item": item})
+                    return
+            except ValueError as exc:
                 status = work_status(conn)
-                status["text"] = render_status_text(status)
-                _emit(status)
-                return
-            if args.work_action == "scan_reviews":
-                result = scan_ready_for_review_markdown(conn, root=args.root)
-                status = work_status(conn)
-                result["status"] = status
-                result["text"] = render_status_text(status)
-                _emit(result)
+                _emit({"ok": False, "error": str(exc), "status": status, "text": render_status_text(status)})
                 return
         finally:
             conn.close()

@@ -1375,7 +1375,7 @@ def _format_help() -> str:
         "- /loop new <goal>\n"
         "- /loop status\n"
         "- /loop show <loop_id>\n"
-        "- /work [status|scan_reviews]\n"
+        "- /work [status|scan_reviews|show|approve|start|block|done]\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1707,13 +1707,54 @@ async def _handle_loop_command(text: str) -> str:
 
 async def _handle_work_command(text: str) -> str:
     payload = re.sub(r"^/work\s*", "", text, count=1, flags=re.I).strip()
-    action = payload.lower() or "status"
+    parts = payload.split(maxsplit=1)
+    action = parts[0].lower() if parts else "status"
+    rest = parts[1] if len(parts) > 1 else ""
     if action in {"status"}:
         args = ["work", "status"]
     elif action in {"scan", "scan_reviews", "refresh"}:
         args = ["work", "scan_reviews"]
+    elif action == "show":
+        if not rest.strip():
+            return "Use `/work show <work_id>`."
+        args = ["work", "show", "--work-id", rest.strip()]
+    elif action == "approve":
+        fields = [field.strip() for field in rest.split("|")]
+        if len(fields) < 4 or not all(fields[:4]):
+            return "Use `/work approve <work_id> | <owner> | <due_at> | <completion_signal>`."
+        args = [
+            "work",
+            "approve",
+            "--work-id",
+            fields[0],
+            "--owner",
+            fields[1],
+            "--due-at",
+            fields[2],
+            "--completion-signal",
+            fields[3],
+        ]
+        if len(fields) > 4 and fields[4]:
+            args.extend(["--next-step", fields[4]])
+    elif action == "start":
+        fields = rest.split(maxsplit=1)
+        if not fields or not fields[0].strip():
+            return "Use `/work start <work_id> [note]`."
+        args = ["work", "start", "--work-id", fields[0]]
+        if len(fields) > 1:
+            args.extend(["--note", fields[1]])
+    elif action == "block":
+        fields = rest.split(maxsplit=1)
+        if len(fields) < 2 or not fields[0].strip() or not fields[1].strip():
+            return "Use `/work block <work_id> <reason>`."
+        args = ["work", "block", "--work-id", fields[0], "--reason", fields[1]]
+    elif action == "done":
+        fields = [field.strip() for field in rest.split("|")]
+        if len(fields) < 3 or not all(fields[:3]):
+            return "Use `/work done <work_id> | <result> | <evidence>`."
+        args = ["work", "done", "--work-id", fields[0], "--result", fields[1], "--evidence", fields[2]]
     else:
-        return "Use `/work` or `/work scan_reviews`."
+        return "Use `/work status|scan_reviews|show|approve|start|block|done`."
 
     result = await _run_tool_router(args, timeout_sec=180)
     payload_obj = result.get("payload")
@@ -1727,6 +1768,25 @@ async def _handle_work_command(text: str) -> str:
         created = int(payload_obj.get("created", 0) or 0)
         existing = int(payload_obj.get("existing", 0) or 0)
         return f"Review scan complete: created {created}, existing {existing}.\n\n{text_payload}".strip()
+    item = payload_obj.get("item")
+    if isinstance(item, dict):
+        verb = {
+            "show": "Work item",
+            "approve": "Approved",
+            "start": "Started",
+            "block": "Blocked",
+            "done": "Closed",
+        }.get(action, "Work item")
+        evidence = item.get("evidence", [])
+        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+        return (
+            f"{verb}: `{item.get('id')}` [{item.get('status')}]\n"
+            f"Title: {item.get('title')}\n"
+            f"Owner: {item.get('owner')} | Due: {item.get('due_at') or 'n/a'}\n"
+            f"Completion signal: {item.get('completion_signal') or 'n/a'}\n"
+            f"Next: {item.get('next_step')}\n"
+            f"Evidence: {evidence_count}"
+        )
     return text_payload
 
 
