@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .db import utc_now
+from .db import ROOT, utc_now
 
 
 STATUSES = {
@@ -325,6 +325,15 @@ def scan_ready_for_review_markdown(
         if not re.search(r"READY FOR MA REVIEW|READY FOR REVIEW", text, flags=re.I):
             continue
         rel = path.relative_to(root_path).as_posix()
+        metadata = {
+            "executor": "review_markdown_artifact",
+            "path": rel,
+            "scan_root": str(root_path),
+        }
+        try:
+            metadata["repo_path"] = path.relative_to(ROOT).as_posix()
+        except ValueError:
+            pass
         item, was_created = create_work_item(
             conn,
             title=f"Review required: {path.stem}",
@@ -336,7 +345,7 @@ def scan_ready_for_review_markdown(
             approval_status="PENDING",
             next_step="Review the artifact and approve, reject, or request changes.",
             idempotency_key=f"review:{rel}",
-            metadata={"path": rel},
+            metadata=metadata,
         )
         _ = item
         if was_created:

@@ -166,6 +166,7 @@ def test_markdown_review_scanner_creates_idempotent_work_items(tmp_path: Path) -
         assert second == {"ok": True, "created": 0, "existing": 1}
         assert status["counts"]["pending_approval"] == 1
         assert status["decide"][0]["source"] == "markdown:finance_web_page/STAGE_L_L2.9_CLOSURE.md"
+        assert status["decide"][0]["metadata"]["executor"] == "review_markdown_artifact"
     finally:
         conn.close()
 
@@ -267,5 +268,82 @@ def test_run_next_executes_ledger_status_snapshot(tmp_path: Path) -> None:
         assert result["item"]["status"] == "DONE"
         assert result["item"]["result"] == "Ledger status snapshot generated."
         assert "Work Ledger" in result["item"]["evidence"][0]["summary"]
+    finally:
+        conn.close()
+
+
+def test_run_next_executes_scanned_review_markdown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        closure = tmp_path / "finance_web_page" / "STAGE_L_L2.9_CLOSURE.md"
+        closure.parent.mkdir()
+        closure.write_text(
+            "\n".join(
+                [
+                    "# Stage L L2.9 Closure",
+                    "",
+                    "**Status:** READY FOR MA REVIEW - 2026-05-08",
+                    "",
+                    "- [x] Tests passed",
+                    "- [ ] CEO sign-off recorded",
+                    "",
+                    "Risk review: no production credentials touched.",
+                    "Evidence: reports/stage-l.md",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        scan_ready_for_review_markdown(conn, root=tmp_path)
+        pending = work_status(conn)["decide"][0]
+        approve_work_item(
+            conn,
+            pending["id"],
+            owner="MA",
+            due_at="2026-05-08T18:00:00+00:00",
+            completion_signal="Review summary evidence exists.",
+        )
+
+        result = run_next_work_item(conn)
+
+        assert result["ran"] is True
+        assert result["outcome"] == "done"
+        assert result["executor"] == "review_markdown_artifact"
+        assert result["item"]["status"] == "DONE"
+        evidence = result["item"]["evidence"][0]["summary"]
+        assert "Review artifact summarized: STAGE_L_L2.9_CLOSURE.md" in evidence
+        assert "Heading: Stage L L2.9 Closure" in evidence
+        assert "Checklist: 1 checked, 1 open" in evidence
+        assert "Risk review: no production credentials touched." in evidence
+    finally:
+        conn.close()
+
+
+def test_run_next_blocks_scanned_review_when_file_is_missing(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        item, _ = create_work_item(
+            conn,
+            title="Missing review artifact",
+            work_type="review",
+            source="markdown:missing.md",
+            metadata={
+                "executor": "review_markdown_artifact",
+                "path": "missing.md",
+                "scan_root": str(tmp_path),
+            },
+        )
+        approve_work_item(
+            conn,
+            item["id"],
+            owner="MA",
+            due_at="2026-05-08T18:00:00+00:00",
+            completion_signal="Review summary evidence exists.",
+        )
+
+        result = run_next_work_item(conn)
+
+        assert result["outcome"] == "blocked"
+        assert "path is missing" in result["reason"]
+        assert result["item"]["status"] == "BLOCKED"
     finally:
         conn.close()
