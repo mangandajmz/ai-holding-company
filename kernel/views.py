@@ -82,3 +82,49 @@ def render_status_text(status: dict[str, Any]) -> str:
             )
             lines.append(f"  Next: {item.get('next_step')}")
     return "\n".join(lines)
+
+
+def work_reminders(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[str, Any]:
+    status = work_status(conn, now=now)
+    action_required: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for bucket, reason in [
+        ("overdue", "Overdue"),
+        ("decide", "Needs approval"),
+        ("blocked", "Blocked"),
+        ("measure", "Needs measurement"),
+    ]:
+        for item in status.get(bucket, []):
+            if not isinstance(item, dict):
+                continue
+            work_id = str(item.get("id", ""))
+            if work_id in seen:
+                continue
+            seen.add(work_id)
+            reminder = dict(item)
+            reminder["reminder_reason"] = reason
+            action_required.append(reminder)
+    return {
+        "ok": True,
+        "needs_attention": bool(action_required),
+        "count": len(action_required),
+        "items": action_required,
+        "status": status,
+    }
+
+
+def render_reminder_text(reminders: dict[str, Any]) -> str:
+    items = reminders.get("items", [])
+    items = items if isinstance(items, list) else []
+    if not items:
+        return "Work reminders: no owner action required."
+    lines = [f"Work reminders: {len(items)} item(s) need owner attention."]
+    for item in items[:8]:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"- {item.get('id')} [{item.get('reminder_reason')}] {item.get('title')} "
+            f"| owner={item.get('owner')} | due={item.get('due_at') or 'n/a'}"
+        )
+        lines.append(f"  Next: {item.get('next_step')}")
+    return "\n".join(lines)

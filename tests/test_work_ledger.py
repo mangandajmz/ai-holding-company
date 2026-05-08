@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from kernel.db import connect
-from kernel.views import render_status_text, work_status
+from kernel.views import render_reminder_text, render_status_text, work_reminders, work_status
 from kernel.work_items import (
     approve_work_item,
     create_work_item,
@@ -165,5 +165,38 @@ def test_markdown_review_scanner_creates_idempotent_work_items(tmp_path: Path) -
         assert second == {"ok": True, "created": 0, "existing": 1}
         assert status["counts"]["pending_approval"] == 1
         assert status["decide"][0]["source"] == "markdown:finance_web_page/STAGE_L_L2.9_CLOSURE.md"
+    finally:
+        conn.close()
+
+
+def test_work_reminders_include_owner_action_items_once(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        review, _ = create_work_item(
+            conn,
+            title="Review Stage L closure",
+            work_type="review",
+            source="markdown:stage.md",
+            status="READY_FOR_REVIEW",
+            owner="CEO",
+            needs_approval=True,
+        )
+        overdue, _ = create_work_item(conn, title="Overdue owner task", work_type="task", source="manual")
+        approve_work_item(
+            conn,
+            overdue["id"],
+            owner="CEO",
+            due_at="2026-05-01T12:00:00+00:00",
+            completion_signal="Decision recorded.",
+        )
+
+        reminders = work_reminders(conn, now=datetime(2026, 5, 8, tzinfo=timezone.utc))
+        text = render_reminder_text(reminders)
+
+        assert reminders["needs_attention"] is True
+        assert reminders["count"] == 2
+        assert {item["id"] for item in reminders["items"]} == {review["id"], overdue["id"]}
+        assert "Needs approval" in text
+        assert "Overdue" in text
     finally:
         conn.close()

@@ -134,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     work.add_argument("--db", default=None, help="Optional work ledger DB path.")
     work_sub = work.add_subparsers(dest="work_action", required=True)
     work_sub.add_parser("status", help="Show work ledger status.")
+    work_sub.add_parser("reminders", help="Show owner action reminders.")
     work_show = work_sub.add_parser("show", help="Show one work item.")
     work_show.add_argument("--work-id", required=True, help="Work item id.")
     work_scan = work_sub.add_parser("scan_reviews", help="Scan review markdown into the work ledger.")
@@ -353,7 +354,12 @@ def main() -> None:
 
     if args.command == "work":
         from kernel.db import connect  # pylint: disable=import-outside-toplevel
-        from kernel.views import render_status_text, work_status  # pylint: disable=import-outside-toplevel
+        from kernel.views import (  # pylint: disable=import-outside-toplevel
+            render_reminder_text,
+            render_status_text,
+            work_reminders,
+            work_status,
+        )
         from kernel.work_items import (  # pylint: disable=import-outside-toplevel
             approve_work_item,
             block_work_item,
@@ -370,6 +376,11 @@ def main() -> None:
                     status = work_status(conn)
                     status["text"] = render_status_text(status)
                     _emit(status)
+                    return
+                if args.work_action == "reminders":
+                    reminders = work_reminders(conn)
+                    reminders["text"] = render_reminder_text(reminders)
+                    _emit(reminders)
                     return
                 if args.work_action == "show":
                     item = get_work_item(conn, args.work_id)

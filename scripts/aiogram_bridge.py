@@ -1375,7 +1375,7 @@ def _format_help() -> str:
         "- /loop new <goal>\n"
         "- /loop status\n"
         "- /loop show <loop_id>\n"
-        "- /work [status|scan_reviews|show|approve|start|block|done]\n"
+        "- /work [status|reminders|scan_reviews|show|approve|start|block|done]\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1712,6 +1712,8 @@ async def _handle_work_command(text: str) -> str:
     rest = parts[1] if len(parts) > 1 else ""
     if action in {"status"}:
         args = ["work", "status"]
+    elif action in {"reminder", "reminders"}:
+        args = ["work", "reminders"]
     elif action in {"scan", "scan_reviews", "refresh"}:
         args = ["work", "scan_reviews"]
     elif action == "show":
@@ -1754,7 +1756,7 @@ async def _handle_work_command(text: str) -> str:
             return "Use `/work done <work_id> | <result> | <evidence>`."
         args = ["work", "done", "--work-id", fields[0], "--result", fields[1], "--evidence", fields[2]]
     else:
-        return "Use `/work status|scan_reviews|show|approve|start|block|done`."
+        return "Use `/work status|reminders|scan_reviews|show|approve|start|block|done`."
 
     result = await _run_tool_router(args, timeout_sec=180)
     payload_obj = result.get("payload")
@@ -4591,6 +4593,36 @@ async def _send_owner_dashboard() -> None:
         await bot.session.close()
 
 
+async def _send_owner_work_reminders() -> bool:
+    runtime = _runtime()
+    if runtime.owner_chat_id is None:
+        raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is required for --send-work-reminders.")
+
+    result = await _run_tool_router(["work", "reminders"], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        raise RuntimeError(f"Work reminder generation failed: {result.get('stderr') or 'unknown error'}")
+    if not payload.get("ok"):
+        raise RuntimeError(f"Work reminder generation failed: {payload.get('error') or 'unknown error'}")
+    if not payload.get("needs_attention"):
+        LOGGER.info("No owner work reminders to send.")
+        return False
+
+    text = str(payload.get("text") or "Work reminders need attention.").strip()
+    try:
+        import aiogram  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError("aiogram is not installed. Install it before using Telegram push delivery.") from exc
+
+    bot = _build_telegram_bot(runtime.bot_token)
+    try:
+        await bot.send_message(runtime.owner_chat_id, text)
+    finally:
+        await bot.session.close()
+    LOGGER.info("Work reminders sent to chat_id=%s", runtime.owner_chat_id)
+    return True
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Async aiogram Telegram bridge for AI Holding Company.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to projects.yaml.")
@@ -4599,6 +4631,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulate-chat-id", type=int, default=None, help="Optional chat id for simulation.")
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and send the morning brief.")
     parser.add_argument("--send-dashboard", action="store_true", help="Send or update the owner Telegram dashboard.")
+    parser.add_argument("--send-work-reminders", action="store_true", help="Send owner reminders for work needing attention.")
     return parser
 
 
@@ -4634,6 +4667,10 @@ async def main() -> None:
     if args.send_dashboard:
         await _send_owner_dashboard()
         print(json.dumps({"ok": True, "mode": "send_dashboard"}))
+        return
+    if args.send_work_reminders:
+        sent = await _send_owner_work_reminders()
+        print(json.dumps({"ok": True, "mode": "send_work_reminders", "sent": sent}))
         return
 
     try:

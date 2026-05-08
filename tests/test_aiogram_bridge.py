@@ -129,6 +129,29 @@ def test_work_command_routes_to_tool_router(monkeypatch) -> None:
     assert "Decide: 1" in reply
 
 
+def test_work_reminders_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "needs_attention": True,
+                "count": 1,
+                "text": "Work reminders: 1 item(s) need owner attention.",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work reminders"))
+
+    assert calls == [["work", "reminders"]]
+    assert "need owner attention" in reply
+
+
 def test_work_scan_reviews_routes_to_tool_router(monkeypatch) -> None:
     calls: list[list[str]] = []
 
