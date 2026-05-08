@@ -162,6 +162,8 @@ def _markdown_for_loop(loop: dict[str, Any]) -> str:
     evidence = evidence if isinstance(evidence, list) else []
     history = loop.get("history", [])
     history = history if isinstance(history, list) else []
+    execution_plan = loop.get("execution_plan", [])
+    execution_plan = execution_plan if isinstance(execution_plan, list) else []
     lines = [
         f"# Company Loop {loop.get('loop_id')}",
         "",
@@ -187,6 +189,22 @@ def _markdown_for_loop(loop: dict[str, Any]) -> str:
             lines.append(f"- {path or 'evidence'}{suffix}")
     else:
         lines.append("- None yet.")
+    lines.extend(["", "## Execution Plan"])
+    if execution_plan:
+        for item in execution_plan:
+            if not isinstance(item, dict):
+                continue
+            task = str(item.get("task", "")).strip() or "Untitled task"
+            owner = str(item.get("owner", "")).strip() or "Unassigned"
+            due = str(item.get("due_at_utc", "")).strip() or "No due date"
+            status = str(item.get("status", "")).strip() or "TODO"
+            completion = str(item.get("completion_signal", "")).strip() or "Completion evidence not defined."
+            lines.append(f"- [{status}] {task}")
+            lines.append(f"  Owner: {owner}")
+            lines.append(f"  Due UTC: {due}")
+            lines.append(f"  Completion signal: {completion}")
+    else:
+        lines.append("- None defined.")
     lines.extend(
         [
             "",
@@ -283,6 +301,7 @@ def new_loop(
         "measurement_plan": "",
         "result": "",
         "next_step": "Gather evidence and prepare division review.",
+        "execution_plan": [],
         "history": [{"timestamp_utc": now, "event": "GOAL_CAPTURED", "note": "Loop created."}],
     }
     if _needs_approval(loop):
