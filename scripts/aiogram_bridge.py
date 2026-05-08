@@ -1375,6 +1375,7 @@ def _format_help() -> str:
         "- /loop new <goal>\n"
         "- /loop status\n"
         "- /loop show <loop_id>\n"
+        "- /work [status|scan_reviews]\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1702,6 +1703,31 @@ async def _handle_loop_command(text: str) -> str:
     if not payload_obj.get("ok"):
         return f"Loop command failed: {payload_obj.get('error') or 'unknown error'}"
     return _format_loop_payload(payload_obj)
+
+
+async def _handle_work_command(text: str) -> str:
+    payload = re.sub(r"^/work\s*", "", text, count=1, flags=re.I).strip()
+    action = payload.lower() or "status"
+    if action in {"status"}:
+        args = ["work", "status"]
+    elif action in {"scan", "scan_reviews", "refresh"}:
+        args = ["work", "scan_reviews"]
+    else:
+        return "Use `/work` or `/work scan_reviews`."
+
+    result = await _run_tool_router(args, timeout_sec=180)
+    payload_obj = result.get("payload")
+    if not result.get("ok") or not isinstance(payload_obj, dict):
+        return f"Work command failed: {result.get('stderr') or 'unknown error'}"
+    if not payload_obj.get("ok"):
+        return f"Work command failed: {payload_obj.get('error') or 'unknown error'}"
+
+    text_payload = str(payload_obj.get("text") or payload_obj).strip()
+    if args[-1] == "scan_reviews":
+        created = int(payload_obj.get("created", 0) or 0)
+        existing = int(payload_obj.get("existing", 0) or 0)
+        return f"Review scan complete: created {created}, existing {existing}.\n\n{text_payload}".strip()
+    return text_payload
 
 
 def _normalize_approval_id(raw_value: str) -> str:
@@ -3829,7 +3855,9 @@ def _command_action_type(text: str) -> str:
         return "board_approval_decision"
     if lowered.startswith("/assign") or lowered.startswith("/start") or lowered.startswith("/done"):
         return "approval_execution_update"
-    if lowered in {"/brief", "/board", "/board review", "/commercial"} or lowered.startswith(("/boardroom", "/loop")):
+    if lowered in {"/brief", "/board", "/board review", "/commercial"} or lowered.startswith(
+        ("/boardroom", "/loop", "/work")
+    ):
         return "view_status"
     if lowered == "/content_status":
         return "view_status"
@@ -3919,6 +3947,8 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         return await _handle_boardroom_command(text)
     if text.startswith("/loop"):
         return await _handle_loop_command(text)
+    if text.startswith("/work"):
+        return await _handle_work_command(text)
     if lowered == "/commercial":
         division_data = _build_division_data(text, ["commercial"])
         facts = division_data.get("context_lines", [])

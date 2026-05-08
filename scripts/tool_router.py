@@ -1,15 +1,18 @@
-"""Command router used by OpenClaw heartbeat and chat directives."""
+"""Command router used by the Telegram bridge and chat directives."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from monitoring import check_website, daily_brief, load_config, read_bot_logs, run_trading_script
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _emit(payload: dict) -> None:
@@ -126,6 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
     loop_done = loop_sub.add_parser("done", help="Close a company loop.")
     loop_done.add_argument("--loop-id", required=True, help="Loop id.")
     loop_done.add_argument("--result", default="", help="Final result.")
+
+    work = sub.add_parser("work", help="Show the minimal work ledger.")
+    work.add_argument("--db", default=None, help="Optional work ledger DB path.")
+    work_sub = work.add_subparsers(dest="work_action", required=True)
+    work_sub.add_parser("status", help="Show work ledger status.")
+    work_scan = work_sub.add_parser("scan_reviews", help="Scan review markdown into the work ledger.")
+    work_scan.add_argument(
+        "--root",
+        default=str(ROOT / "finance_web_page"),
+        help="Root directory to scan for READY FOR MA REVIEW markdown.",
+    )
 
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
@@ -318,6 +332,28 @@ def main() -> None:
         if args.loop_action == "done":
             _emit(done_loop(config=config, loop_id=args.loop_id, result=args.result))
             return
+
+    if args.command == "work":
+        from kernel.db import connect  # pylint: disable=import-outside-toplevel
+        from kernel.views import render_status_text, work_status  # pylint: disable=import-outside-toplevel
+        from kernel.work_items import scan_ready_for_review_markdown  # pylint: disable=import-outside-toplevel
+
+        conn = connect(args.db)
+        try:
+            if args.work_action == "status":
+                status = work_status(conn)
+                status["text"] = render_status_text(status)
+                _emit(status)
+                return
+            if args.work_action == "scan_reviews":
+                result = scan_ready_for_review_markdown(conn, root=args.root)
+                status = work_status(conn)
+                result["status"] = status
+                result["text"] = render_status_text(status)
+                _emit(result)
+                return
+        finally:
+            conn.close()
 
     if args.command == "log_direction":
         _emit(_memory_add(config=config, text=args.text, source=args.source))

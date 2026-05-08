@@ -73,6 +73,8 @@ def test_dev_pipeline_commands_have_restricted_action_types() -> None:
     assert aiogram_bridge._command_action_type("/approve_init_1234") == "develop_decision"
     assert aiogram_bridge._command_action_type("/boardroom ask trading status") == "view_status"
     assert aiogram_bridge._command_action_type("/loop new improve reporting") == "view_status"
+    assert aiogram_bridge._command_action_type("/work") == "view_status"
+    assert aiogram_bridge._command_action_type("/work scan_reviews") == "view_status"
 
 
 def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
@@ -102,6 +104,53 @@ def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
     assert calls == [["loop", "new", "--goal", "Improve reporting"]]
     assert "Loop `loop_0001` is GOAL_CAPTURED" in reply
     assert "Gather evidence" in reply
+
+
+def test_work_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "counts": {"open": 1, "pending_approval": 1, "approved": 0, "in_progress": 0},
+                "text": "Work Ledger\n- Open: 1 | Decide: 1 | Execute: 0",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work"))
+
+    assert calls == [["work", "status"]]
+    assert "Work Ledger" in reply
+    assert "Decide: 1" in reply
+
+
+def test_work_scan_reviews_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "created": 2,
+                "existing": 1,
+                "text": "Work Ledger\n- Open: 3 | Decide: 2 | Execute: 0",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work scan_reviews"))
+
+    assert calls == [["work", "scan_reviews"]]
+    assert "Review scan complete: created 2, existing 1." in reply
+    assert "Work Ledger" in reply
 
 
 def test_simulate_text_requires_explicit_identity(tmp_path, monkeypatch) -> None:
