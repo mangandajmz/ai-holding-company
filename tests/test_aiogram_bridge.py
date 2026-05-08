@@ -75,6 +75,13 @@ def test_dev_pipeline_commands_have_restricted_action_types() -> None:
     assert aiogram_bridge._command_action_type("/loop new improve reporting") == "view_status"
     assert aiogram_bridge._command_action_type("/work") == "view_status"
     assert aiogram_bridge._command_action_type("/work scan_reviews") == "view_status"
+    assert aiogram_bridge._command_action_type("/work reminders") == "view_status"
+    assert aiogram_bridge._command_action_type("/work show work_123") == "view_status"
+    assert aiogram_bridge._command_action_type("/work approve work_123 | MA | due | signal") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work start work_123") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work block work_123 reason") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work done work_123 | result | evidence") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work run_next") == "approval_execution_update"
 
 
 def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
@@ -150,6 +157,38 @@ def test_work_reminders_command_routes_to_tool_router(monkeypatch) -> None:
 
     assert calls == [["work", "reminders"]]
     assert "need owner attention" in reply
+
+
+def test_work_run_next_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "ran": True,
+                "outcome": "blocked",
+                "item": {
+                    "id": "work_123",
+                    "title": "Manual review",
+                    "status": "BLOCKED",
+                    "owner": "MA",
+                    "due_at": "2026-05-08T18:00:00+00:00",
+                    "completion_signal": "Review note exists.",
+                    "next_step": "Blocked: No automated executor is registered.",
+                    "evidence": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work run_next"))
+
+    assert calls == [["work", "run_next"]]
+    assert "Worker result: `work_123` [BLOCKED]" in reply
 
 
 def test_work_scan_reviews_routes_to_tool_router(monkeypatch) -> None:

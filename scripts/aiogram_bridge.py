@@ -1375,7 +1375,7 @@ def _format_help() -> str:
         "- /loop new <goal>\n"
         "- /loop status\n"
         "- /loop show <loop_id>\n"
-        "- /work [status|reminders|scan_reviews|show|approve|start|block|done]\n"
+        "- /work [status|reminders|run_next|scan_reviews|show|approve|start|block|done]\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1714,6 +1714,8 @@ async def _handle_work_command(text: str) -> str:
         args = ["work", "status"]
     elif action in {"reminder", "reminders"}:
         args = ["work", "reminders"]
+    elif action in {"run_next", "run-next"}:
+        args = ["work", "run_next"]
     elif action in {"scan", "scan_reviews", "refresh"}:
         args = ["work", "scan_reviews"]
     elif action == "show":
@@ -1756,7 +1758,7 @@ async def _handle_work_command(text: str) -> str:
             return "Use `/work done <work_id> | <result> | <evidence>`."
         args = ["work", "done", "--work-id", fields[0], "--result", fields[1], "--evidence", fields[2]]
     else:
-        return "Use `/work status|reminders|scan_reviews|show|approve|start|block|done`."
+        return "Use `/work status|reminders|run_next|scan_reviews|show|approve|start|block|done`."
 
     result = await _run_tool_router(args, timeout_sec=180)
     payload_obj = result.get("payload")
@@ -1770,6 +1772,8 @@ async def _handle_work_command(text: str) -> str:
         created = int(payload_obj.get("created", 0) or 0)
         existing = int(payload_obj.get("existing", 0) or 0)
         return f"Review scan complete: created {created}, existing {existing}.\n\n{text_payload}".strip()
+    if args[-1] == "run_next" and not payload_obj.get("ran"):
+        return str(payload_obj.get("message") or "No approved work items are ready to run.")
     item = payload_obj.get("item")
     if isinstance(item, dict):
         verb = {
@@ -1778,6 +1782,7 @@ async def _handle_work_command(text: str) -> str:
             "start": "Started",
             "block": "Blocked",
             "done": "Closed",
+            "run_next": "Worker result",
         }.get(action, "Work item")
         evidence = item.get("evidence", [])
         evidence_count = len(evidence) if isinstance(evidence, list) else 0
@@ -3907,6 +3912,12 @@ def _command_action_type(text: str) -> str:
     lowered = text.lower().strip()
     if lowered in {"/help", "/status", "/dashboard", "/hermes_status"}:
         return "view_status"
+    if lowered.startswith("/work"):
+        parts = lowered.split(maxsplit=2)
+        action = parts[1] if len(parts) > 1 else "status"
+        if action in {"approve", "start", "block", "done", "run_next", "run-next"}:
+            return "approval_execution_update"
+        return "view_status"
     if lowered.startswith("/approvals"):
         return "view_approvals"
     if lowered.startswith("/approve_merge_") or lowered.startswith("/reject_merge_"):
@@ -3917,9 +3928,7 @@ def _command_action_type(text: str) -> str:
         return "board_approval_decision"
     if lowered.startswith("/assign") or lowered.startswith("/start") or lowered.startswith("/done"):
         return "approval_execution_update"
-    if lowered in {"/brief", "/board", "/board review", "/commercial"} or lowered.startswith(
-        ("/boardroom", "/loop", "/work")
-    ):
+    if lowered in {"/brief", "/board", "/board review", "/commercial"} or lowered.startswith(("/boardroom", "/loop")):
         return "view_status"
     if lowered == "/content_status":
         return "view_status"
@@ -4623,6 +4632,43 @@ async def _send_owner_work_reminders() -> bool:
     return True
 
 
+async def _run_next_work_and_notify_owner() -> bool:
+    runtime = _runtime()
+    if runtime.owner_chat_id is None:
+        raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is required for --run-work-next.")
+
+    result = await _run_tool_router(["work", "run_next"], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        raise RuntimeError(f"Work runner failed: {result.get('stderr') or 'unknown error'}")
+    if not payload.get("ok"):
+        raise RuntimeError(f"Work runner failed: {payload.get('error') or 'unknown error'}")
+    if not payload.get("ran"):
+        LOGGER.info("No approved work item was ready to run.")
+        return False
+
+    item = payload.get("item", {})
+    item = item if isinstance(item, dict) else {}
+    text = (
+        f"Work runner: {payload.get('outcome')} for `{item.get('id')}` [{item.get('status')}]\n"
+        f"Title: {item.get('title')}\n"
+        f"Owner: {item.get('owner')} | Due: {item.get('due_at') or 'n/a'}\n"
+        f"Next: {item.get('next_step')}"
+    )
+    try:
+        import aiogram  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError("aiogram is not installed. Install it before using Telegram push delivery.") from exc
+
+    bot = _build_telegram_bot(runtime.bot_token)
+    try:
+        await bot.send_message(runtime.owner_chat_id, text)
+    finally:
+        await bot.session.close()
+    LOGGER.info("Work runner result sent to chat_id=%s", runtime.owner_chat_id)
+    return True
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Async aiogram Telegram bridge for AI Holding Company.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to projects.yaml.")
@@ -4632,6 +4678,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and send the morning brief.")
     parser.add_argument("--send-dashboard", action="store_true", help="Send or update the owner Telegram dashboard.")
     parser.add_argument("--send-work-reminders", action="store_true", help="Send owner reminders for work needing attention.")
+    parser.add_argument("--run-work-next", action="store_true", help="Run the next approved work item and notify the owner.")
     return parser
 
 
@@ -4671,6 +4718,10 @@ async def main() -> None:
     if args.send_work_reminders:
         sent = await _send_owner_work_reminders()
         print(json.dumps({"ok": True, "mode": "send_work_reminders", "sent": sent}))
+        return
+    if args.run_work_next:
+        sent = await _run_next_work_and_notify_owner()
+        print(json.dumps({"ok": True, "mode": "run_work_next", "sent": sent}))
         return
 
     try:

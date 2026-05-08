@@ -135,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     work_sub = work.add_subparsers(dest="work_action", required=True)
     work_sub.add_parser("status", help="Show work ledger status.")
     work_sub.add_parser("reminders", help="Show owner action reminders.")
+    work_sub.add_parser("run_next", help="Run the oldest approved work item.")
     work_show = work_sub.add_parser("show", help="Show one work item.")
     work_show.add_argument("--work-id", required=True, help="Work item id.")
     work_scan = work_sub.add_parser("scan_reviews", help="Scan review markdown into the work ledger.")
@@ -360,6 +361,7 @@ def main() -> None:
             work_reminders,
             work_status,
         )
+        from kernel.worker import run_next_work_item  # pylint: disable=import-outside-toplevel
         from kernel.work_items import (  # pylint: disable=import-outside-toplevel
             approve_work_item,
             block_work_item,
@@ -381,6 +383,10 @@ def main() -> None:
                     reminders = work_reminders(conn)
                     reminders["text"] = render_reminder_text(reminders)
                     _emit(reminders)
+                    return
+                if args.work_action == "run_next":
+                    result = run_next_work_item(conn)
+                    _emit(result)
                     return
                 if args.work_action == "show":
                     item = get_work_item(conn, args.work_id)

@@ -7,6 +7,7 @@ import pytest
 
 from kernel.db import connect
 from kernel.views import render_reminder_text, render_status_text, work_reminders, work_status
+from kernel.worker import run_next_work_item
 from kernel.work_items import (
     approve_work_item,
     create_work_item,
@@ -198,5 +199,73 @@ def test_work_reminders_include_owner_action_items_once(tmp_path: Path) -> None:
         assert {item["id"] for item in reminders["items"]} == {review["id"], overdue["id"]}
         assert "Needs approval" in text
         assert "Overdue" in text
+    finally:
+        conn.close()
+
+
+def test_run_next_reports_no_approved_work(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        result = run_next_work_item(conn)
+
+        assert result == {
+            "ok": True,
+            "ran": False,
+            "message": "No approved work items are ready to run.",
+            "item": None,
+        }
+    finally:
+        conn.close()
+
+
+def test_run_next_blocks_when_no_executor_exists(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        item, _ = create_work_item(conn, title="Manual review", work_type="review", source="manual")
+        approve_work_item(
+            conn,
+            item["id"],
+            owner="MA",
+            due_at="2026-05-08T18:00:00+00:00",
+            completion_signal="Review note exists.",
+        )
+
+        result = run_next_work_item(conn)
+        status = work_status(conn)
+
+        assert result["ran"] is True
+        assert result["outcome"] == "blocked"
+        assert result["item"]["status"] == "BLOCKED"
+        assert "No automated executor is registered" in result["reason"]
+        assert status["counts"]["blocked"] == 1
+    finally:
+        conn.close()
+
+
+def test_run_next_executes_ledger_status_snapshot(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    try:
+        item, _ = create_work_item(
+            conn,
+            title="Generate ledger snapshot",
+            work_type="ledger_report",
+            source="manual",
+            metadata={"executor": "ledger_status_snapshot"},
+        )
+        approve_work_item(
+            conn,
+            item["id"],
+            owner="System",
+            due_at="2026-05-08T18:00:00+00:00",
+            completion_signal="Ledger status snapshot evidence exists.",
+        )
+
+        result = run_next_work_item(conn)
+
+        assert result["ran"] is True
+        assert result["outcome"] == "done"
+        assert result["item"]["status"] == "DONE"
+        assert result["item"]["result"] == "Ledger status snapshot generated."
+        assert "Work Ledger" in result["item"]["evidence"][0]["summary"]
     finally:
         conn.close()
