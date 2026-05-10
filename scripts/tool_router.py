@@ -169,6 +169,45 @@ def build_parser() -> argparse.ArgumentParser:
     mem_search.add_argument("--query", required=True, help="Memory query text.")
     mem_search.add_argument("--top-k", type=int, default=5, help="Number of matches.")
 
+    ask_company = sub.add_parser("ask_company", help="Ask the truth-grounded Chief of Staff.")
+    ask_company.add_argument("--question", required=True, help="Natural owner question.")
+    ask_company.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval.")
+    ask_company.add_argument("--json", action="store_true", help="Print structured JSON instead of conversational text.")
+
+    persona_chat = sub.add_parser("persona_chat", help="Ask a persona free text over local organization truth.")
+    persona_chat.add_argument("--persona", required=True, help="Persona name or slug.")
+    persona_chat.add_argument("--message", required=True, help="Natural owner message.")
+    persona_chat.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval.")
+
+    nanoclaw_shadow = sub.add_parser("nanoclaw_shadow_write", help="Write a local NanoClaw shadow response.")
+    nanoclaw_shadow.add_argument("--root", default=str(ROOT), help="Project root for shadow inbox/outbox.")
+    nanoclaw_shadow.add_argument(
+        "--inbox-path",
+        default="state/nanoclaw_shadow_inbox.jsonl",
+        help="Relative shadow inbox path.",
+    )
+    nanoclaw_shadow.add_argument(
+        "--outbox-path",
+        default="state/nanoclaw_shadow_outbox.jsonl",
+        help="Relative shadow outbox path.",
+    )
+
+    risk_daily = sub.add_parser("risk_aggregate_daily", help="Generate the risk aggregate daily skill brief.")
+    risk_daily.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval and report output.")
+
+    data_quality = sub.add_parser("data_quality_daily", help="Generate the data quality daily guardrail report.")
+    data_quality.add_argument("--root", default=str(ROOT), help="Project root for local evidence and report output.")
+    data_quality.add_argument("--as-of", default="", help="Optional YYYY-MM-DD date for deterministic checks.")
+
+    backtest_review = sub.add_parser("backtest_review", help="Generate the backtest review guardrail report.")
+    backtest_review.add_argument("--root", default=str(ROOT), help="Project root for local evidence and report output.")
+
+    support_triage = sub.add_parser("support_triage", help="Generate the support triage shadow-mode report.")
+    support_triage.add_argument("--root", default=str(ROOT), help="Project root for local ticket intake and report output.")
+
+    portfolio_retro = sub.add_parser("portfolio_retro_weekly", help="Generate the portfolio retro weekly report.")
+    portfolio_retro.add_argument("--root", default=str(ROOT), help="Project root for local skill outputs and report output.")
+
     develop = sub.add_parser("develop", help="Submit Developer Tool task for CEO-gated code generation.")
     develop.add_argument("--task", required=True, help="Plain-English development task.")
 
@@ -438,6 +477,74 @@ def main() -> None:
 
     if args.command == "memory_search":
         _emit(_memory_search(config=config, query=args.query, top_k=args.top_k))
+        return
+
+    if args.command == "ask_company":
+        from chief_of_staff import answer_company_question, render_company_answer  # pylint: disable=import-outside-toplevel
+
+        response = answer_company_question(question=args.question, root=Path(args.root))
+        if args.json:
+            _emit(response)
+        else:
+            print(render_company_answer(response))
+        return
+
+    if args.command == "persona_chat":
+        from persona_router import answer_persona  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            answer_persona(
+                persona=args.persona,
+                message=args.message,
+                root=Path(args.root),
+                conversation_config=config.get("conversation", {}),
+            )
+        )
+        return
+
+    if args.command == "nanoclaw_shadow_write":
+        from nanoclaw_shadow_writer import write_latest_shadow_response  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            write_latest_shadow_response(
+                root=Path(args.root),
+                inbox_path=args.inbox_path,
+                outbox_path=args.outbox_path,
+            )
+        )
+        return
+
+    if args.command == "risk_aggregate_daily":
+        from skill_risk_aggregate_daily import run_risk_aggregate_daily  # pylint: disable=import-outside-toplevel
+
+        _emit(run_risk_aggregate_daily(root=Path(args.root)))
+        return
+
+    if args.command == "data_quality_daily":
+        from datetime import date  # pylint: disable=import-outside-toplevel
+
+        from skill_data_quality_daily import run_data_quality_daily  # pylint: disable=import-outside-toplevel
+
+        as_of = date.fromisoformat(args.as_of) if args.as_of else None
+        _emit(run_data_quality_daily(root=Path(args.root), as_of=as_of))
+        return
+
+    if args.command == "backtest_review":
+        from skill_backtest_review import run_backtest_review  # pylint: disable=import-outside-toplevel
+
+        _emit(run_backtest_review(root=Path(args.root)))
+        return
+
+    if args.command == "support_triage":
+        from skill_support_triage import run_support_triage  # pylint: disable=import-outside-toplevel
+
+        _emit(run_support_triage(root=Path(args.root)))
+        return
+
+    if args.command == "portfolio_retro_weekly":
+        from skill_portfolio_retro_weekly import run_portfolio_retro_weekly  # pylint: disable=import-outside-toplevel
+
+        _emit(run_portfolio_retro_weekly(root=Path(args.root)))
         return
 
     if args.command == "develop":

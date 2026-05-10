@@ -32,6 +32,13 @@ memory:
   ollama_base_url: "http://127.0.0.1:11434"
   embedding_model: "nomic-embed-text"
 
+conversation:
+  provider: "deterministic_fallback"
+  nanoclaw:
+    mode: "shadow"
+    shadow_inbox_path: "state/nanoclaw_shadow_inbox.jsonl"
+    shadow_outbox_path: "state/nanoclaw_shadow_outbox.jsonl"
+
 trading_bots:
   - id: "mt5_desk"
     name: "MT5 Agentic Trading Desk"

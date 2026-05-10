@@ -1,0 +1,190 @@
+{
+  "ok": true,
+  "generated_at_utc": "2026-05-10T06:27:02.532809+00:00",
+  "read_only": true,
+  "rule": "Persona chat is free text, then deterministic grounding against local truth; no model calls.",
+  "views": {
+    "today": {
+      "status": "BLOCKED",
+      "items": [
+        {
+          "skill": "backtest-review",
+          "status": "BLOCKED",
+          "owner_need": "none",
+          "brief": "Backtest review is BLOCKED. Latest MT5 research selected 8 candidate(s), approved 0, rejected 7, and has 0 out-of-sample / 0 walk-forward evidence. No reviewed candidate is approved.",
+          "source": "reports/skills/backtest-review/latest.json"
+        },
+        {
+          "skill": "portfolio-retro-weekly",
+          "status": "BLOCKED",
+          "owner_need": "approve",
+          "brief": "Portfolio retro is BLOCKED. 3 unresolved issue(s) remain, led by backtest-review: Backtest review is BLOCKED. Latest MT5 research selected 8 candidate(s), approved 0, rejected 7, and has 0 out-of-sample / 0 walk-forward evidence. No reviewed candidate is approved.",
+          "source": "reports/skills/portfolio-retro-weekly/latest.json"
+        },
+        {
+          "skill": "support-triage",
+          "status": "BLOCKED",
+          "owner_need": "none",
+          "brief": "Support triage is BLOCKED. No local support ticket source found at state/support_tickets.json.",
+          "source": "reports/skills/support-triage/latest.json"
+        },
+        {
+          "skill": "risk-aggregate-daily",
+          "status": "RED",
+          "owner_need": "approve",
+          "brief": "The company is RED in the latest stored CEO report. Property forecast attainment is RED (4.1% vs target >= 100%). You have one approval waiting, led by Company KPI: Property forecast attainment. There are also 11 approved items waiting for execution follow-through.",
+          "source": "reports/skills/risk-aggregate-daily/latest.json"
+        },
+        {
+          "skill": "data-quality-daily",
+          "status": "GREEN",
+          "owner_need": "none",
+          "brief": "Trading data quality is GREEN for the local checks that currently exist. Missing vendor and broker checks are explicitly marked N/A.",
+          "source": "reports/skills/data-quality-daily/latest.json"
+        }
+      ]
+    },
+    "approvals": {
+      "pending_count": 1,
+      "pending": [
+        {
+          "approval_id": "board_company-kpi-property-forecast-attain",
+          "topic": "Company KPI: Property forecast attainment",
+          "priority": "RED",
+          "decision": "Prioritize monetization levers that increase MRR progress to 90-day targets."
+        }
+      ],
+      "source": "state/board_approval_decisions.json"
+    },
+    "memory": {
+      "sample_count": 8,
+      "samples": [
+        {
+          "text": "Daily brief 2026-05-04: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-04T01:43:25.758475+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-04: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-04T01:48:23.896898+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-04: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-04T14:00:05.294166+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-05: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-05T14:00:04.571495+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-06: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-06T14:00:05.447678+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-07: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-07T14:00:04.589547+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-08: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-08T14:00:05.674859+00:00"
+          }
+        },
+        {
+          "text": "Daily brief 2026-05-09: total PnL=$+0.00, trades=0, errors=0, websites 2/2 up.",
+          "metadata": {
+            "type": "daily_brief_fact",
+            "generated_at_utc": "2026-05-09T14:00:05.781817+00:00"
+          }
+        }
+      ],
+      "source": "memory/vector_store.jsonl"
+    },
+    "personas": {
+      "personas": [
+        {
+          "name": "Chief of Staff",
+          "slug": "chief-of-staff",
+          "grounding": "Reads company-level risk, approvals, current skill outputs, and retros.",
+          "contract": "docs/personas/chief-of-staff/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Risk Officer",
+          "slug": "risk-officer",
+          "grounding": "Reads guardrail artifacts, risk blocks, and approval state.",
+          "contract": "docs/personas/risk-officer/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Quant Ops",
+          "slug": "quant-ops",
+          "grounding": "Reads trading data-quality, backtest-review, and broker-reconcile artifacts.",
+          "contract": "docs/personas/quant-ops/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Growth Lead",
+          "slug": "growth-lead",
+          "grounding": "Reads website analytics, growth digests, and portfolio retro evidence.",
+          "contract": "docs/personas/growth-lead/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Editorial Lead",
+          "slug": "editorial-lead",
+          "grounding": "Reads content queue, draft, SEO, and analytics evidence when present.",
+          "contract": "docs/personas/editorial-lead/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Engineering/Ops",
+          "slug": "engineering-ops",
+          "grounding": "Reads operating briefs, reliability records, and deploy/incident evidence.",
+          "contract": "docs/personas/engineering-ops/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Support Lead",
+          "slug": "support-lead",
+          "grounding": "Reads support-triage output and local ticket sources when present.",
+          "contract": "docs/personas/support-lead/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        },
+        {
+          "name": "Finance/Admin",
+          "slug": "finance-admin",
+          "grounding": "Deferred until reliable finance and admin sources exist.",
+          "contract": "docs/personas/finance-admin/contract.md",
+          "status": "ready",
+          "deterministic_grounding": true
+        }
+      ]
+    }
+  }
+}

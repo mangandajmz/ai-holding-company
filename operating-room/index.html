@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Holding Company Operating Room</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <aside class="rail" aria-label="Operating room views">
+      <div class="brand">
+        <span class="brand__mark">AIHC</span>
+        <span class="brand__text">Operating Room</span>
+      </div>
+      <button class="nav is-active" data-view="today" type="button">Today</button>
+      <button class="nav" data-view="approvals" type="button">Approvals</button>
+      <button class="nav" data-view="memory" type="button">Memory</button>
+      <button class="nav" data-view="personas" type="button">Personas</button>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Read-only MVP</p>
+          <h1 id="view-title">Today</h1>
+        </div>
+        <p id="generated-at" class="timestamp">Generate snapshot first</p>
+      </header>
+      <section id="view-root" class="view" aria-live="polite"></section>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+
