@@ -82,6 +82,116 @@ def test_dev_pipeline_commands_have_restricted_action_types() -> None:
     assert aiogram_bridge._command_action_type("/work block work_123 reason") == "approval_execution_update"
     assert aiogram_bridge._command_action_type("/work done work_123 | result | evidence") == "approval_execution_update"
     assert aiogram_bridge._command_action_type("/work run_next") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/ask_company What needs me today?") == "view_status"
+    assert aiogram_bridge._command_action_type("/risk_aggregate_daily") == "view_status"
+    assert aiogram_bridge._command_action_type("/data_quality_daily") == "view_status"
+    assert aiogram_bridge._command_action_type("/backtest_review") == "view_status"
+    assert aiogram_bridge._command_action_type("/support_triage") == "view_status"
+    assert aiogram_bridge._command_action_type("/portfolio_retro_weekly") == "view_status"
+
+
+def test_ask_company_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "answer": "You have one real decision today.",
+                "owner_need": "approve",
+                "sources": ["reports/phase3_holding_latest.json"],
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/ask_company What needs me today?"))
+
+    assert calls == [["ask_company", "--question", "What needs me today?", "--json"]]
+    assert "You have one real decision today." in reply
+    assert "Owner need: approve" in reply
+    assert "reports/phase3_holding_latest.json" in reply
+
+
+def test_skill_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "backtest-review",
+                "status": "BLOCKED",
+                "owner_need": "none",
+                "brief": "Backtest review is BLOCKED. No reviewed candidate is approved.",
+                "markdown_path": "reports/skills/backtest-review/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/backtest_review"))
+
+    assert calls == [["backtest_review"]]
+    assert "backtest-review is BLOCKED" in reply
+    assert "No reviewed candidate is approved" in reply
+    assert "reports/skills/backtest-review/latest.md" in reply
+
+
+def test_support_triage_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "support-triage",
+                "status": "BLOCKED",
+                "owner_need": "none",
+                "brief": "Support triage is BLOCKED. No local support ticket source found.",
+                "markdown_path": "reports/skills/support-triage/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/support_triage"))
+
+    assert calls == [["support_triage"]]
+    assert "support-triage is BLOCKED" in reply
+    assert "No local support ticket source found" in reply
+
+
+def test_portfolio_retro_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "portfolio-retro-weekly",
+                "status": "GREEN",
+                "owner_need": "none",
+                "brief": "Weekly retro is GREEN.",
+                "markdown_path": "reports/skills/portfolio-retro-weekly/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/portfolio_retro_weekly"))
+
+    assert calls == [["portfolio_retro_weekly"]]
+    assert "portfolio-retro-weekly is GREEN" in reply
+    assert "Weekly retro is GREEN" in reply
 
 
 def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
