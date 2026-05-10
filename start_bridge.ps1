@@ -6,6 +6,12 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $EnvFile = Join-Path $RepoRoot ".env"
 $EnvLocalFile = Join-Path $RepoRoot ".env.local"
 $BridgeScript = Join-Path $RepoRoot "scripts\aiogram_bridge.py"
+$PauseFile = Join-Path $RepoRoot "PAUSE_AI_HOLDING"
+
+if (Test-Path $PauseFile) {
+    Write-Host "PAUSE_AI_HOLDING exists; not starting bridge."
+    exit 0
+}
 
 function Import-EnvFile {
     param([string]$Path)

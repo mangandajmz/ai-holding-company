@@ -1376,6 +1376,12 @@ def _format_help() -> str:
         "- /loop status\n"
         "- /loop show <loop_id>\n"
         "- /work [status|reminders|run_next|scan_reviews|show|approve|start|block|done]\n"
+        "- /ask_company <question>\n"
+        "- /risk_aggregate_daily\n"
+        "- /data_quality_daily\n"
+        "- /backtest_review\n"
+        "- /support_triage\n"
+        "- /portfolio_retro_weekly\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1386,6 +1392,50 @@ def _format_help() -> str:
 def _brief_preview(text: str, limit: int = 100) -> str:
     clean = " ".join(text.split())
     return clean if len(clean) <= limit else f"{clean[:limit].rstrip()}..."
+
+
+def _format_agent_skill_payload(payload: dict[str, Any]) -> str:
+    skill = str(payload.get("skill") or "skill").strip()
+    status = str(payload.get("status") or "UNKNOWN").strip()
+    brief = str(payload.get("brief") or "").strip()
+    owner_need = str(payload.get("owner_need") or "none").strip()
+    artifact = str(payload.get("markdown_path") or payload.get("json_path") or "").strip()
+    lines = [f"{skill} is {status}."]
+    if brief:
+        lines.append(brief)
+    lines.append(f"Owner need: {owner_need}")
+    if artifact:
+        lines.append(f"Artifact: `{artifact}`")
+    return "\n".join(lines)
+
+
+async def _handle_ask_company_command(text: str) -> str:
+    question = re.sub(r"^/ask_company\s*", "", text, count=1, flags=re.I).strip()
+    if not question:
+        return "Use `/ask_company <question>`."
+    result = await _run_tool_router(["ask_company", "--question", question, "--json"], timeout_sec=120)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        return f"Chief of Staff command failed: {result.get('stderr') or 'unknown error'}"
+    answer = str(payload.get("answer") or "").strip()
+    if not answer:
+        return "I do not have enough stored company evidence to answer that yet."
+    owner_need = str(payload.get("owner_need") or "none").strip()
+    sources = payload.get("sources", [])
+    source_text = ""
+    if isinstance(sources, list) and sources:
+        source_text = "\nSources: " + ", ".join(str(source) for source in sources)
+    return f"{answer}\nOwner need: {owner_need}{source_text}"
+
+
+async def _handle_agent_skill_command(command: str) -> str:
+    result = await _run_tool_router([command], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        return f"Agent skill command failed: {result.get('stderr') or 'unknown error'}"
+    if not payload.get("ok"):
+        return f"Agent skill command failed: {payload.get('error') or 'unknown error'}"
+    return _format_agent_skill_payload(payload)
 
 
 async def _handle_content_command(brief_text: str) -> str:
@@ -3944,6 +3994,16 @@ def _command_action_type(text: str) -> str:
         return "develop_submit"
     if lowered.startswith("/memory"):
         return "memory_query"
+    if lowered.startswith("/ask_company"):
+        return "view_status"
+    if lowered in {
+        "/risk_aggregate_daily",
+        "/data_quality_daily",
+        "/backtest_review",
+        "/support_triage",
+        "/portfolio_retro_weekly",
+    }:
+        return "view_status"
     if lowered.startswith("/bot "):
         return "bot_execute" if " execute" in lowered else "view_status"
     if lowered.startswith("/site ") or lowered.startswith("/divisions"):
@@ -4020,6 +4080,16 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         return await _handle_loop_command(text)
     if text.startswith("/work"):
         return await _handle_work_command(text)
+    if text.startswith("/ask_company"):
+        return await _handle_ask_company_command(text)
+    if lowered in {
+        "/risk_aggregate_daily",
+        "/data_quality_daily",
+        "/backtest_review",
+        "/support_triage",
+        "/portfolio_retro_weekly",
+    }:
+        return await _handle_agent_skill_command(lowered.lstrip("/"))
     if lowered == "/commercial":
         division_data = _build_division_data(text, ["commercial"])
         facts = division_data.get("context_lines", [])

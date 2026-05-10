@@ -9,6 +9,7 @@ $EnvLocalFile = Join-Path $RepoRoot ".env.local"
 $LogDir      = Join-Path $RepoRoot "logs"
 $LogFile     = Join-Path $LogDir "startup_diagnostic.log"
 $OllamaExe   = "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe"
+$PauseFile   = Join-Path $RepoRoot "PAUSE_AI_HOLDING"
 
 $MaxWaitSeconds = 30
 
@@ -21,6 +22,11 @@ function Write-Log($msg) {
     $line = "[$ts] $msg"
     Write-Host $line
     Add-Content -Path $LogFile -Value $line
+}
+
+if (Test-Path $PauseFile) {
+    Write-Log "[PAUSED] PAUSE_AI_HOLDING exists; not starting Ollama or bridge"
+    exit 0
 }
 
 function Import-EnvFile($Path) {
