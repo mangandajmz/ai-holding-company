@@ -425,3 +425,69 @@ def test_support_lead_reports_missing_inbox_source(tmp_path: Path) -> None:
     assert response["persona"] == "support-lead"
     assert "No local support ticket source found" in response["answer"]
     assert response["truth_state"] == "known"
+
+
+def test_nanoclaw_live_returns_model_text_when_ollama_responds(monkeypatch) -> None:
+    import io
+    import urllib.request
+
+    import persona_verbalizer
+
+    captured = {}
+
+    class _FakeResp:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._body
+
+    def _fake_urlopen(req, timeout=20):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeResp(json.dumps({"response": "Welcome back, James. Forecast attainment is RED."}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+
+    packet = {
+        "persona": "chief-of-staff",
+        "display_name": "Chief of Staff",
+        "intent": "status",
+        "message": "what needs me?",
+        "evidence": [{"status": "RED", "brief": "Forecast attainment is RED."}],
+    }
+    config = {"phase2": {"ollama_model": "llama3.2:latest", "ollama_base_url": "http://127.0.0.1:11434"}}
+
+    out = persona_verbalizer.nanoclaw_live_verbalize(packet, config)
+
+    assert out["provider"] == "nanoclaw_live"
+    assert out["no_model_calls"] is False
+    assert out["answer"].startswith("Welcome back, James.")
+    assert captured["url"].endswith("/api/generate")
+    assert captured["body"]["model"] == "llama3.2:latest"
+    assert captured["body"]["stream"] is False
+
+
+def test_nanoclaw_live_returns_empty_answer_when_ollama_unreachable(monkeypatch) -> None:
+    import urllib.error
+    import urllib.request
+
+    import persona_verbalizer
+
+    def _boom(req, timeout=20):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+
+    out = persona_verbalizer.nanoclaw_live_verbalize({"persona": "chief-of-staff", "intent": "status"}, {})
+    assert out["provider"] == "nanoclaw_live"
+    assert out["answer"] == ""
+    verdict = persona_verbalizer.verify_verbalizer_output(out)
+    assert verdict["accepted"] is False
+    assert verdict["reason"] == "empty_answer"

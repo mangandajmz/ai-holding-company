@@ -126,6 +126,64 @@ def deterministic_verbalize(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+NANOCLAW_LIVE_SYSTEM_PROMPT = (
+    "You are a company persona speaking to the owner. "
+    "You will receive a JSON truth packet. Reply ONLY using facts present in that JSON. "
+    "Never invent numbers, names, dates, statuses, or events. "
+    "Do not mention the JSON, the schema, or that you are an AI. "
+    "Speak as the persona named in display_name. Keep it to one short paragraph, plain prose, no markdown."
+)
+
+
+def nanoclaw_live_verbalize(
+    packet: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call local Ollama to verbalize a sealed truth packet. R1: local only.
+
+    Returns a verbalizer-shaped dict on success, or an empty answer on any
+    failure (the caller falls back to deterministic_verbalize). No retries,
+    no streaming, single hard timeout.
+    """
+    import urllib.request  # stdlib only
+    import urllib.error
+
+    cfg = config if isinstance(config, dict) else {}
+    phase2 = cfg.get("phase2", {}) if isinstance(cfg.get("phase2", {}), dict) else {}
+    model = str(phase2.get("ollama_model") or "llama3.2:latest").replace("ollama/", "")
+    base_url = str(phase2.get("ollama_base_url") or "http://127.0.0.1:11434").rstrip("/")
+
+    prompt = (
+        f"{NANOCLAW_LIVE_SYSTEM_PROMPT}\n\n"
+        f"TRUTH PACKET:\n{json.dumps(packet, sort_keys=True)}\n\n"
+        f"OWNER MESSAGE: {packet.get('message') or ''}\n"
+        f"REPLY:"
+    )
+    payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    answer = ""
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            answer = str(result.get("response") or "").strip()
+    except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
+        answer = ""
+    return {
+        "answer": answer,
+        "unsupported_claims": [],
+        "evidence_mode": "hidden" if packet.get("evidence") else "none",
+        "confidence": "low",
+        "provider": "nanoclaw_live",
+        "no_model_calls": False,
+        "model": model,
+    }
+
+
 def verify_verbalizer_output(output: dict[str, Any]) -> dict[str, Any]:
     """Validate a verbalizer response before it can be used or compared."""
 
