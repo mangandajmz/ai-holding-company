@@ -77,9 +77,13 @@ def _chief_status(packet: dict[str, Any]) -> str:
     evidence = packet.get("evidence", [])
     if evidence:
         lead = evidence[0]
-        parts.append(f"I would focus there first: {_clean_brief(str(lead.get('brief') or ''))}")
-    if len(evidence) > 1:
-        parts.append(f"There are {len(evidence)} current evidence items behind that.")
+        lead_brief = _clean_brief(str(lead.get("brief") or ""))
+        if str(lead.get("status") or "").upper() == "GREEN":
+            parts.append(lead_brief)
+        else:
+            parts.append(f"I would focus there first: {lead_brief}")
+            if len(evidence) > 1:
+                parts.append(f"There are {len(evidence)} current evidence items behind that.")
     if len(parts) == 1:
         return "I do not see a stored issue needing you right now."
     return " ".join(parts)

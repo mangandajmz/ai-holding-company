@@ -119,6 +119,48 @@ def test_chief_of_staff_reply_avoids_report_row_language(tmp_path: Path) -> None
     assert response["answer"].count("I would focus there first") == 1
 
 
+def test_chief_of_staff_green_state_drops_urgency_framing(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "reports" / "skills" / "risk-aggregate-daily" / "latest.json",
+        {
+            "skill": "risk-aggregate-daily",
+            "status": "GREEN",
+            "owner_need": "none",
+            "brief": "Company is GREEN. All KPIs within target.",
+        },
+    )
+    _write_json(
+        tmp_path / "reports" / "skills" / "backtest-review" / "latest.json",
+        {
+            "skill": "backtest-review",
+            "status": "GREEN",
+            "owner_need": "none",
+            "brief": "Backtest review is current.",
+        },
+    )
+
+    response = answer_persona(persona="chief", message="what needs me?", root=tmp_path)
+
+    assert response["answer"].startswith("Welcome back.")
+    assert "I would focus there first" not in response["answer"]
+    assert "behind that" not in response["answer"]
+    assert response["evidence"][0]["status"] == "GREEN"
+    assert _clean_brief_for_test(response["evidence"][0]["brief"]) in response["answer"]
+
+
+def _clean_brief_for_test(brief: str) -> str:
+    cleaned = brief.strip()
+    for prefix in (
+        "Backtest review is BLOCKED. ",
+        "Portfolio retro is BLOCKED. ",
+        "Support triage is BLOCKED. ",
+        "The company is RED in the latest stored CEO report. ",
+    ):
+        if cleaned.startswith(prefix):
+            return cleaned.removeprefix(prefix)
+    return cleaned
+
+
 def test_chief_of_staff_answers_role_question_without_repeating_status(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "reports" / "skills" / "backtest-review" / "latest.json",
