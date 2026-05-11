@@ -73,6 +73,125 @@ def test_dev_pipeline_commands_have_restricted_action_types() -> None:
     assert aiogram_bridge._command_action_type("/approve_init_1234") == "develop_decision"
     assert aiogram_bridge._command_action_type("/boardroom ask trading status") == "view_status"
     assert aiogram_bridge._command_action_type("/loop new improve reporting") == "view_status"
+    assert aiogram_bridge._command_action_type("/work") == "view_status"
+    assert aiogram_bridge._command_action_type("/work scan_reviews") == "view_status"
+    assert aiogram_bridge._command_action_type("/work reminders") == "view_status"
+    assert aiogram_bridge._command_action_type("/work show work_123") == "view_status"
+    assert aiogram_bridge._command_action_type("/work approve work_123 | MA | due | signal") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work start work_123") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work block work_123 reason") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work done work_123 | result | evidence") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/work run_next") == "approval_execution_update"
+    assert aiogram_bridge._command_action_type("/ask_company What needs me today?") == "view_status"
+    assert aiogram_bridge._command_action_type("/risk_aggregate_daily") == "view_status"
+    assert aiogram_bridge._command_action_type("/data_quality_daily") == "view_status"
+    assert aiogram_bridge._command_action_type("/backtest_review") == "view_status"
+    assert aiogram_bridge._command_action_type("/support_triage") == "view_status"
+    assert aiogram_bridge._command_action_type("/portfolio_retro_weekly") == "view_status"
+
+
+def test_ask_company_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "answer": "You have one real decision today.",
+                "owner_need": "approve",
+                "sources": ["reports/phase3_holding_latest.json"],
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/ask_company What needs me today?"))
+
+    assert calls == [["ask_company", "--question", "What needs me today?", "--json"]]
+    assert "You have one real decision today." in reply
+    assert "Owner need: approve" in reply
+    assert "reports/phase3_holding_latest.json" in reply
+
+
+def test_skill_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "backtest-review",
+                "status": "BLOCKED",
+                "owner_need": "none",
+                "brief": "Backtest review is BLOCKED. No reviewed candidate is approved.",
+                "markdown_path": "reports/skills/backtest-review/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/backtest_review"))
+
+    assert calls == [["backtest_review"]]
+    assert "backtest-review is BLOCKED" in reply
+    assert "No reviewed candidate is approved" in reply
+    assert "reports/skills/backtest-review/latest.md" in reply
+
+
+def test_support_triage_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "support-triage",
+                "status": "BLOCKED",
+                "owner_need": "none",
+                "brief": "Support triage is BLOCKED. No local support ticket source found.",
+                "markdown_path": "reports/skills/support-triage/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/support_triage"))
+
+    assert calls == [["support_triage"]]
+    assert "support-triage is BLOCKED" in reply
+    assert "No local support ticket source found" in reply
+
+
+def test_portfolio_retro_bridge_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "skill": "portfolio-retro-weekly",
+                "status": "GREEN",
+                "owner_need": "none",
+                "brief": "Weekly retro is GREEN.",
+                "markdown_path": "reports/skills/portfolio-retro-weekly/latest.md",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_known_command("/portfolio_retro_weekly"))
+
+    assert calls == [["portfolio_retro_weekly"]]
+    assert "portfolio-retro-weekly is GREEN" in reply
+    assert "Weekly retro is GREEN" in reply
 
 
 def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
@@ -102,6 +221,235 @@ def test_loop_command_routes_to_tool_router(monkeypatch) -> None:
     assert calls == [["loop", "new", "--goal", "Improve reporting"]]
     assert "Loop `loop_0001` is GOAL_CAPTURED" in reply
     assert "Gather evidence" in reply
+
+
+def test_work_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "counts": {"open": 1, "pending_approval": 1, "approved": 0, "in_progress": 0},
+                "text": "Work Ledger\n- Open: 1 | Decide: 1 | Execute: 0",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work"))
+
+    assert calls == [["work", "status"]]
+    assert "Work Ledger" in reply
+    assert "Decide: 1" in reply
+
+
+def test_work_reminders_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "needs_attention": True,
+                "count": 1,
+                "text": "Work reminders: 1 item(s) need owner attention.",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work reminders"))
+
+    assert calls == [["work", "reminders"]]
+    assert "need owner attention" in reply
+
+
+def test_work_run_next_command_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "ran": True,
+                "outcome": "blocked",
+                "item": {
+                    "id": "work_123",
+                    "title": "Manual review",
+                    "status": "BLOCKED",
+                    "owner": "MA",
+                    "due_at": "2026-05-08T18:00:00+00:00",
+                    "completion_signal": "Review note exists.",
+                    "next_step": "Blocked: No automated executor is registered.",
+                    "evidence": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work run_next"))
+
+    assert calls == [["work", "run_next"]]
+    assert "Worker result: `work_123` [BLOCKED]" in reply
+
+
+def test_work_scan_reviews_routes_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "created": 2,
+                "existing": 1,
+                "text": "Work Ledger\n- Open: 3 | Decide: 2 | Execute: 0",
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(aiogram_bridge._handle_work_command("/work scan_reviews"))
+
+    assert calls == [["work", "scan_reviews"]]
+    assert "Review scan complete: created 2, existing 1." in reply
+    assert "Work Ledger" in reply
+
+
+def test_work_approve_command_requires_owner_due_and_signal(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "item": {
+                    "id": "work_123",
+                    "title": "Review closure",
+                    "status": "APPROVED",
+                    "owner": "MA",
+                    "due_at": "2026-05-08T18:00:00+00:00",
+                    "completion_signal": "Signed review note exists.",
+                    "next_step": "Start execution.",
+                    "evidence": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(
+        aiogram_bridge._handle_work_command(
+            "/work approve work_123 | MA | 2026-05-08T18:00:00+00:00 | Signed review note exists."
+        )
+    )
+
+    assert calls == [
+        [
+            "work",
+            "approve",
+            "--work-id",
+            "work_123",
+            "--owner",
+            "MA",
+            "--due-at",
+            "2026-05-08T18:00:00+00:00",
+            "--completion-signal",
+            "Signed review note exists.",
+        ]
+    ]
+    assert "Approved: `work_123` [APPROVED]" in reply
+    assert "Owner: MA" in reply
+
+
+def test_work_done_command_requires_result_and_evidence(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "item": {
+                    "id": "work_123",
+                    "title": "Review closure",
+                    "status": "DONE",
+                    "owner": "MA",
+                    "due_at": "2026-05-08T18:00:00+00:00",
+                    "completion_signal": "Signed review note exists.",
+                    "next_step": "Closed.",
+                    "evidence": [{"summary": "reports/review.md"}],
+                },
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    reply = asyncio.run(
+        aiogram_bridge._handle_work_command("/work done work_123 | Review accepted | reports/review.md")
+    )
+
+    assert calls == [
+        [
+            "work",
+            "done",
+            "--work-id",
+            "work_123",
+            "--result",
+            "Review accepted",
+            "--evidence",
+            "reports/review.md",
+        ]
+    ]
+    assert "Closed: `work_123` [DONE]" in reply
+    assert "Evidence: 1" in reply
+
+
+def test_work_start_and_block_commands_route_to_tool_router(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _run_router(sub_args: list[str], timeout_sec: int = 300) -> dict[str, Any]:
+        calls.append(sub_args)
+        return {
+            "ok": True,
+            "payload": {
+                "ok": True,
+                "item": {
+                    "id": sub_args[3],
+                    "title": "Review closure",
+                    "status": "IN_PROGRESS" if sub_args[1] == "start" else "BLOCKED",
+                    "owner": "MA",
+                    "due_at": "2026-05-08T18:00:00+00:00",
+                    "completion_signal": "Signed review note exists.",
+                    "next_step": "Complete work." if sub_args[1] == "start" else "Blocked: waiting on credentials",
+                    "evidence": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(aiogram_bridge, "_run_tool_router", _run_router)
+
+    start_reply = asyncio.run(aiogram_bridge._handle_work_command("/work start work_123 review started"))
+    block_reply = asyncio.run(aiogram_bridge._handle_work_command("/work block work_123 waiting on credentials"))
+
+    assert calls == [
+        ["work", "start", "--work-id", "work_123", "--note", "review started"],
+        ["work", "block", "--work-id", "work_123", "--reason", "waiting on credentials"],
+    ]
+    assert "Started: `work_123` [IN_PROGRESS]" in start_reply
+    assert "Blocked: `work_123` [BLOCKED]" in block_reply
 
 
 def test_simulate_text_requires_explicit_identity(tmp_path, monkeypatch) -> None:

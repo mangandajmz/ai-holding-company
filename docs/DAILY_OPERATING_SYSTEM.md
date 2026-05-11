@@ -10,6 +10,9 @@ would reduce friction.
 - Approval state: `state/board_approval_decisions.json`
 - Company memory: `memory/`
 - Agent and division prompts: `crews/`
+- Agent staff contracts: `docs/agents/`
+- Skill contracts: `docs/skills/`
+- Communication rules: `docs/communication/`
 - Runtime config and KPI targets: `config/`
 - Telegram bridge: `scripts/aiogram_bridge.py`
 - Command router: `scripts/tool_router.py`
@@ -105,6 +108,16 @@ would reduce friction.
    python scripts/tool_router.py log_direction --text "Your CEO direction here."
    ```
 
+9. Ask the company naturally once the Chief of Staff spine is wired.
+
+   ```powershell
+   python scripts/tool_router.py ask_company --question "What needs me today?"
+   ```
+
+   The expected behavior is conversational output grounded in `reports/`,
+   `state/`, `memory/`, and `docs/decisions/`, with source paths available for
+   consequential claims.
+
 ## Approval Rule
 
 Anything involving trading action, money, publishing, deployment, external
@@ -117,6 +130,8 @@ For the next phase, prefer improving clarity over adding machinery:
 
 - Do not add OpenClaw.
 - Do not add new agents unless one existing role cannot reasonably cover the work.
+- Do not make visible communication rigid by default; store structure
+  underneath and keep owner interaction natural.
 - Do not add trading execution.
 - Do not add automatic publishing.
 - Do not add credentials or secrets.

@@ -1,15 +1,18 @@
-"""Command router used by OpenClaw heartbeat and chat directives."""
+"""Command router used by the Telegram bridge and chat directives."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from monitoring import check_website, daily_brief, load_config, read_bot_logs, run_trading_script
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _emit(payload: dict) -> None:
@@ -127,6 +130,37 @@ def build_parser() -> argparse.ArgumentParser:
     loop_done.add_argument("--loop-id", required=True, help="Loop id.")
     loop_done.add_argument("--result", default="", help="Final result.")
 
+    work = sub.add_parser("work", help="Show the minimal work ledger.")
+    work.add_argument("--db", default=None, help="Optional work ledger DB path.")
+    work_sub = work.add_subparsers(dest="work_action", required=True)
+    work_sub.add_parser("status", help="Show work ledger status.")
+    work_sub.add_parser("reminders", help="Show owner action reminders.")
+    work_sub.add_parser("run_next", help="Run the oldest approved work item.")
+    work_show = work_sub.add_parser("show", help="Show one work item.")
+    work_show.add_argument("--work-id", required=True, help="Work item id.")
+    work_scan = work_sub.add_parser("scan_reviews", help="Scan review markdown into the work ledger.")
+    work_scan.add_argument(
+        "--root",
+        default=str(ROOT / "finance_web_page"),
+        help="Root directory to scan for READY FOR MA REVIEW markdown.",
+    )
+    work_approve = work_sub.add_parser("approve", help="Approve work with execution fields.")
+    work_approve.add_argument("--work-id", required=True, help="Work item id.")
+    work_approve.add_argument("--owner", required=True, help="Owner accountable for execution.")
+    work_approve.add_argument("--due-at", required=True, help="Expected completion time.")
+    work_approve.add_argument("--completion-signal", required=True, help="Evidence needed to close the work.")
+    work_approve.add_argument("--next-step", default="", help="Optional next execution step.")
+    work_start = work_sub.add_parser("start", help="Mark approved work in progress.")
+    work_start.add_argument("--work-id", required=True, help="Work item id.")
+    work_start.add_argument("--note", default="", help="Optional start note.")
+    work_block = work_sub.add_parser("block", help="Mark work blocked.")
+    work_block.add_argument("--work-id", required=True, help="Work item id.")
+    work_block.add_argument("--reason", required=True, help="Reason the work is blocked.")
+    work_done = work_sub.add_parser("done", help="Close work with result and evidence.")
+    work_done.add_argument("--work-id", required=True, help="Work item id.")
+    work_done.add_argument("--result", required=True, help="Final result.")
+    work_done.add_argument("--evidence", required=True, help="Evidence proving the result.")
+
     mem_add = sub.add_parser("log_direction", help="Persist owner directive into vector memory.")
     mem_add.add_argument("--text", required=True, help="Directive text to persist.")
     mem_add.add_argument("--source", default="owner_chat", help="Source label for metadata.")
@@ -134,6 +168,48 @@ def build_parser() -> argparse.ArgumentParser:
     mem_search = sub.add_parser("memory_search", help="Query local vector memory.")
     mem_search.add_argument("--query", required=True, help="Memory query text.")
     mem_search.add_argument("--top-k", type=int, default=5, help="Number of matches.")
+
+    ask_company = sub.add_parser("ask_company", help="Ask the truth-grounded Chief of Staff.")
+    ask_company.add_argument("--question", required=True, help="Natural owner question.")
+    ask_company.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval.")
+    ask_company.add_argument("--json", action="store_true", help="Print structured JSON instead of conversational text.")
+
+    persona_chat = sub.add_parser("persona_chat", help="Ask a persona free text over local organization truth.")
+    persona_chat.add_argument("--persona", required=True, help="Persona name or slug.")
+    persona_chat.add_argument("--message", required=True, help="Natural owner message.")
+    persona_chat.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval.")
+
+    nanoclaw_status = sub.add_parser("nanoclaw_status", help="Show NanoClaw live acceptance rate per persona.")
+    nanoclaw_status.add_argument("--root", default=str(ROOT), help="Project root.")
+
+    nanoclaw_shadow = sub.add_parser("nanoclaw_shadow_write", help="Write a local NanoClaw shadow response.")
+    nanoclaw_shadow.add_argument("--root", default=str(ROOT), help="Project root for shadow inbox/outbox.")
+    nanoclaw_shadow.add_argument(
+        "--inbox-path",
+        default="state/nanoclaw_shadow_inbox.jsonl",
+        help="Relative shadow inbox path.",
+    )
+    nanoclaw_shadow.add_argument(
+        "--outbox-path",
+        default="state/nanoclaw_shadow_outbox.jsonl",
+        help="Relative shadow outbox path.",
+    )
+
+    risk_daily = sub.add_parser("risk_aggregate_daily", help="Generate the risk aggregate daily skill brief.")
+    risk_daily.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval and report output.")
+
+    data_quality = sub.add_parser("data_quality_daily", help="Generate the data quality daily guardrail report.")
+    data_quality.add_argument("--root", default=str(ROOT), help="Project root for local evidence and report output.")
+    data_quality.add_argument("--as-of", default="", help="Optional YYYY-MM-DD date for deterministic checks.")
+
+    backtest_review = sub.add_parser("backtest_review", help="Generate the backtest review guardrail report.")
+    backtest_review.add_argument("--root", default=str(ROOT), help="Project root for local evidence and report output.")
+
+    support_triage = sub.add_parser("support_triage", help="Generate the support triage shadow-mode report.")
+    support_triage.add_argument("--root", default=str(ROOT), help="Project root for local ticket intake and report output.")
+
+    portfolio_retro = sub.add_parser("portfolio_retro_weekly", help="Generate the portfolio retro weekly report.")
+    portfolio_retro.add_argument("--root", default=str(ROOT), help="Project root for local skill outputs and report output.")
 
     develop = sub.add_parser("develop", help="Submit Developer Tool task for CEO-gated code generation.")
     develop.add_argument("--task", required=True, help="Plain-English development task.")
@@ -319,12 +395,176 @@ def main() -> None:
             _emit(done_loop(config=config, loop_id=args.loop_id, result=args.result))
             return
 
+    if args.command == "work":
+        from kernel.db import connect  # pylint: disable=import-outside-toplevel
+        from kernel.views import (  # pylint: disable=import-outside-toplevel
+            render_reminder_text,
+            render_status_text,
+            work_reminders,
+            work_status,
+        )
+        from kernel.worker import run_next_work_item  # pylint: disable=import-outside-toplevel
+        from kernel.work_items import (  # pylint: disable=import-outside-toplevel
+            approve_work_item,
+            block_work_item,
+            done_work_item,
+            get_work_item,
+            scan_ready_for_review_markdown,
+            start_work_item,
+        )
+
+        conn = connect(args.db)
+        try:
+            try:
+                if args.work_action == "status":
+                    status = work_status(conn)
+                    status["text"] = render_status_text(status)
+                    _emit(status)
+                    return
+                if args.work_action == "reminders":
+                    reminders = work_reminders(conn)
+                    reminders["text"] = render_reminder_text(reminders)
+                    _emit(reminders)
+                    return
+                if args.work_action == "run_next":
+                    result = run_next_work_item(conn)
+                    _emit(result)
+                    return
+                if args.work_action == "show":
+                    item = get_work_item(conn, args.work_id)
+                    _emit({"ok": item is not None, "item": item, "error": None if item else "work item not found"})
+                    return
+                if args.work_action == "scan_reviews":
+                    result = scan_ready_for_review_markdown(conn, root=args.root)
+                    status = work_status(conn)
+                    result["status"] = status
+                    result["text"] = render_status_text(status)
+                    _emit(result)
+                    return
+                if args.work_action == "approve":
+                    item = approve_work_item(
+                        conn,
+                        args.work_id,
+                        owner=args.owner,
+                        due_at=args.due_at,
+                        completion_signal=args.completion_signal,
+                        next_step=args.next_step.strip() or None,
+                    )
+                    _emit({"ok": True, "item": item})
+                    return
+                if args.work_action == "start":
+                    _emit({"ok": True, "item": start_work_item(conn, args.work_id, note=args.note)})
+                    return
+                if args.work_action == "block":
+                    _emit({"ok": True, "item": block_work_item(conn, args.work_id, args.reason)})
+                    return
+                if args.work_action == "done":
+                    item = done_work_item(
+                        conn,
+                        args.work_id,
+                        result=args.result,
+                        evidence=args.evidence,
+                    )
+                    _emit({"ok": True, "item": item})
+                    return
+            except ValueError as exc:
+                status = work_status(conn)
+                _emit({"ok": False, "error": str(exc), "status": status, "text": render_status_text(status)})
+                return
+        finally:
+            conn.close()
+
     if args.command == "log_direction":
         _emit(_memory_add(config=config, text=args.text, source=args.source))
         return
 
     if args.command == "memory_search":
         _emit(_memory_search(config=config, query=args.query, top_k=args.top_k))
+        return
+
+    if args.command == "ask_company":
+        from chief_of_staff import answer_company_question, render_company_answer  # pylint: disable=import-outside-toplevel
+
+        response = answer_company_question(question=args.question, root=Path(args.root))
+        if args.json:
+            _emit(response)
+        else:
+            print(render_company_answer(response))
+        return
+
+    if args.command == "persona_chat":
+        from persona_router import answer_persona  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            answer_persona(
+                persona=args.persona,
+                message=args.message,
+                root=Path(args.root),
+                conversation_config=config.get("conversation", {}),
+                full_config=config,
+            )
+        )
+        return
+
+    if args.command == "nanoclaw_status":
+        from nanoclaw_status import compute_status  # pylint: disable=import-outside-toplevel
+
+        nanoclaw_cfg = (config.get("conversation", {}) or {}).get("nanoclaw", {}) or {}
+        log_path = Path(args.root) / str(nanoclaw_cfg.get("live_log_path") or "state/nanoclaw_live_log.jsonl")
+        promotion = nanoclaw_cfg.get("promotion", {}) or {}
+        _emit(
+            compute_status(
+                log_path=log_path,
+                window=int(promotion.get("window") or 50),
+                min_accept_rate=float(promotion.get("min_accept_rate") or 0.80),
+                personas=nanoclaw_cfg.get("personas", {}) or {},
+            )
+        )
+        return
+
+    if args.command == "nanoclaw_shadow_write":
+        from nanoclaw_shadow_writer import write_latest_shadow_response  # pylint: disable=import-outside-toplevel
+
+        _emit(
+            write_latest_shadow_response(
+                root=Path(args.root),
+                inbox_path=args.inbox_path,
+                outbox_path=args.outbox_path,
+            )
+        )
+        return
+
+    if args.command == "risk_aggregate_daily":
+        from skill_risk_aggregate_daily import run_risk_aggregate_daily  # pylint: disable=import-outside-toplevel
+
+        _emit(run_risk_aggregate_daily(root=Path(args.root)))
+        return
+
+    if args.command == "data_quality_daily":
+        from datetime import date  # pylint: disable=import-outside-toplevel
+
+        from skill_data_quality_daily import run_data_quality_daily  # pylint: disable=import-outside-toplevel
+
+        as_of = date.fromisoformat(args.as_of) if args.as_of else None
+        _emit(run_data_quality_daily(root=Path(args.root), as_of=as_of))
+        return
+
+    if args.command == "backtest_review":
+        from skill_backtest_review import run_backtest_review  # pylint: disable=import-outside-toplevel
+
+        _emit(run_backtest_review(root=Path(args.root)))
+        return
+
+    if args.command == "support_triage":
+        from skill_support_triage import run_support_triage  # pylint: disable=import-outside-toplevel
+
+        _emit(run_support_triage(root=Path(args.root)))
+        return
+
+    if args.command == "portfolio_retro_weekly":
+        from skill_portfolio_retro_weekly import run_portfolio_retro_weekly  # pylint: disable=import-outside-toplevel
+
+        _emit(run_portfolio_retro_weekly(root=Path(args.root)))
         return
 
     if args.command == "develop":

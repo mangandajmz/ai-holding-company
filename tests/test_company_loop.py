@@ -130,6 +130,33 @@ def test_approval_auto_starts_loop_for_md_execution(tmp_path, monkeypatch) -> No
     assert loop["history"][-1]["event"] == "IN_PROGRESS"
 
 
+def test_loop_report_includes_execution_plan(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(company_loop, "ROOT", tmp_path)
+    config = _config(tmp_path)
+    loop_id = company_loop.new_loop(config, goal="Run FTH metric refresh")["loop"]["loop_id"]
+    state_path = tmp_path / "state" / "company_loops.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["loops"][0]["execution_plan"] = [
+        {
+            "task": "Refresh FreeTraderHub metric source",
+            "owner": "Commercial",
+            "due_at_utc": "2026-05-08T18:00:00+00:00",
+            "status": "TODO",
+            "completion_signal": "Updated metric source and CEO heartbeat attached.",
+        }
+    ]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    company_loop.show_loop(config, loop_id)
+
+    report = tmp_path / "reports" / "company_loops" / "loop_0001.md"
+    text = report.read_text(encoding="utf-8")
+    assert "## Execution Plan" in text
+    assert "Refresh FreeTraderHub metric source" in text
+    assert "Owner: Commercial" in text
+    assert "Due UTC: 2026-05-08T18:00:00+00:00" in text
+
+
 def test_reapproval_note_does_not_replace_existing_approved_action(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(company_loop, "ROOT", tmp_path)
     config = _config(tmp_path)

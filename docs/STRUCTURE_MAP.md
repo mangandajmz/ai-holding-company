@@ -17,6 +17,9 @@ equivalents unless the current layout starts slowing down daily CEO review.
 | Agent prompts/configs | `crews/`, `config/` | No separate prompt tree needed yet. |
 | Workflows/docs | root runbooks, `docs/` | New operator-facing docs live in `docs/`. |
 | Websites | `finance_web_page/`, `free-utility-tools/`, `free-traderhub-research-team/` | Website source remains protected by approval rules. |
+| Agent staff contracts | `docs/agents/` | First-wave role contracts for the agent-manned company. |
+| Skill contracts | `docs/skills/` | Repeatable operating workflows; runtime still uses existing rails. |
+| Communication rules | `docs/communication/` | Natural conversation on the surface, structured truth underneath. |
 
 ## Keep
 
@@ -31,10 +34,14 @@ equivalents unless the current layout starts slowing down daily CEO review.
 - Old OpenClaw references are deprecated and should not guide new work.
 - `reports/` is flat but functional. Archive only when it becomes hard to scan.
 - Website QA should be captured as simple checklists before adding more browser automation.
+- Agent contracts describe responsibilities before runtime. They do not require
+  separate runtime agents until a recurring business function is proven.
+- Natural agent communication is owner-facing. Structured records still belong
+  in `reports/`, `state/`, `memory/`, and `docs/decisions/`.
 
 ## Add Later Only If Needed
 
 - A physical `company_os/` folder.
-- Separate `agents/prompts/configs/skills` folders.
+- A separate runtime agent framework.
 - Report archiving scripts.
 - More agent roles or external chat surfaces.

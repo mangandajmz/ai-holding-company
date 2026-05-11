@@ -1375,6 +1375,13 @@ def _format_help() -> str:
         "- /loop new <goal>\n"
         "- /loop status\n"
         "- /loop show <loop_id>\n"
+        "- /work [status|reminders|run_next|scan_reviews|show|approve|start|block|done]\n"
+        "- /ask_company <question>\n"
+        "- /risk_aggregate_daily\n"
+        "- /data_quality_daily\n"
+        "- /backtest_review\n"
+        "- /support_triage\n"
+        "- /portfolio_retro_weekly\n"
         "- /brief\n"
         "- /memory <query>\n"
         "- /bot <bot_id> health|report|logs [lines]|execute [confirm]\n"
@@ -1385,6 +1392,50 @@ def _format_help() -> str:
 def _brief_preview(text: str, limit: int = 100) -> str:
     clean = " ".join(text.split())
     return clean if len(clean) <= limit else f"{clean[:limit].rstrip()}..."
+
+
+def _format_agent_skill_payload(payload: dict[str, Any]) -> str:
+    skill = str(payload.get("skill") or "skill").strip()
+    status = str(payload.get("status") or "UNKNOWN").strip()
+    brief = str(payload.get("brief") or "").strip()
+    owner_need = str(payload.get("owner_need") or "none").strip()
+    artifact = str(payload.get("markdown_path") or payload.get("json_path") or "").strip()
+    lines = [f"{skill} is {status}."]
+    if brief:
+        lines.append(brief)
+    lines.append(f"Owner need: {owner_need}")
+    if artifact:
+        lines.append(f"Artifact: `{artifact}`")
+    return "\n".join(lines)
+
+
+async def _handle_ask_company_command(text: str) -> str:
+    question = re.sub(r"^/ask_company\s*", "", text, count=1, flags=re.I).strip()
+    if not question:
+        return "Use `/ask_company <question>`."
+    result = await _run_tool_router(["ask_company", "--question", question, "--json"], timeout_sec=120)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        return f"Chief of Staff command failed: {result.get('stderr') or 'unknown error'}"
+    answer = str(payload.get("answer") or "").strip()
+    if not answer:
+        return "I do not have enough stored company evidence to answer that yet."
+    owner_need = str(payload.get("owner_need") or "none").strip()
+    sources = payload.get("sources", [])
+    source_text = ""
+    if isinstance(sources, list) and sources:
+        source_text = "\nSources: " + ", ".join(str(source) for source in sources)
+    return f"{answer}\nOwner need: {owner_need}{source_text}"
+
+
+async def _handle_agent_skill_command(command: str) -> str:
+    result = await _run_tool_router([command], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        return f"Agent skill command failed: {result.get('stderr') or 'unknown error'}"
+    if not payload.get("ok"):
+        return f"Agent skill command failed: {payload.get('error') or 'unknown error'}"
+    return _format_agent_skill_payload(payload)
 
 
 async def _handle_content_command(brief_text: str) -> str:
@@ -1702,6 +1753,98 @@ async def _handle_loop_command(text: str) -> str:
     if not payload_obj.get("ok"):
         return f"Loop command failed: {payload_obj.get('error') or 'unknown error'}"
     return _format_loop_payload(payload_obj)
+
+
+async def _handle_work_command(text: str) -> str:
+    payload = re.sub(r"^/work\s*", "", text, count=1, flags=re.I).strip()
+    parts = payload.split(maxsplit=1)
+    action = parts[0].lower() if parts else "status"
+    rest = parts[1] if len(parts) > 1 else ""
+    if action in {"status"}:
+        args = ["work", "status"]
+    elif action in {"reminder", "reminders"}:
+        args = ["work", "reminders"]
+    elif action in {"run_next", "run-next"}:
+        args = ["work", "run_next"]
+    elif action in {"scan", "scan_reviews", "refresh"}:
+        args = ["work", "scan_reviews"]
+    elif action == "show":
+        if not rest.strip():
+            return "Use `/work show <work_id>`."
+        args = ["work", "show", "--work-id", rest.strip()]
+    elif action == "approve":
+        fields = [field.strip() for field in rest.split("|")]
+        if len(fields) < 4 or not all(fields[:4]):
+            return "Use `/work approve <work_id> | <owner> | <due_at> | <completion_signal>`."
+        args = [
+            "work",
+            "approve",
+            "--work-id",
+            fields[0],
+            "--owner",
+            fields[1],
+            "--due-at",
+            fields[2],
+            "--completion-signal",
+            fields[3],
+        ]
+        if len(fields) > 4 and fields[4]:
+            args.extend(["--next-step", fields[4]])
+    elif action == "start":
+        fields = rest.split(maxsplit=1)
+        if not fields or not fields[0].strip():
+            return "Use `/work start <work_id> [note]`."
+        args = ["work", "start", "--work-id", fields[0]]
+        if len(fields) > 1:
+            args.extend(["--note", fields[1]])
+    elif action == "block":
+        fields = rest.split(maxsplit=1)
+        if len(fields) < 2 or not fields[0].strip() or not fields[1].strip():
+            return "Use `/work block <work_id> <reason>`."
+        args = ["work", "block", "--work-id", fields[0], "--reason", fields[1]]
+    elif action == "done":
+        fields = [field.strip() for field in rest.split("|")]
+        if len(fields) < 3 or not all(fields[:3]):
+            return "Use `/work done <work_id> | <result> | <evidence>`."
+        args = ["work", "done", "--work-id", fields[0], "--result", fields[1], "--evidence", fields[2]]
+    else:
+        return "Use `/work status|reminders|run_next|scan_reviews|show|approve|start|block|done`."
+
+    result = await _run_tool_router(args, timeout_sec=180)
+    payload_obj = result.get("payload")
+    if not result.get("ok") or not isinstance(payload_obj, dict):
+        return f"Work command failed: {result.get('stderr') or 'unknown error'}"
+    if not payload_obj.get("ok"):
+        return f"Work command failed: {payload_obj.get('error') or 'unknown error'}"
+
+    text_payload = str(payload_obj.get("text") or payload_obj).strip()
+    if args[-1] == "scan_reviews":
+        created = int(payload_obj.get("created", 0) or 0)
+        existing = int(payload_obj.get("existing", 0) or 0)
+        return f"Review scan complete: created {created}, existing {existing}.\n\n{text_payload}".strip()
+    if args[-1] == "run_next" and not payload_obj.get("ran"):
+        return str(payload_obj.get("message") or "No approved work items are ready to run.")
+    item = payload_obj.get("item")
+    if isinstance(item, dict):
+        verb = {
+            "show": "Work item",
+            "approve": "Approved",
+            "start": "Started",
+            "block": "Blocked",
+            "done": "Closed",
+            "run_next": "Worker result",
+        }.get(action, "Work item")
+        evidence = item.get("evidence", [])
+        evidence_count = len(evidence) if isinstance(evidence, list) else 0
+        return (
+            f"{verb}: `{item.get('id')}` [{item.get('status')}]\n"
+            f"Title: {item.get('title')}\n"
+            f"Owner: {item.get('owner')} | Due: {item.get('due_at') or 'n/a'}\n"
+            f"Completion signal: {item.get('completion_signal') or 'n/a'}\n"
+            f"Next: {item.get('next_step')}\n"
+            f"Evidence: {evidence_count}"
+        )
+    return text_payload
 
 
 def _normalize_approval_id(raw_value: str) -> str:
@@ -3819,6 +3962,12 @@ def _command_action_type(text: str) -> str:
     lowered = text.lower().strip()
     if lowered in {"/help", "/status", "/dashboard", "/hermes_status"}:
         return "view_status"
+    if lowered.startswith("/work"):
+        parts = lowered.split(maxsplit=2)
+        action = parts[1] if len(parts) > 1 else "status"
+        if action in {"approve", "start", "block", "done", "run_next", "run-next"}:
+            return "approval_execution_update"
+        return "view_status"
     if lowered.startswith("/approvals"):
         return "view_approvals"
     if lowered.startswith("/approve_merge_") or lowered.startswith("/reject_merge_"):
@@ -3845,6 +3994,16 @@ def _command_action_type(text: str) -> str:
         return "develop_submit"
     if lowered.startswith("/memory"):
         return "memory_query"
+    if lowered.startswith("/ask_company"):
+        return "view_status"
+    if lowered in {
+        "/risk_aggregate_daily",
+        "/data_quality_daily",
+        "/backtest_review",
+        "/support_triage",
+        "/portfolio_retro_weekly",
+    }:
+        return "view_status"
     if lowered.startswith("/bot "):
         return "bot_execute" if " execute" in lowered else "view_status"
     if lowered.startswith("/site ") or lowered.startswith("/divisions"):
@@ -3919,6 +4078,18 @@ async def _handle_known_command(text: str, user_id: int | None = None) -> str | 
         return await _handle_boardroom_command(text)
     if text.startswith("/loop"):
         return await _handle_loop_command(text)
+    if text.startswith("/work"):
+        return await _handle_work_command(text)
+    if text.startswith("/ask_company"):
+        return await _handle_ask_company_command(text)
+    if lowered in {
+        "/risk_aggregate_daily",
+        "/data_quality_daily",
+        "/backtest_review",
+        "/support_triage",
+        "/portfolio_retro_weekly",
+    }:
+        return await _handle_agent_skill_command(lowered.lstrip("/"))
     if lowered == "/commercial":
         division_data = _build_division_data(text, ["commercial"])
         facts = division_data.get("context_lines", [])
@@ -4501,6 +4672,73 @@ async def _send_owner_dashboard() -> None:
         await bot.session.close()
 
 
+async def _send_owner_work_reminders() -> bool:
+    runtime = _runtime()
+    if runtime.owner_chat_id is None:
+        raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is required for --send-work-reminders.")
+
+    result = await _run_tool_router(["work", "reminders"], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        raise RuntimeError(f"Work reminder generation failed: {result.get('stderr') or 'unknown error'}")
+    if not payload.get("ok"):
+        raise RuntimeError(f"Work reminder generation failed: {payload.get('error') or 'unknown error'}")
+    if not payload.get("needs_attention"):
+        LOGGER.info("No owner work reminders to send.")
+        return False
+
+    text = str(payload.get("text") or "Work reminders need attention.").strip()
+    try:
+        import aiogram  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError("aiogram is not installed. Install it before using Telegram push delivery.") from exc
+
+    bot = _build_telegram_bot(runtime.bot_token)
+    try:
+        await bot.send_message(runtime.owner_chat_id, text)
+    finally:
+        await bot.session.close()
+    LOGGER.info("Work reminders sent to chat_id=%s", runtime.owner_chat_id)
+    return True
+
+
+async def _run_next_work_and_notify_owner() -> bool:
+    runtime = _runtime()
+    if runtime.owner_chat_id is None:
+        raise RuntimeError("TELEGRAM_OWNER_CHAT_ID is required for --run-work-next.")
+
+    result = await _run_tool_router(["work", "run_next"], timeout_sec=180)
+    payload = result.get("payload")
+    if not result.get("ok") or not isinstance(payload, dict):
+        raise RuntimeError(f"Work runner failed: {result.get('stderr') or 'unknown error'}")
+    if not payload.get("ok"):
+        raise RuntimeError(f"Work runner failed: {payload.get('error') or 'unknown error'}")
+    if not payload.get("ran"):
+        LOGGER.info("No approved work item was ready to run.")
+        return False
+
+    item = payload.get("item", {})
+    item = item if isinstance(item, dict) else {}
+    text = (
+        f"Work runner: {payload.get('outcome')} for `{item.get('id')}` [{item.get('status')}]\n"
+        f"Title: {item.get('title')}\n"
+        f"Owner: {item.get('owner')} | Due: {item.get('due_at') or 'n/a'}\n"
+        f"Next: {item.get('next_step')}"
+    )
+    try:
+        import aiogram  # noqa: F401  # pylint: disable=unused-import,import-outside-toplevel
+    except ImportError as exc:
+        raise RuntimeError("aiogram is not installed. Install it before using Telegram push delivery.") from exc
+
+    bot = _build_telegram_bot(runtime.bot_token)
+    try:
+        await bot.send_message(runtime.owner_chat_id, text)
+    finally:
+        await bot.session.close()
+    LOGGER.info("Work runner result sent to chat_id=%s", runtime.owner_chat_id)
+    return True
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Async aiogram Telegram bridge for AI Holding Company.")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to projects.yaml.")
@@ -4509,6 +4747,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulate-chat-id", type=int, default=None, help="Optional chat id for simulation.")
     parser.add_argument("--send-morning-brief", action="store_true", help="Generate and send the morning brief.")
     parser.add_argument("--send-dashboard", action="store_true", help="Send or update the owner Telegram dashboard.")
+    parser.add_argument("--send-work-reminders", action="store_true", help="Send owner reminders for work needing attention.")
+    parser.add_argument("--run-work-next", action="store_true", help="Run the next approved work item and notify the owner.")
     return parser
 
 
@@ -4544,6 +4784,14 @@ async def main() -> None:
     if args.send_dashboard:
         await _send_owner_dashboard()
         print(json.dumps({"ok": True, "mode": "send_dashboard"}))
+        return
+    if args.send_work_reminders:
+        sent = await _send_owner_work_reminders()
+        print(json.dumps({"ok": True, "mode": "send_work_reminders", "sent": sent}))
+        return
+    if args.run_work_next:
+        sent = await _run_next_work_and_notify_owner()
+        print(json.dumps({"ok": True, "mode": "run_work_next", "sent": sent}))
         return
 
     try:

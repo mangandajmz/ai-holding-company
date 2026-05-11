@@ -142,3 +142,71 @@ python scripts/aiogram_bridge.py --simulate-text "/assign <board_approval_id>"
 python scripts/aiogram_bridge.py --simulate-text "/start <board_approval_id>"
 python scripts/aiogram_bridge.py --simulate-text "/done <board_approval_id> Completed remediation and validation notes"
 ```
+
+## 11) Agent-manned local commands
+
+These local CLI surfaces prove grounded natural communication and skill
+artifacts before any broader operating-room change. The same surfaces are also
+available through Telegram slash commands.
+
+Ask the Chief of Staff a natural question:
+
+```powershell
+python scripts/tool_router.py ask_company --question "What needs me today?"
+```
+
+Return structured JSON for tooling:
+
+```powershell
+python scripts/tool_router.py ask_company --question "What needs me today?" --json
+```
+
+Ask for evidence explicitly:
+
+```powershell
+python scripts/tool_router.py ask_company --question "Why is trading yellow? Show evidence"
+```
+
+Generate the daily holdco risk aggregate artifact:
+
+```powershell
+python scripts/tool_router.py risk_aggregate_daily
+```
+
+Generate the trading data-quality guardrail artifact:
+
+```powershell
+python scripts/tool_router.py data_quality_daily
+```
+
+Generate the trading backtest-review guardrail artifact:
+
+```powershell
+python scripts/tool_router.py backtest_review
+```
+
+Generate the website support-triage shadow artifact:
+
+```powershell
+python scripts/tool_router.py support_triage
+```
+
+Generate the weekly portfolio retro artifact:
+
+```powershell
+python scripts/tool_router.py portfolio_retro_weekly
+```
+
+Telegram equivalents:
+
+```text
+/ask_company What needs me today?
+/risk_aggregate_daily
+/data_quality_daily
+/backtest_review
+/support_triage
+/portfolio_retro_weekly
+```
+
+The owner-facing answer should stay conversational. Structured truth is stored
+under `reports/skills/`, `state/`, `memory/`, and `docs/decisions/`.
