@@ -287,6 +287,7 @@ def run_verbalizers(
     if mode == "live":
         live = nanoclaw_live_verbalize(packet, config=full_config or {})
         verdict = verify_verbalizer_output(live)
+        _append_live_log(packet=packet, verdict=verdict, config=cfg, root=Path(root))
         if verdict["accepted"]:
             primary = live
         else:
@@ -296,3 +297,24 @@ def run_verbalizers(
         primary = fallback
 
     return {"primary": primary, "shadow": shadow}
+
+
+def _append_live_log(
+    packet: dict[str, Any],
+    verdict: dict[str, Any],
+    config: dict[str, Any],
+    root: Path,
+) -> None:
+    nanoclaw_cfg = config.get("nanoclaw", {}) if isinstance(config.get("nanoclaw", {}), dict) else {}
+    log_path = str(nanoclaw_cfg.get("live_log_path") or "state/nanoclaw_live_log.jsonl")
+    path = root / log_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "persona": packet.get("persona"),
+        "intent": packet.get("intent"),
+        "packet_id": packet.get("packet_id"),
+        "accepted": bool(verdict.get("accepted")),
+        "reason": str(verdict.get("reason") or ""),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")

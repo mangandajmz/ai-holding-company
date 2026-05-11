@@ -38,6 +38,19 @@ conversation:
     mode: "shadow"
     shadow_inbox_path: "state/nanoclaw_shadow_inbox.jsonl"
     shadow_outbox_path: "state/nanoclaw_shadow_outbox.jsonl"
+    live_log_path: "state/nanoclaw_live_log.jsonl"
+    promotion:
+      window: 50
+      min_accept_rate: 0.80
+    personas:
+      chief-of-staff: "shadow"
+      risk-officer: "shadow"
+      quant-ops: "shadow"
+      growth-lead: "shadow"
+      editorial-lead: "shadow"
+      engineering-ops: "shadow"
+      support-lead: "shadow"
+      finance-admin: "shadow"
 
 trading_bots:
   - id: "mt5_desk"

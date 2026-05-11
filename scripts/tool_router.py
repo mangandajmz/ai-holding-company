@@ -179,6 +179,9 @@ def build_parser() -> argparse.ArgumentParser:
     persona_chat.add_argument("--message", required=True, help="Natural owner message.")
     persona_chat.add_argument("--root", default=str(ROOT), help="Project root for truth retrieval.")
 
+    nanoclaw_status = sub.add_parser("nanoclaw_status", help="Show NanoClaw live acceptance rate per persona.")
+    nanoclaw_status.add_argument("--root", default=str(ROOT), help="Project root.")
+
     nanoclaw_shadow = sub.add_parser("nanoclaw_shadow_write", help="Write a local NanoClaw shadow response.")
     nanoclaw_shadow.add_argument("--root", default=str(ROOT), help="Project root for shadow inbox/outbox.")
     nanoclaw_shadow.add_argument(
@@ -499,6 +502,22 @@ def main() -> None:
                 root=Path(args.root),
                 conversation_config=config.get("conversation", {}),
                 full_config=config,
+            )
+        )
+        return
+
+    if args.command == "nanoclaw_status":
+        from nanoclaw_status import compute_status  # pylint: disable=import-outside-toplevel
+
+        nanoclaw_cfg = (config.get("conversation", {}) or {}).get("nanoclaw", {}) or {}
+        log_path = Path(args.root) / str(nanoclaw_cfg.get("live_log_path") or "state/nanoclaw_live_log.jsonl")
+        promotion = nanoclaw_cfg.get("promotion", {}) or {}
+        _emit(
+            compute_status(
+                log_path=log_path,
+                window=int(promotion.get("window") or 50),
+                min_accept_rate=float(promotion.get("min_accept_rate") or 0.80),
+                personas=nanoclaw_cfg.get("personas", {}) or {},
             )
         )
         return
