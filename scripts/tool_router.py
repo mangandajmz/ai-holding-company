@@ -498,6 +498,7 @@ def main() -> None:
                 message=args.message,
                 root=Path(args.root),
                 conversation_config=config.get("conversation", {}),
+                full_config=config,
             )
         )
         return

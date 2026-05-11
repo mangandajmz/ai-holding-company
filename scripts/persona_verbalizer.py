@@ -259,15 +259,40 @@ def nanoclaw_shadow_verbalize(packet: dict[str, Any], config: dict[str, Any], ro
     }
 
 
+def _effective_nanoclaw_mode(persona: str, config: dict[str, Any]) -> str:
+    """Resolve mode: per-persona override beats global, default off."""
+    nanoclaw_cfg = config.get("nanoclaw", {}) if isinstance(config.get("nanoclaw", {}), dict) else {}
+    personas_cfg = nanoclaw_cfg.get("personas", {}) if isinstance(nanoclaw_cfg.get("personas", {}), dict) else {}
+    per = personas_cfg.get(persona)
+    if isinstance(per, str) and per:
+        return per.lower()
+    mode = nanoclaw_cfg.get("mode")
+    return str(mode).lower() if isinstance(mode, str) else "off"
+
+
 def run_verbalizers(
     packet: dict[str, Any],
     config: dict[str, Any] | None = None,
     root: Path | str = ".",
+    full_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the live deterministic verbalizer plus optional NanoClaw shadow."""
+    """Run the deterministic verbalizer, plus NanoClaw shadow or live based on config."""
 
     cfg = config if isinstance(config, dict) else {}
     _append_shadow_inbox(packet=packet, config=cfg, root=Path(root))
-    primary = deterministic_verbalize(packet)
+    fallback = deterministic_verbalize(packet)
     shadow = nanoclaw_shadow_verbalize(packet=packet, config=cfg, root=Path(root))
+
+    mode = _effective_nanoclaw_mode(str(packet.get("persona") or ""), cfg)
+    if mode == "live":
+        live = nanoclaw_live_verbalize(packet, config=full_config or {})
+        verdict = verify_verbalizer_output(live)
+        if verdict["accepted"]:
+            primary = live
+        else:
+            fallback["nanoclaw_live_rejected_reason"] = verdict["reason"]
+            primary = fallback
+    else:
+        primary = fallback
+
     return {"primary": primary, "shadow": shadow}

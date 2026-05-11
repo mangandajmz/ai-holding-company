@@ -474,6 +474,62 @@ def test_nanoclaw_live_returns_model_text_when_ollama_responds(monkeypatch) -> N
     assert captured["body"]["stream"] is False
 
 
+def test_answer_persona_uses_live_when_mode_live_and_falls_back_on_empty(monkeypatch, tmp_path: Path) -> None:
+    import urllib.request
+
+    import persona_verbalizer
+
+    _write_json(
+        tmp_path / "reports" / "skills" / "risk-aggregate-daily" / "latest.json",
+        {
+            "skill": "risk-aggregate-daily",
+            "status": "RED",
+            "owner_need": "approve",
+            "brief": "Forecast attainment is RED.",
+        },
+    )
+
+    class _Resp:
+        def __init__(self, body): self._b = body
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return self._b
+
+    def _ok(req, timeout=20):
+        return _Resp(json.dumps({"response": "Welcome back. Forecast attainment is RED and needs your call."}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _ok)
+
+    conv = {"nanoclaw": {"mode": "shadow", "personas": {"chief-of-staff": "live"}}}
+    full = {"phase2": {"ollama_model": "llama3.2:latest", "ollama_base_url": "http://127.0.0.1:11434"}}
+
+    response = answer_persona(
+        persona="chief",
+        message="what needs me?",
+        root=tmp_path,
+        conversation_config=conv,
+        full_config=full,
+    )
+    assert response["verbalizer"]["provider"] == "nanoclaw_live"
+    assert response["no_model_calls"] is False
+    assert "Forecast attainment is RED" in response["answer"]
+
+    def _empty(req, timeout=20):
+        return _Resp(json.dumps({"response": ""}).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _empty)
+    response2 = answer_persona(
+        persona="chief",
+        message="what needs me?",
+        root=tmp_path,
+        conversation_config=conv,
+        full_config=full,
+    )
+    assert response2["verbalizer"]["provider"] == "deterministic_fallback"
+    assert response2["no_model_calls"] is True
+    assert "Forecast attainment is RED" in response2["answer"]
+
+
 def test_nanoclaw_live_returns_empty_answer_when_ollama_unreachable(monkeypatch) -> None:
     import urllib.error
     import urllib.request

@@ -286,11 +286,17 @@ def answer_persona(
     message: str,
     root: Path | str = ROOT,
     conversation_config: dict[str, Any] | None = None,
+    full_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Answer free text as a persona using only allowed local truth sources."""
 
     packet = build_truth_packet(persona=persona, message=message, root=root)
-    verbalizers = run_verbalizers(packet, config=conversation_config, root=root)
+    verbalizers = run_verbalizers(
+        packet,
+        config=conversation_config,
+        root=root,
+        full_config=full_config,
+    )
     verbalized = verbalizers["primary"]
     return {
         "ok": True,
