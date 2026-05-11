@@ -3,7 +3,8 @@
 **Date:** 2026-05-10
 **Branch:** `claude/nanoclaw-feature` (main worktree, not a `.claude/worktrees/*` worktree)
 **Worktree path:** `C:/Users/james/OneDrive/Documents/Claude/Projects/AI Holding Company/ai-holding-company`
-**Head:** `63319e2`
+**Head:** `66cccdf`
+**PR:** [mangandajmz/ai-holding-company#10](https://github.com/mangandajmz/ai-holding-company/pull/10) — open, awaiting review
 **Tests:** 28 passing (was 21 at prior handoff)
 **Companion doc:** `NANOCLAW_TEST_REPORT.md` at repo root — full system overview, packet examples, file map
 
@@ -93,7 +94,7 @@ Reversible — flip back to `shadow` instantly if accept rate dips.
 
 ## What dispatch should do next (priority order)
 
-1. **Open a PR** for this branch when ready. Suggested title: `feat(nanoclaw): live verbalizer + acceptance ratchet`. Body should reference `NANOCLAW_TEST_REPORT.md` for the system overview and this handoff for the change-set.
+1. **Watch PR [#10](https://github.com/mangandajmz/ai-holding-company/pull/10) through review and merge.** Address review feedback on this branch; do not rebase or force-push unless the reviewer asks. After merge, delete the remote branch and update the head reference in this handoff if any follow-up work continues.
 
 2. **Verify Ollama is reachable on the host** that runs the Telegram bridge:
    ```bash
@@ -134,4 +135,4 @@ Reversible — flip back to `shadow` instantly if accept rate dips.
 
 ---
 
-*Written 2026-05-10 by Claude (sonnet 4.6 session) after committing `63319e2`. End of handoff.*
+*Written 2026-05-10 by Claude after PR #10 opened (head `66cccdf`). End of handoff.*
